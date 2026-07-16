@@ -1,0 +1,21 @@
+{
+  "name": "hourglass-spire-backend",
+  "version": "1.0.0",
+  "description": "Backend for the Hourglass Spire freeroam chat prototype — proxies chat requests to OpenRouter.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "better-sqlite3": "^12.11.1",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "multer": "^2.0.0"
+  }
+}

@@ -1,0 +1,100 @@
+:root{
+  --ink:#14121A;
+  --panel:#1C1922;
+  --panel-raised:#221E2B;
+  --border:#3A3542;
+  --parchment:#EDE6DA;
+  --dim:#A79FB0;
+  --violet:#7C6A9C;
+  --amber:#E0A458;
+  --sage:#8FA998;
+  --rose:#B5566B;
+
+  /* Theming: --accent is the one color the whole UI actually uses for
+     buttons/highlights/active-states (buttons, tabs, links, focus rings —
+     search var(--accent) to see every spot). A theme just repoints it,
+     --accent-rgb, and --accent-text (readable text color on an
+     --accent-colored background) together; --accent-rgb is the same color
+     as a bare "R,G,B" triple so rgba(var(--accent-rgb), 0.08) works for
+     tinted backgrounds without a separate var per opacity. Applied via
+     data-theme on <html> — see loadThemePrefs/applyTheme in index.html.
+     Defaults to the amber look this app always had. */
+  --accent:#E0A458;
+  --accent-rgb:224,164,88;
+  --accent-text:#2A1E10;
+
+  /* Formatted-message text colors (SillyTavern-style *italics*/**bold**/
+     "quotes") — independent of the accent theme so a reader can pick
+     colors for readability without changing every button in the app.
+     Only applies to character bubbles; the user's own (violet) bubble
+     keeps its own fixed, contrast-tuned colors regardless — a chosen dark
+     color could otherwise become unreadable against that background.
+     Defaults match the look this app always had. */
+  --fmt-bold-color:inherit;
+  --fmt-italic-color:var(--dim);
+  --fmt-quote-color:var(--accent);
+
+  /* Avatar display shape — circle/rounded/square — applied to every avatar
+     image/fallback throughout the app (chat, chips, Cast cards). */
+  --avatar-radius:50%;
+}
+[data-theme="rose"]{ --accent:#B5566B; --accent-rgb:181,86,107; --accent-text:#2A1216; }
+[data-theme="sage"]{ --accent:#8FA998; --accent-rgb:143,169,152; --accent-text:#13241A; }
+[data-theme="violet"]{ --accent:#7C6A9C; --accent-rgb:124,106,156; --accent-text:#211B2E; }
+[data-theme="slate"]{ --accent:#7B93B0; --accent-rgb:123,147,176; --accent-text:#101820; }
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:var(--ink);
+  color:var(--parchment);
+  font-family:'Work Sans',sans-serif;
+  min-height:100vh;
+}
+.app{
+  max-width:1100px;
+  margin:0 auto;
+  padding:14px 20px 20px;
+  width:100%;
+}
+header{
+  text-align:center;
+  margin-bottom:26px;
+  position:relative;
+}
+header h1{
+  font-family:'Cormorant Garamond',serif;
+  font-weight:700;
+  font-size:2.6rem;
+  letter-spacing:0.02em;
+  margin:0 0 6px;
+  background:linear-gradient(180deg,#F4EEDF,var(--accent));
+  -webkit-background-clip:text;
+  background-clip:text;
+  color:transparent;
+}
+header p{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:0.78rem;
+  letter-spacing:0.14em;
+  text-transform:uppercase;
+  color:var(--dim);
+  margin:0;
+}
+.banner{
+  background:rgba(181,86,107,0.12);
+  border:1px solid var(--rose);
+  color:var(--parchment);
+  border-radius:8px;
+  padding:10px 14px;
+  font-size:0.84rem;
+  margin-bottom:18px;
+  text-align:center;
+}
+.banner a{color:var(--accent);}
+
+button{
+  font-family:'Work Sans',sans-serif;
+  cursor:pointer;
+}
+::-webkit-scrollbar{width:9px;}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:5px;}

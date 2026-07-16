@@ -1,0 +1,150 @@
+# Freeroam
+
+A freeroam group-chat prototype: only the characters standing in the same
+place as you get fed into the AI as a group chat, and they react when you
+arrive. Backed by a small Express server that proxies chat requests to
+[OpenRouter](https://openrouter.ai), so the API key lives on the server and
+you can switch model/provider from a settings page instead of editing code.
+
+The map isn't a fixed layout — it's a flat, editable list of **places** you
+manage from the app itself. It could be a city, a neighborhood, a house, a
+tower, whatever fits your setting; the seed data seeds a small neighborhood
+just to have something to click around on.
+
+## Structure
+
+```
+freeroam/
+├── backend/
+│   ├── server.js            Express app: serves the frontend + /api routes
+│   ├── lib/tavernCard.js    PNG chunk parser + TavernCard v1/v2/v3 normalizer
+│   ├── package.json
+│   ├── config.json          created on first run: OpenRouter key + model (gitignored)
+│   ├── data/
+│   │   ├── characters.json  created on first run: built-in + uploaded characters (gitignored)
+│   │   ├── places.json      created on first run: the map (gitignored)
+│   │   └── world.json       created on first run: characterId → {placeId, greetingIndex} (gitignored)
+│   └── uploads/avatars/     uploaded card PNGs, served at /avatars/<id>.png (gitignored)
+└── frontend/
+    ├── index.html       the map + chat
+    ├── places.html      add / edit / remove places
+    ├── cast.html        upload character cards, place them anywhere
+    ├── settings.html    key / model picker + connection test
+    └── shared.css
+```
+
+## Run it
+
+```bash
+cd backend
+npm install
+npm start
+```
+
+Then open **http://localhost:3001**.
+
+1. Go to **Settings** and paste an OpenRouter API key
+   (get one at https://openrouter.ai/keys), then pick a model — the list is
+   pulled live from OpenRouter, so it covers whatever's currently available
+   across Anthropic, OpenAI, Google, Meta, and the rest of their catalog.
+2. Go to **Places** to see, add, edit, or remove locations.
+3. Go to **Cast** to see the built-in characters, upload your own, and place
+   anyone in any place.
+4. Head back to **Freeroam** and start walking around.
+
+## Places
+
+A place is the actual unit of navigation — there's no forced hierarchy (no
+required floors, districts, or rooms). Each place has:
+
+- `name`, `desc` — what it's called and what it feels like
+- `type` — `communal` (open to anyone) or `private` (belongs to a resident)
+- `ownerId` — for private places, which character it belongs to
+- `area` — a free-text label used only for grouping in the UI (a
+  neighborhood, a district, a floor, whatever makes sense). Leave it blank
+  and the place shows up under "Unsorted." Type a new one and it becomes a
+  new group automatically — there's no separate list of areas to maintain.
+
+Manage all of this from **places.html**: add a place with the form at the
+top, or edit/remove any existing one inline. Deleting a place automatically
+unplaces anyone standing there and clears it as anyone's home if it was
+private.
+
+The seed data (`SEED_PLACES` in `server.js`) sets up a small neighborhood —
+Town Square, a couple of private homes, a greenhouse — just so there's
+something on the map the first time you run it. Edit or delete every bit of
+it; nothing in the app logic depends on those specific places existing.
+
+## Character cards
+
+Go to **Cast** to manage who's around:
+
+- **Upload**: drop in one or more `TavernCard V2` PNGs (the standard SillyTavern
+  export format — a normal-looking PNG with character data embedded in a
+  `chara` text chunk, base64-encoded JSON). Legacy v1 cards work too. The
+  backend reads the PNG's chunks directly (`backend/lib/tavernCard.js`) —
+  no image library needed — pulls out `description`, `personality`,
+  `scenario`, `mes_example`, and `system_prompt`, and folds them into one
+  persona string. The PNG itself becomes the character's avatar.
+- **Place manually**: each character card has a place dropdown, grouped by
+  area, showing whether each place is communal or private (and whose, if
+  private).
+- **Place randomly**: "🎲 Randomize placements" scatters every character
+  (built-in and uploaded) across every place on the map. Randomized
+  placements always start with no scripted greeting.
+- **Choose an opening line**: `first_mes` and every entry in
+  `alternate_greetings` are parsed into one `greetings` list per character.
+  Once a character is placed, an "Opening line" dropdown lets you pick which
+  one they'll say verbatim the first time you arrive there — or choose
+  "No greeting" to skip the script and let the AI improvise the arrival
+  reaction instead (useful for a first encounter you don't want scripted).
+  The greeting only fires once per place per session; return visits and any
+  reply you send always go through the AI, using every character present.
+- **Remove**: uploaded characters can be deleted, which also deletes their
+  avatar file, clears their placement, and un-assigns them as the owner of
+  any private place. Built-in characters aren't deletable from the UI.
+
+Placements are stored server-side (`data/world.json`), so they persist
+between sessions and are shared across anyone hitting the same backend —
+place someone on the Cast page in one tab, and Freeroam in another tab will
+pick up the change next time you walk into a new place (it refetches world
+state on every move).
+
+## How the location-filtering works
+
+- `frontend/index.html` fetches `places`, `placements`, and `characters`
+  from the backend on load and every time you enter a place.
+- Moving to a place only ever builds a system prompt from the characters
+  whose placement points at that place's id — characters elsewhere are never
+  included in the request.
+- The frontend sends `{ system, messages }` to `POST /api/chat`.
+- `backend/server.js` loads the saved API key + model from `config.json` and
+  forwards the request to OpenRouter's `/chat/completions` endpoint, then
+  returns just the reply text. The key never touches the browser.
+
+## Extending this
+
+- **Per-character calls**: right now one API call generates lines for every
+  present character at once (parsed by `Name: line`). For more independent
+  character reasoning, call `/api/chat` once per character instead, each with
+  only that character's persona in the system prompt.
+- **Characters that move on their own**: placement is currently only changed
+  by the user (via Cast) or the randomize button. A fuller version could move
+  characters on a schedule, have them follow the visitor, or react to events
+  by calling `POST /api/characters/:id/place` from a server-side scheduler.
+- **Enforcing private places**: right now "private" is descriptive — it
+  changes the system prompt's framing but doesn't block the visitor or other
+  characters from entering. Adding real access rules (e.g. only the resident
+  greets you unless invited) would live in the arrival logic in
+  `enterPlace()`.
+- **Connections between places**: there's no travel graph — every place is
+  reachable directly from the map. If you want walking distance or line-of-
+  sight to matter, you'd add a `connections: [placeId, ...]` field to places
+  and only show/allow moves to adjacent ones.
+- **Lorebooks**: TavernCard v2 also supports `character_book`, a set of
+  keyword-triggered lore entries injected into context when a keyword
+  appears in the conversation. `tavernCard.js` doesn't parse this yet —
+  worth adding if you want that kind of dynamic lore injection.
+- **Multiple saved profiles**: `config.json` currently holds one key/model
+  pair. If you want several provider profiles to switch between, change it
+  to an array of named profiles and add a "which profile is active" field.

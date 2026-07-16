@@ -1,0 +1,2025 @@
+import express from 'express';
+import cors from 'cors';
+import multer from 'multer';
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { extractCharacterCard } from './lib/tavernCard.js';
+import {
+  normalizePromptList,
+  normalizeContextNumber,
+  DEFAULT_CONTEXT_LENGTH,
+  DEFAULT_MAX_REPLY_TOKENS,
+} from './lib/presets.js';
+import {
+  recordTurn,
+  retrieveMemories,
+  listCharacterMemories,
+  addCharacterMemory,
+  updateCharacterMemory,
+  deleteCharacterMemory,
+  deleteAllCharacterMemories,
+  syncMemoriesForEntry,
+  findMemoriesWitnessing,
+  detachEntryFromMemories,
+  attachEntriesToMemories,
+  pruneReplylessMemories,
+} from './lib/memoryStore.js';
+import { upsertRelationship, retrieveRelevantRelationships, FAMILY_HINTS } from './lib/relationshipStore.js';
+import { detectSuggestedActions } from './lib/suggestedActions.js';
+import { embed } from './lib/embeddings.js';
+import {
+  estimateTokens,
+  contextSettingsFor,
+  historyBudget,
+  formatLogEntry,
+  buildHistoryTranscript,
+  buildHistoryMessages,
+  sliceSinceLastArrival,
+  assemblePresetMessages,
+  defaultSystemPrompt,
+  parseCharacterTurn,
+  importSillyTavernPreset,
+  exportSillyTavernPreset,
+  TIMES_OF_DAY,
+  WEEKDAYS,
+  weekdayFor,
+  nextTimeSlot,
+  scheduledPlaceFor,
+  STANDARD_PROMPT_BLOCKS,
+  STANDARD_LABEL,
+  normalizeUsage,
+  buildGenerationStats,
+} from './lib/context.js';
+import { loadChatLog, saveChatLog, appendChatEntries, deleteChatLog } from './lib/chatStore.js';
+import { openDb, importJsonMemories } from './lib/db.js';
+import { logger } from './lib/log.js';
+logger.setLevel("debug")
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Overridable so the test suite can point a real (but disposable) Express
+// app at a temp directory instead of this project's actual data/config —
+// tests must never read the real OpenRouter key or write into real data.
+const ROOT_DIR = process.env.FREEROAM_TEST_ROOT || __dirname;
+
+const CONFIG_PATH = path.join(ROOT_DIR, 'config.json');
+const DATA_DIR = path.join(ROOT_DIR, 'data');
+const CHARACTERS_PATH = path.join(DATA_DIR, 'characters.json');
+const PLACES_PATH = path.join(DATA_DIR, 'places.json');
+const WORLD_PATH = path.join(DATA_DIR, 'world.json');
+const PERSONAS_PATH = path.join(DATA_DIR, 'personas.json');
+const PRESETS_PATH = path.join(DATA_DIR, 'presets.json');
+const AVATAR_DIR = path.join(ROOT_DIR, 'uploads', 'avatars');
+const PERSONA_AVATAR_DIR = path.join(AVATAR_DIR, 'personas');
+const MEMORY_DIR = path.join(DATA_DIR, 'memories');
+const CHAT_DIR = path.join(DATA_DIR, 'chats');
+
+fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(AVATAR_DIR, { recursive: true });
+fs.mkdirSync(PERSONA_AVATAR_DIR, { recursive: true });
+
+// SQLite holds memories (vectors as binary blobs) and relationships; any
+// pre-existing JSON memory files get imported once, then the old directory
+// is renamed out of the way.
+const db = openDb(path.join(DATA_DIR, 'freeroam.db'));
+importJsonMemories(db, MEMORY_DIR);
+
+// --- Config (endpoint + model) ---------------------------------------------
+
+const DEFAULT_API_BASE = 'https://openrouter.ai/api/v1';
+const DEFAULT_CONFIG = {
+  apiKey: '',
+  model: 'anthropic/claude-3.5-sonnet',
+  apiBase: DEFAULT_API_BASE,          // any OpenAI-spec-compliant endpoint
+  streaming: false,                    // opt-in; some endpoints don't support SSE
+  reasoning: 'off',                    // off | low | medium | high (OpenRouter reasoning effort)
+  provider: '',                        // pin an OpenRouter provider ('' = let it route)
+  memoryMinScore: 0.35,                 // cosine-similarity floor for memory recall (see retrieveMemories)
+  suggestedActionsMode: 'regex',        // regex | hybrid | ml — see lib/suggestedActions.js
+};
+
+function isOpenRouter(cfg) {
+  return (cfg.apiBase || DEFAULT_API_BASE).includes('openrouter.ai');
+}
+
+function loadConfig() {
+  try {
+    return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8')) };
+  } catch {
+    return { ...DEFAULT_CONFIG };
+  }
+}
+function saveConfig(cfg) {
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+}
+if (!fs.existsSync(CONFIG_PATH)) saveConfig(DEFAULT_CONFIG);
+
+// --- Places ---------------------------------------------------------------
+
+// Places are the actual navigable locations — communal (open to anyone) or
+// a resident's private space. `area` is a free-text label used only for
+// loose visual grouping in the UI (e.g. a neighborhood or district name);
+// it's not a separate entity, so new areas appear automatically as soon as
+// a place uses one. None of this is hardcoded into the app's logic — it's
+// just the starting data, fully editable through /api/places.
+const SEED_PLACES = [
+  { id: 'town-square', name: 'Town Square', type: 'communal', ownerId: null, area: 'Downtown',
+    desc: 'The open square where every path in the neighborhood eventually crosses.' },
+  { id: 'archive-house', name: 'The Archive House', type: 'communal', ownerId: null, area: 'Downtown',
+    desc: 'A public reading room, shelves stacked floor to ceiling with old records.' },
+  { id: 'ezras-apartment', name: "Ezra's Apartment", type: 'private', ownerId: 'ezra', area: 'Downtown',
+    desc: 'A cramped, meticulously organized apartment above the Archive House.' },
+
+  { id: 'greenhouse-park', name: 'The Greenhouse', type: 'communal', ownerId: null, area: 'Garden District',
+    desc: 'A public greenhouse gone half-wild, permanently smelling of autumn leaves.' },
+  { id: 'mireilles-cottage', name: "Mireille's Cottage", type: 'private', ownerId: 'mireille', area: 'Garden District',
+    desc: 'A small cottage tucked just behind the greenhouse ferns.' },
+  { id: 'soots-alley', name: "Soot's Alley", type: 'private', ownerId: 'soot', area: 'Garden District',
+    desc: 'A narrow alley that one particular cat has claimed as entirely his own.' },
+
+  { id: 'old-ballroom', name: 'The Old Ballroom', type: 'communal', ownerId: null, area: 'Uptown',
+    desc: 'A dusty, disused hall that still hosts the occasional gathering.' },
+  { id: 'clocktower-roof', name: 'The Clocktower Roof', type: 'communal', ownerId: null, area: 'Uptown',
+    desc: 'A rooftop lookout beside the neighborhood\'s old, stopped clocktower.' },
+  { id: 'custodians-workshop', name: "The Custodian's Workshop", type: 'private', ownerId: 'custodian', area: 'Uptown',
+    desc: "A locked workshop where the neighborhood's clockwork gets quietly repaired." },
+];
+
+function loadPlaces() {
+  try {
+    return JSON.parse(fs.readFileSync(PLACES_PATH, 'utf-8'));
+  } catch {
+    savePlaces(SEED_PLACES);
+    return SEED_PLACES;
+  }
+}
+function savePlaces(list) {
+  fs.writeFileSync(PLACES_PATH, JSON.stringify(list, null, 2));
+}
+
+function slugify(name) {
+  const base = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'place';
+  return base;
+}
+function uniquePlaceId(name, existing) {
+  const base = slugify(name);
+  let id = base;
+  let n = 2;
+  const ids = new Set(existing.map((p) => p.id));
+  while (ids.has(id)) { id = `${base}-${n}`; n += 1; }
+  return id;
+}
+
+// --- Characters -------------------------------------------------------
+
+const BUILTIN_CHARACTERS = [
+  {
+    id: 'ezra', name: 'Ezra Vane', source: 'builtin', avatarUrl: null, color: 'hsl(35, 65%, 62%)', greetings: [],
+    persona: "Ezra Vane, the neighborhood's unofficial archivist. Precise, dry-witted, quietly lonely — he keeps meticulous records of everyone's comings and goings and takes fierce pride in it. Speaks in measured, faintly formal sentences. Masks curiosity about visitors behind procedure and small complaints about disorganization.",
+  },
+  {
+    id: 'mireille', name: 'Mireille', source: 'builtin', avatarUrl: null, color: 'hsl(150, 22%, 62%)', greetings: [],
+    persona: "Mireille, a gentle, slightly otherworldly gardener who tends the greenhouse like it's the only season that matters. Wistful and kind, she trails off mid-thought as if she's forgotten what year it is. Calls visitors 'traveler.' Speaks softly, in short dreamy sentences, sometimes describing plants that no longer exist anywhere else.",
+  },
+  {
+    id: 'soot', name: 'Soot', source: 'builtin', avatarUrl: null, color: 'hsl(265, 22%, 62%)', greetings: [],
+    persona: "Soot, a small black cat who is not quite a cat. Speaks in short, blunt, faintly sarcastic lines — never more than a sentence or two. Judgmental of nearly everyone. Secretly, obviously fond of Mireille, though he'd deny it.",
+  },
+  {
+    id: 'custodian', name: 'Custodian', source: 'builtin', avatarUrl: null, color: 'hsl(345, 40%, 58%)', greetings: [],
+    persona: "The Custodian, keeper of the neighborhood's old clocktower and the one who quietly keeps it from ever fully stopping. Speaks rarely and in short, oracular lines — never more than one or two sentences. Neither hostile nor warm. Simply a little outside of time, and faintly amused by those who are not.",
+  },
+];
+
+// placements: { [characterId]: { placeId: string, greetingIndex: number|null } }
+// greetingIndex null = no scripted greeting, arrival reaction is AI-improvised.
+const DEFAULT_PLACEMENTS = {
+  ezra: { placeId: 'ezras-apartment', greetingIndex: null },
+  mireille: { placeId: 'mireilles-cottage', greetingIndex: null },
+  soot: { placeId: 'soots-alley', greetingIndex: null },
+  custodian: { placeId: 'custodians-workshop', greetingIndex: null },
+};
+
+// Migrates a character saved before fields were split out: an old single
+// `persona` blob becomes `description`, and the newer fields default to
+// empty rather than being absent. Lazy, like normalizeWorld() below — reads
+// always see the new shape; the file only actually rewrites on next save.
+// schedule: sparse { [weekday]: { [timeOfDay]: { placeId, reason } } } — a
+// character with no entry for a given slot just isn't scheduled there;
+// normal placement/movement is unaffected until a slot is actually set.
+function normalizeCharacter(c) {
+  const base = { description: '', personality: '', scenario: '', exampleDialogue: '', schedule: {}, ...c };
+  if (typeof c.persona === 'string' && !c.description) base.description = c.persona;
+  delete base.persona;
+  return base;
+}
+
+function loadCharacters() {
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(CHARACTERS_PATH, 'utf-8'));
+  } catch {
+    raw = BUILTIN_CHARACTERS;
+    saveCharacters(raw);
+  }
+  return raw.map(normalizeCharacter);
+}
+function saveCharacters(list) {
+  fs.writeFileSync(CHARACTERS_PATH, JSON.stringify(list, null, 2));
+}
+
+// World state: placements + the in-world clock + the global setting text.
+// Older world.json files predate time/setting, so defaults are merged in.
+function normalizeWorld(world) {
+  return {
+    placements: world.placements || {},
+    time: { day: 1, timeOfDay: 'morning', ...(world.time || {}) },
+    setting: world.setting || '',
+  };
+}
+
+function loadWorld() {
+  try {
+    return normalizeWorld(JSON.parse(fs.readFileSync(WORLD_PATH, 'utf-8')));
+  } catch {
+    const world = normalizeWorld({ placements: DEFAULT_PLACEMENTS });
+    saveWorld(world);
+    return world;
+  }
+}
+function saveWorld(world) {
+  fs.writeFileSync(WORLD_PATH, JSON.stringify(world, null, 2));
+}
+
+// Deterministic-ish color for uploaded characters, spread around the wheel.
+function colorForName(name) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) % 360;
+  return `hsl(${hash}, 55%, 62%)`;
+}
+
+// --- Personas ---------------------------------------------------------
+// A persona is the user's own in-world identity — the "{{user}}" side of
+// the chat. Optional description gets folded into the system prompt the
+// same way a character's persona does; the active one's name replaces the
+// generic "the visitor" label in transcripts and prompts.
+
+const DEFAULT_PERSONAS = { personas: [], activePersonaId: null };
+
+function loadPersonas() {
+  try {
+    return { ...DEFAULT_PERSONAS, ...JSON.parse(fs.readFileSync(PERSONAS_PATH, 'utf-8')) };
+  } catch {
+    savePersonas(DEFAULT_PERSONAS);
+    return { ...DEFAULT_PERSONAS };
+  }
+}
+function savePersonas(data) {
+  fs.writeFileSync(PERSONAS_PATH, JSON.stringify(data, null, 2));
+}
+
+const EXT_FOR_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
+
+// --- Prompt presets -----------------------------------------------------
+// Presets mirror SillyTavern's Chat Completion "Prompt Manager": an ordered
+// list of prompt blocks, each either real text (identifier/name/role/content)
+// or a "marker" placeholder (identifier/name only) that stands in for a slot
+// SillyTavern fills automatically. Freeroam understands three marker slots —
+// charDescription, scenario, personaDescription — and fills the rest (world
+// info, dialogue examples, chat history) with nothing, since this app has no
+// equivalent concept. That keeps a straight SillyTavern preset export usable
+// here without editing, and keeps a Freeroam-exported preset re-importable.
+
+const DEFAULT_PRESETS = { presets: [], activePresetId: null };
+
+function loadPresets() {
+  try {
+    return { ...DEFAULT_PRESETS, ...JSON.parse(fs.readFileSync(PRESETS_PATH, 'utf-8')) };
+  } catch {
+    savePresets(DEFAULT_PRESETS);
+    return { ...DEFAULT_PRESETS };
+  }
+}
+function savePresets(data) {
+  fs.writeFileSync(PRESETS_PATH, JSON.stringify(data, null, 2));
+}
+
+// --- App ----------------------------------------------------------------
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, '..', 'frontend')));
+app.use('/avatars', express.static(AVATAR_DIR));
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype !== 'image/png') return cb(new Error('Only PNG character cards are supported.'));
+    cb(null, true);
+  },
+});
+
+const uploadPersonaAvatar = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!EXT_FOR_MIME[file.mimetype]) return cb(new Error('Avatar must be a PNG, JPEG, or WebP image.'));
+    cb(null, true);
+  },
+});
+
+// --- Settings routes ------------------------------------------------------
+
+function publicConfig(cfg) {
+  return {
+    hasKey: !!cfg.apiKey,
+    model: cfg.model,
+    apiBase: cfg.apiBase || DEFAULT_API_BASE,
+    streaming: !!cfg.streaming,
+    reasoning: cfg.reasoning || 'off',
+    provider: cfg.provider || '',
+    memoryMinScore: Number.isFinite(cfg.memoryMinScore) ? cfg.memoryMinScore : DEFAULT_CONFIG.memoryMinScore,
+    suggestedActionsMode: cfg.suggestedActionsMode || DEFAULT_CONFIG.suggestedActionsMode,
+  };
+}
+
+app.get('/api/settings', (req, res) => {
+  res.json(publicConfig(loadConfig()));
+});
+
+app.post('/api/settings', (req, res) => {
+  const cfg = loadConfig();
+  const { apiKey, model, apiBase, streaming, reasoning, provider, memoryMinScore, suggestedActionsMode } = req.body || {};
+  if (typeof apiKey === 'string' && apiKey.trim()) cfg.apiKey = apiKey.trim();
+  if (typeof model === 'string' && model.trim()) cfg.model = model.trim();
+  if (typeof apiBase === 'string') cfg.apiBase = apiBase.trim().replace(/\/+$/, '') || DEFAULT_API_BASE;
+  if (typeof streaming === 'boolean') cfg.streaming = streaming;
+  if (['off', 'low', 'medium', 'high'].includes(reasoning)) cfg.reasoning = reasoning;
+  if (typeof provider === 'string') cfg.provider = provider.trim();
+  if (typeof memoryMinScore === 'number' && Number.isFinite(memoryMinScore)) {
+    cfg.memoryMinScore = Math.max(0, Math.min(1, memoryMinScore));
+  }
+  if (['regex', 'hybrid', 'ml'].includes(suggestedActionsMode)) cfg.suggestedActionsMode = suggestedActionsMode;
+  saveConfig(cfg);
+  res.json(publicConfig(cfg));
+});
+
+app.post('/api/settings/clear-key', (req, res) => {
+  const cfg = loadConfig();
+  cfg.apiKey = '';
+  saveConfig(cfg);
+  res.json({ hasKey: false, model: cfg.model });
+});
+
+// Model list from whatever endpoint is configured (OpenAI /models spec).
+// Pricing comes through when the endpoint provides it (OpenRouter does).
+app.get('/api/models', async (req, res) => {
+  const cfg = loadConfig();
+  try {
+    const headers = cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {};
+    const r = await fetch(`${cfg.apiBase || DEFAULT_API_BASE}/models`, { headers });
+    if (!r.ok) throw new Error(`Endpoint responded ${r.status}`);
+    const data = await r.json();
+    const models = (data.data || [])
+      .map((m) => ({ id: m.id, name: m.name || m.id, context_length: m.context_length, pricing: m.pricing }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    res.json({ models });
+  } catch (err) {
+    logger.error('llm', `model list fetch failed: ${err.message}`);
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// Providers serving a given model — OpenRouter-only (its endpoints API);
+// other endpoints get an empty list, and the UI hides the picker.
+app.get('/api/models/providers', async (req, res) => {
+  const cfg = loadConfig();
+  const model = req.query.model;
+  if (!model || !isOpenRouter(cfg)) return res.json({ providers: [] });
+  try {
+    const r = await fetch(`${cfg.apiBase || DEFAULT_API_BASE}/models/${model}/endpoints`);
+    if (!r.ok) throw new Error(`OpenRouter responded ${r.status}`);
+    const data = await r.json();
+    const providers = (data.data?.endpoints || []).map((e) => ({
+      name: e.provider_name || e.name,
+      pricing: e.pricing,
+      context_length: e.context_length,
+    }));
+    res.json({ providers });
+  } catch (err) {
+    logger.warn('llm', `provider list fetch failed for ${model}: ${err.message}`);
+    res.json({ providers: [] });
+  }
+});
+
+// --- Character routes -------------------------------------------------
+
+app.get('/api/characters', (req, res) => {
+  res.json({ characters: loadCharacters() });
+});
+
+// Accepts either a multipart TavernCard PNG upload (field "card") or a
+// plain JSON body { name, description, personality, scenario, exampleDialogue }
+// for characters created without a card — e.g. an NPC introduced mid-scene
+// and saved via the "Save as character" flow, or one entered from scratch.
+app.post('/api/characters', upload.single('card'), (req, res) => {
+  if (req.file) {
+    let card;
+    try {
+      card = extractCharacterCard(req.file.buffer);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    const id = crypto.randomUUID();
+    fs.writeFileSync(path.join(AVATAR_DIR, `${id}.png`), req.file.buffer);
+
+    const character = {
+      id,
+      name: card.name,
+      description: card.description,
+      personality: card.personality,
+      scenario: card.scenario,
+      exampleDialogue: card.exampleDialogue,
+      greetings: card.greetings,
+      source: 'upload',
+      avatarUrl: `/avatars/${id}.png`,
+      color: colorForName(card.name),
+      tags: card.tags,
+      creator: card.creator,
+      spec: card.spec,
+    };
+
+    const characters = loadCharacters();
+    characters.push(character);
+    saveCharacters(characters);
+    return res.status(201).json({ character });
+  }
+
+  const { name, description, personality, scenario, exampleDialogue } = req.body || {};
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'A character name is required (or upload a card PNG).' });
+  }
+
+  const id = crypto.randomUUID();
+  const character = {
+    id,
+    name: name.trim(),
+    description: (description || '').trim(),
+    personality: (personality || '').trim(),
+    scenario: (scenario || '').trim(),
+    exampleDialogue: (exampleDialogue || '').trim(),
+    greetings: [],
+    source: 'npc',
+    avatarUrl: null,
+    color: colorForName(name.trim()),
+  };
+
+  const characters = loadCharacters();
+  characters.push(character);
+  saveCharacters(characters);
+  res.status(201).json({ character });
+});
+
+// Drafts a persona description for a new character from recent scene
+// context, using the same OpenRouter proxy as /api/chat. Used by the
+// "Save as character" modal's "Draft persona" button — the result is a
+// starting point the user edits before saving, not a final answer.
+app.post('/api/characters/draft', async (req, res) => {
+  const { name, log, userLabel } = req.body || {};
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'A character name is required.' });
+  }
+
+  const cfg = loadConfig();
+  if (!cfg.apiKey) {
+    return res.status(400).json({ error: 'No OpenRouter API key configured. Add one in Settings.' });
+  }
+
+  // The client sends its raw per-place log (chat isn't persisted
+  // server-side); the transcript is built here rather than client-side, so
+  // formatting/scoping logic lives in one place (backend/lib/context.js).
+  const context = Array.isArray(log)
+    ? buildHistoryTranscript(log, { userLabel: typeof userLabel === 'string' && userLabel.trim() ? userLabel.trim() : 'Visitor' })
+    : '';
+
+  // The world's global setting text (Settings > World, also fed into every
+  // regular character turn as the worldInfoBefore block — see context.js)
+  // can carry genre/tone/world-rules info a persona draft should respect
+  // just as much as the scene excerpt does, so it goes in alongside it
+  // rather than being left for the model to guess at.
+  const worldSetting = loadWorld().setting;
+  const worldBlock = worldSetting && worldSetting.trim() ? `${STANDARD_LABEL.worldInfoBefore}:\n${worldSetting.trim()}\n\n` : '';
+
+  const system = `You are a character-sheet writing assistant for a roleplay app. Based on the world setting and scene excerpt below, write a short persona description for the character named "${name.trim()}": 2 to 4 sentences, factual character-sheet voice covering personality, manner of speaking, and role in the scene. No dialogue, no first person, no meta-commentary — output only the description text.`;
+  const userContent = context.trim()
+    ? `${worldBlock}${context.trim()}`
+    : `${worldBlock}${worldBlock ? 'No scene context was provided beyond the world setting above.' : 'No scene context was provided.'} Invent a short, plausible persona for a character named "${name.trim()}"${worldBlock ? ' that fits the world setting' : ''}.`;
+
+  // 300 tokens covers the description itself, but a reasoning-enabled model
+  // spends tokens "thinking" out of the same budget before it ever writes
+  // the answer — too small a budget there means content can come back
+  // empty having burned everything on the reasoning trace, with nothing
+  // that looks like an error anywhere. Give reasoning room on top instead
+  // of sharing the same small budget with the actual output.
+  const maxTokens = cfg.reasoning && cfg.reasoning !== 'off' ? 1200 : 300;
+
+  try {
+    const { text: description } = await callOpenRouter(cfg, [
+      { role: 'system', content: system },
+      { role: 'user', content: userContent },
+    ], maxTokens, `persona draft for "${name.trim()}"`);
+    const trimmed = description.trim();
+    if (!trimmed) {
+      return res.status(502).json({ error: 'The model returned an empty response. If reasoning is enabled in Settings, try turning it off for this, or try again.' });
+    }
+    res.json({ description: trimmed });
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
+app.delete('/api/characters/:id', (req, res) => {
+  const { id } = req.params;
+  const characters = loadCharacters();
+  const target = characters.find((c) => c.id === id);
+  if (!target) return res.status(404).json({ error: 'Character not found.' });
+
+  const remaining = characters.filter((c) => c.id !== id);
+  saveCharacters(remaining);
+
+  if (target.avatarUrl) {
+    const avatarPath = path.join(AVATAR_DIR, path.basename(target.avatarUrl));
+    fs.rm(avatarPath, { force: true }, () => {});
+  }
+
+  const world = loadWorld();
+  if (world.placements[id] !== undefined) {
+    delete world.placements[id];
+    saveWorld(world);
+  }
+
+  const places = loadPlaces();
+  let placesChanged = false;
+  places.forEach((p) => {
+    if (p.ownerId === id) { p.ownerId = null; placesChanged = true; }
+  });
+  if (placesChanged) savePlaces(places);
+
+  // Clean up the character's memories and any relationships either way.
+  deleteAllCharacterMemories(db, id);
+  db.prepare('DELETE FROM relationships WHERE character_id = ? OR target_id = ?').run(id, id);
+
+  res.json({ ok: true });
+});
+
+// Edit a character's fields directly (any source, including builtin).
+app.put('/api/characters/:id', (req, res) => {
+  const { id } = req.params;
+  const characters = loadCharacters();
+  const character = characters.find((c) => c.id === id);
+  if (!character) return res.status(404).json({ error: 'Character not found.' });
+
+  const { name, description, personality, scenario, exampleDialogue } = req.body || {};
+  if (typeof name === 'string' && name.trim()) character.name = name.trim();
+  if (typeof description === 'string') character.description = description.trim();
+  if (typeof personality === 'string') character.personality = personality.trim();
+  if (typeof scenario === 'string') character.scenario = scenario.trim();
+  if (typeof exampleDialogue === 'string') character.exampleDialogue = exampleDialogue.trim();
+
+  saveCharacters(characters);
+  res.json({ character });
+});
+
+// Sets or clears one day/time-of-day slot in a character's weekly schedule
+// (empty/missing placeId clears it). Used both by the schedule editor and
+// by nothing else — movement itself happens automatically in
+// POST /api/world/time, not through this route.
+app.put('/api/characters/:id/schedule/:day/:timeOfDay', (req, res) => {
+  const { id, day, timeOfDay } = req.params;
+  if (!WEEKDAYS.includes(day)) {
+    return res.status(400).json({ error: `day must be one of: ${WEEKDAYS.join(', ')}` });
+  }
+  if (!TIMES_OF_DAY.includes(timeOfDay)) {
+    return res.status(400).json({ error: `timeOfDay must be one of: ${TIMES_OF_DAY.join(', ')}` });
+  }
+
+  const characters = loadCharacters();
+  const character = characters.find((c) => c.id === id);
+  if (!character) return res.status(404).json({ error: 'Character not found.' });
+
+  const { placeId, reason } = req.body || {};
+  if (!character.schedule) character.schedule = {};
+
+  if (!placeId) {
+    if (character.schedule[day]) delete character.schedule[day][timeOfDay];
+  } else {
+    if (!loadPlaces().some((p) => p.id === placeId)) {
+      return res.status(404).json({ error: 'Place not found.' });
+    }
+    if (!character.schedule[day]) character.schedule[day] = {};
+    character.schedule[day][timeOfDay] = { placeId, reason: typeof reason === 'string' ? reason.trim() : '' };
+  }
+
+  saveCharacters(characters);
+  res.json({ character });
+});
+
+// --- Persona routes -----------------------------------------------------
+
+app.get('/api/personas', (req, res) => {
+  res.json(loadPersonas());
+});
+
+// Accepts multipart (name, description, optional "avatar" file) or plain JSON.
+app.post('/api/personas', uploadPersonaAvatar.single('avatar'), (req, res) => {
+  const { name, description } = req.body || {};
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'A persona name is required.' });
+  }
+
+  const id = crypto.randomUUID();
+  let avatarUrl = null;
+  if (req.file) {
+    const ext = EXT_FOR_MIME[req.file.mimetype];
+    fs.writeFileSync(path.join(PERSONA_AVATAR_DIR, `${id}.${ext}`), req.file.buffer);
+    avatarUrl = `/avatars/personas/${id}.${ext}`;
+  }
+
+  const persona = {
+    id,
+    name: name.trim(),
+    description: (description || '').trim(),
+    avatarUrl,
+    color: colorForName(name.trim()),
+  };
+
+  const data = loadPersonas();
+  data.personas.push(persona);
+  savePersonas(data);
+  res.status(201).json({ persona });
+});
+
+app.put('/api/personas/:id', uploadPersonaAvatar.single('avatar'), (req, res) => {
+  const { id } = req.params;
+  const data = loadPersonas();
+  const persona = data.personas.find((p) => p.id === id);
+  if (!persona) return res.status(404).json({ error: 'Persona not found.' });
+
+  const { name, description } = req.body || {};
+  if (typeof name === 'string' && name.trim()) persona.name = name.trim();
+  if (typeof description === 'string') persona.description = description.trim();
+
+  if (req.file) {
+    if (persona.avatarUrl) {
+      fs.rm(path.join(AVATAR_DIR, 'personas', path.basename(persona.avatarUrl)), { force: true }, () => {});
+    }
+    const ext = EXT_FOR_MIME[req.file.mimetype];
+    fs.writeFileSync(path.join(PERSONA_AVATAR_DIR, `${id}.${ext}`), req.file.buffer);
+    persona.avatarUrl = `/avatars/personas/${id}.${ext}`;
+  }
+
+  savePersonas(data);
+  res.json({ persona });
+});
+
+app.delete('/api/personas/:id', (req, res) => {
+  const { id } = req.params;
+  const data = loadPersonas();
+  const target = data.personas.find((p) => p.id === id);
+  if (!target) return res.status(404).json({ error: 'Persona not found.' });
+
+  data.personas = data.personas.filter((p) => p.id !== id);
+  if (data.activePersonaId === id) data.activePersonaId = null;
+  savePersonas(data);
+
+  if (target.avatarUrl) {
+    fs.rm(path.join(AVATAR_DIR, 'personas', path.basename(target.avatarUrl)), { force: true }, () => {});
+  }
+
+  res.json({ ok: true });
+});
+
+app.post('/api/personas/active', (req, res) => {
+  const { id } = req.body || {};
+  const data = loadPersonas();
+  if (id !== null && id !== undefined && !data.personas.some((p) => p.id === id)) {
+    return res.status(400).json({ error: 'Unknown persona id.' });
+  }
+  data.activePersonaId = id || null;
+  savePersonas(data);
+  res.json({ activePersonaId: data.activePersonaId });
+});
+
+// --- Prompt preset routes -------------------------------------------------
+
+app.get('/api/presets', (req, res) => {
+  res.json(loadPresets());
+});
+
+// Catalog for the Prompts view's "insert standard block" dropdown — see
+// STANDARD_PROMPT_BLOCKS in lib/context.js for what each entry does.
+app.get('/api/prompts/standard-blocks', (req, res) => {
+  res.json({ blocks: STANDARD_PROMPT_BLOCKS });
+});
+
+function createPreset({ name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage }) {
+  const preset = {
+    id: crypto.randomUUID(),
+    name: name.trim(),
+    contextLength: normalizeContextNumber(contextLength, DEFAULT_CONTEXT_LENGTH),
+    maxReplyTokens: normalizeContextNumber(maxReplyTokens, DEFAULT_MAX_REPLY_TOKENS),
+    prompts: normalizePromptList(prompts),
+    memoryAsSeparateMessage: !!memoryAsSeparateMessage,
+  };
+  const data = loadPresets();
+  data.presets.push(preset);
+  savePresets(data);
+  return preset;
+}
+
+app.post('/api/presets', (req, res) => {
+  const { name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage } = req.body || {};
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'A preset name is required.' });
+  }
+  res.status(201).json({ preset: createPreset({ name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage }) });
+});
+
+// Transforms a raw SillyTavern Chat Completion preset export into a
+// Freeroam preset and saves it — the client just uploads the parsed JSON
+// it read from a dropped file plus a fallback name (from the filename,
+// since ST presets don't carry their own "name" field).
+app.post('/api/presets/import', (req, res) => {
+  const { raw, fallbackName } = req.body || {};
+  if (!raw || typeof raw !== 'object') {
+    return res.status(400).json({ error: 'A raw SillyTavern preset object is required.' });
+  }
+  try {
+    const parsed = importSillyTavernPreset(raw, fallbackName);
+    res.status(201).json({ preset: createPreset(parsed) });
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Could not import this preset.' });
+  }
+});
+
+// Stateless transform (not tied to a saved preset id) so the client can
+// export its current in-progress draft, including unsaved edits.
+app.post('/api/presets/export', (req, res) => {
+  const { name, prompts, contextLength, maxReplyTokens } = req.body || {};
+  if (!Array.isArray(prompts)) {
+    return res.status(400).json({ error: 'prompts array is required.' });
+  }
+  res.json(exportSillyTavernPreset({
+    name,
+    prompts: normalizePromptList(prompts),
+    contextLength: normalizeContextNumber(contextLength, DEFAULT_CONTEXT_LENGTH),
+    maxReplyTokens: normalizeContextNumber(maxReplyTokens, DEFAULT_MAX_REPLY_TOKENS),
+  }));
+});
+
+app.put('/api/presets/:id', (req, res) => {
+  const { id } = req.params;
+  const data = loadPresets();
+  const preset = data.presets.find((p) => p.id === id);
+  if (!preset) return res.status(404).json({ error: 'Preset not found.' });
+
+  const { name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage } = req.body || {};
+  if (typeof name === 'string' && name.trim()) preset.name = name.trim();
+  if (prompts !== undefined) preset.prompts = normalizePromptList(prompts);
+  if (contextLength !== undefined) preset.contextLength = normalizeContextNumber(contextLength, preset.contextLength || DEFAULT_CONTEXT_LENGTH);
+  if (maxReplyTokens !== undefined) preset.maxReplyTokens = normalizeContextNumber(maxReplyTokens, preset.maxReplyTokens || DEFAULT_MAX_REPLY_TOKENS);
+  if (typeof memoryAsSeparateMessage === 'boolean') preset.memoryAsSeparateMessage = memoryAsSeparateMessage;
+
+  savePresets(data);
+  res.json({ preset });
+});
+
+app.delete('/api/presets/:id', (req, res) => {
+  const { id } = req.params;
+  const data = loadPresets();
+  if (!data.presets.some((p) => p.id === id)) return res.status(404).json({ error: 'Preset not found.' });
+
+  data.presets = data.presets.filter((p) => p.id !== id);
+  if (data.activePresetId === id) data.activePresetId = null;
+  savePresets(data);
+  res.json({ ok: true });
+});
+
+app.post('/api/presets/active', (req, res) => {
+  const { id } = req.body || {};
+  const data = loadPresets();
+  if (id !== null && id !== undefined && !data.presets.some((p) => p.id === id)) {
+    return res.status(400).json({ error: 'Unknown preset id.' });
+  }
+  data.activePresetId = id || null;
+  savePresets(data);
+  res.json({ activePresetId: data.activePresetId });
+});
+
+// --- Places routes ----------------------------------------------------
+
+app.get('/api/places', (req, res) => {
+  res.json({ places: loadPlaces() });
+});
+
+app.post('/api/places', (req, res) => {
+  const { name, desc, type, ownerId, area } = req.body || {};
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'A place name is required.' });
+  }
+  const placeType = type === 'private' ? 'private' : 'communal';
+  if (placeType === 'private' && ownerId) {
+    const characters = loadCharacters();
+    if (!characters.some((c) => c.id === ownerId)) {
+      return res.status(400).json({ error: 'Unknown owner character id.' });
+    }
+  }
+
+  const places = loadPlaces();
+  const place = {
+    id: uniquePlaceId(name.trim(), places),
+    name: name.trim(),
+    desc: (desc || '').trim(),
+    type: placeType,
+    ownerId: placeType === 'private' ? (ownerId || null) : null,
+    area: (area || '').trim(),
+  };
+  places.push(place);
+  savePlaces(places);
+  res.status(201).json({ place });
+});
+
+app.put('/api/places/:id', (req, res) => {
+  const { id } = req.params;
+  const places = loadPlaces();
+  const place = places.find((p) => p.id === id);
+  if (!place) return res.status(404).json({ error: 'Place not found.' });
+
+  const { name, desc, type, ownerId, area } = req.body || {};
+  if (typeof name === 'string' && name.trim()) place.name = name.trim();
+  if (typeof desc === 'string') place.desc = desc.trim();
+  if (type === 'private' || type === 'communal') place.type = type;
+  if (typeof area === 'string') place.area = area.trim();
+  if (place.type === 'private') {
+    if (ownerId !== undefined) {
+      if (ownerId) {
+        const characters = loadCharacters();
+        if (!characters.some((c) => c.id === ownerId)) {
+          return res.status(400).json({ error: 'Unknown owner character id.' });
+        }
+      }
+      place.ownerId = ownerId || null;
+    }
+  } else {
+    place.ownerId = null;
+  }
+
+  savePlaces(places);
+  res.json({ place });
+});
+
+app.delete('/api/places/:id', (req, res) => {
+  const { id } = req.params;
+  const places = loadPlaces();
+  if (!places.some((p) => p.id === id)) return res.status(404).json({ error: 'Place not found.' });
+
+  savePlaces(places.filter((p) => p.id !== id));
+
+  const world = loadWorld();
+  let changed = false;
+  Object.entries(world.placements).forEach(([charId, placement]) => {
+    if (placement.placeId === id) { delete world.placements[charId]; changed = true; }
+  });
+  if (changed) saveWorld(world);
+
+  deleteChatLog(CHAT_DIR, id);
+
+  res.json({ ok: true });
+});
+
+// --- World / placement routes ------------------------------------------
+
+app.get('/api/world', (req, res) => {
+  const world = loadWorld();
+  res.json({ places: loadPlaces(), placements: world.placements, time: world.time, setting: world.setting });
+});
+
+// Place (or unplace, with placeId: null) a character, and/or set which
+// greeting they open with. Fields not included in the body are left as-is.
+app.post('/api/characters/:id/place', (req, res) => {
+  const { id } = req.params;
+  const { placeId, greetingIndex } = req.body || {};
+
+  const characters = loadCharacters();
+  const character = characters.find((c) => c.id === id);
+  if (!character) return res.status(404).json({ error: 'Character not found.' });
+
+  const world = loadWorld();
+  const placeIds = loadPlaces().map((p) => p.id);
+
+  if (placeId === null) {
+    delete world.placements[id];
+    saveWorld(world);
+    return res.json({ placements: world.placements });
+  }
+
+  const existing = world.placements[id] || { placeId: undefined, greetingIndex: null };
+
+  if (placeId !== undefined) {
+    if (!placeIds.includes(placeId)) return res.status(400).json({ error: `Unknown place id: ${placeId}` });
+    existing.placeId = placeId;
+  }
+
+  if (greetingIndex !== undefined) {
+    const greetingCount = (character.greetings || []).length;
+    if (greetingIndex !== null && (typeof greetingIndex !== 'number' || greetingIndex < 0 || greetingIndex >= greetingCount)) {
+      return res.status(400).json({ error: `Invalid greeting index for ${character.name}.` });
+    }
+    existing.greetingIndex = greetingIndex;
+  }
+
+  if (existing.placeId === undefined) {
+    return res.status(400).json({ error: 'placeId is required the first time a character is placed.' });
+  }
+
+  world.placements[id] = existing;
+  saveWorld(world);
+  res.json({ placements: world.placements });
+});
+
+// Scatter every known character across the places at random.
+// Randomized placements always start with no scripted greeting (AI-improvised arrival).
+app.post('/api/world/randomize', (req, res) => {
+  const { placeIds } = req.body || {};
+  const allIds = loadPlaces().map((p) => p.id);
+  const pool = Array.isArray(placeIds) && placeIds.length ? placeIds.filter((p) => allIds.includes(p)) : allIds;
+  if (!pool.length) return res.status(400).json({ error: 'No valid places to place characters in.' });
+
+  const characters = loadCharacters();
+  const placements = {};
+  characters.forEach((c) => {
+    placements[c.id] = { placeId: pool[Math.floor(Math.random() * pool.length)], greetingIndex: null };
+  });
+
+  const world = loadWorld();
+  world.placements = placements;
+  saveWorld(world);
+  res.json({ placements });
+});
+
+// --- World time & setting ---------------------------------------------------
+// The in-world clock never advances on its own — only these endpoints move
+// it. `advance`/`retreat: true` step one time-of-day forward or backward
+// (wrapping into the next/previous day at night/sunrise); explicit
+// day/timeOfDay jump straight to any point, including backward — for
+// time-travel scenarios, not just always moving forward.
+
+// Snaps every scheduled character onto their slot for the world's current
+// (already-updated) day/time-of-day, mutating world.placements in place.
+// A character with nothing scheduled for this exact slot just keeps
+// whatever placement they already had — schedules are opt-in per slot, not
+// a full replacement for manual placement.
+function applyScheduledPlacements(world, characters) {
+  const weekday = weekdayFor(world.time.day);
+  characters.forEach((c) => {
+    const slot = c.schedule?.[weekday]?.[world.time.timeOfDay];
+    if (!slot || !slot.placeId) return;
+    const existing = world.placements[c.id];
+    world.placements[c.id] = { placeId: slot.placeId, greetingIndex: existing ? existing.greetingIndex : null };
+  });
+}
+
+app.post('/api/world/time', (req, res) => {
+  const { advance, retreat, day, timeOfDay } = req.body || {};
+  const world = loadWorld();
+
+  if (advance) {
+    const idx = TIMES_OF_DAY.indexOf(world.time.timeOfDay);
+    const next = (idx + 1) % TIMES_OF_DAY.length;
+    world.time.timeOfDay = TIMES_OF_DAY[next];
+    if (next === 0) world.time.day += 1;
+  }
+  if (retreat) {
+    const idx = TIMES_OF_DAY.indexOf(world.time.timeOfDay);
+    const prev = (idx - 1 + TIMES_OF_DAY.length) % TIMES_OF_DAY.length;
+    world.time.timeOfDay = TIMES_OF_DAY[prev];
+    if (prev === TIMES_OF_DAY.length - 1) world.time.day = Math.max(1, world.time.day - 1);
+  }
+  if (timeOfDay !== undefined) {
+    if (!TIMES_OF_DAY.includes(timeOfDay)) {
+      return res.status(400).json({ error: `timeOfDay must be one of: ${TIMES_OF_DAY.join(', ')}` });
+    }
+    world.time.timeOfDay = timeOfDay;
+  }
+  if (day !== undefined) {
+    const n = Number(day);
+    if (!Number.isInteger(n) || n < 1) return res.status(400).json({ error: 'day must be a positive integer.' });
+    world.time.day = n;
+  }
+
+  applyScheduledPlacements(world, loadCharacters());
+  saveWorld(world);
+  res.json({ time: world.time, placements: world.placements });
+});
+
+app.post('/api/world/setting', (req, res) => {
+  const { setting } = req.body || {};
+  if (typeof setting !== 'string') return res.status(400).json({ error: 'setting must be a string.' });
+  const world = loadWorld();
+  world.setting = setting.trim();
+  saveWorld(world);
+  res.json({ setting: world.setting });
+});
+
+// --- Memory routes ---------------------------------------------------------
+// Per-(character, persona) semantic memory, embedded locally (lib/embeddings.js)
+// and stored in lib/memoryStore.js's flat per-pair JSON files. The frontend
+// calls /retrieve before building a system prompt (feeding results into the
+// characterMemory preset marker) and /record after a turn completes.
+
+app.post('/api/memory/record', async (req, res) => {
+  const { text, placeId, personaId, characterIds, entryIds, day, timeOfDay } = req.body || {};
+  if (typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'text is required.' });
+  }
+  if (!Array.isArray(characterIds) || !characterIds.length) {
+    return res.status(400).json({ error: 'characterIds must be a non-empty array.' });
+  }
+
+  try {
+    const result = await recordTurn({
+      db,
+      embedFn: embed,
+      characterIds,
+      personaId: personaId || null,
+      text,
+      placeId,
+      entryIds: Array.isArray(entryIds) ? entryIds : [],
+      day: Number.isInteger(day) ? day : null,
+      timeOfDay: typeof timeOfDay === 'string' ? timeOfDay : null,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+app.post('/api/memory/retrieve', async (req, res) => {
+  const { query, characterIds, topKPerCharacter } = req.body || {};
+  if (typeof query !== 'string' || !query.trim() || !Array.isArray(characterIds) || !characterIds.length) {
+    return res.json({ memories: [] });
+  }
+
+  try {
+    const memories = await retrieveMemories({
+      db,
+      embedFn: embed,
+      characterIds,
+      query,
+      topKPerCharacter: normalizeContextNumber(topKPerCharacter, 3),
+    });
+    res.json({ memories });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// --- Memory management routes ----------------------------------------------
+// View/add/edit/delete a character's own memories — distinct from the
+// automatic record/retrieve path above. Registered after the literal
+// /record and /retrieve routes so those aren't shadowed by :characterId.
+
+app.get('/api/memory/:characterId', (req, res) => {
+  res.json({ memories: listCharacterMemories(db, req.params.characterId) });
+});
+
+app.post('/api/memory/:characterId', async (req, res) => {
+  const { text, personaId, placeId } = req.body || {};
+  if (typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'text is required.' });
+  }
+
+  try {
+    const memory = await addCharacterMemory({
+      db,
+      embedFn: embed,
+      characterId: req.params.characterId,
+      personaId: personaId || null,
+      text,
+      placeId,
+    });
+    res.status(201).json({ memory });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+app.put('/api/memory/:characterId/:entryId', async (req, res) => {
+  const { text } = req.body || {};
+  if (typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'text is required.' });
+  }
+
+  try {
+    const memory = await updateCharacterMemory({
+      db,
+      embedFn: embed,
+      characterId: req.params.characterId,
+      entryId: req.params.entryId,
+      text,
+    });
+    if (!memory) return res.status(404).json({ error: 'Memory not found.' });
+    res.json({ memory });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+app.delete('/api/memory/:characterId/:entryId', (req, res) => {
+  const ok = deleteCharacterMemory(db, req.params.characterId, req.params.entryId);
+  if (!ok) return res.status(404).json({ error: 'Memory not found.' });
+  res.json({ ok: true });
+});
+
+// --- Relationship routes -----------------------------------------------------
+// Directed, multi-label relations: (characterId, targetId, labels) reads as
+// "target is character's {labels}" — e.g. (ezra, mireille, [sister]) means
+// Mireille is Ezra's sister. targetId 'user' means the visitor. Labels are
+// free strings; the standard gendered/neutral sets live in the UI, custom
+// ones are just typed in.
+
+app.get('/api/relationships', (req, res) => {
+  const relationships = db.prepare('SELECT character_id, target_id, labels FROM relationships').all()
+    .map((r) => ({ characterId: r.character_id, targetId: r.target_id, labels: JSON.parse(r.labels || '[]') }));
+  res.json({ relationships });
+});
+
+app.put('/api/relationships/:characterId/:targetId', async (req, res) => {
+  const { characterId, targetId } = req.params;
+  const { labels } = req.body || {};
+  if (!Array.isArray(labels) || labels.some((l) => typeof l !== 'string')) {
+    return res.status(400).json({ error: 'labels must be an array of strings.' });
+  }
+
+  const characters = loadCharacters();
+  if (!characters.some((c) => c.id === characterId)) {
+    return res.status(404).json({ error: 'Character not found.' });
+  }
+  const targetChar = characters.find((c) => c.id === targetId);
+  if (targetId !== 'user' && !targetChar) {
+    return res.status(404).json({ error: 'Target not found (use a character id or "user").' });
+  }
+  if (characterId === targetId) {
+    return res.status(400).json({ error: 'A character cannot have a relationship with themselves.' });
+  }
+
+  const targetName = targetId === 'user' ? 'the visitor' : targetChar.name;
+  const result = await upsertRelationship({ db, embedFn: embed, characterId, targetId, targetName, labels });
+  if (result.removed) return res.json({ ok: true, removed: true });
+  res.json({ ok: true, labels: result.labels });
+});
+
+// --- Chat -----------------------------------------------------------------
+
+// Shared by /api/chat and /api/characters/draft. Throws on failure (with a
+// .status set when OpenRouter itself returned a non-OK response) rather
+// than writing to `res` directly, so callers can shape their own error body.
+function completionPayload(cfg, messages, maxTokens, stream = false) {
+  const payload = {
+    model: cfg.model,
+    messages,
+    max_tokens: normalizeContextNumber(maxTokens, DEFAULT_MAX_REPLY_TOKENS),
+  };
+  if (stream) {
+    payload.stream = true;
+    // Standard OpenAI Chat Completions field — asks for a final usage-only
+    // chunk so streamed replies get real token counts too, not just
+    // non-streamed ones.
+    payload.stream_options = { include_usage: true };
+  }
+  // OpenRouter-specific knobs are only sent to OpenRouter — a custom
+  // OpenAI-spec endpoint may reject unknown fields.
+  if (isOpenRouter(cfg)) {
+    if (cfg.reasoning && cfg.reasoning !== 'off') payload.reasoning = { effort: cfg.reasoning };
+    if (cfg.provider) payload.provider = { order: [cfg.provider], allow_fallbacks: false };
+  }
+  return payload;
+}
+
+function completionHeaders(cfg) {
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${cfg.apiKey}`,
+    'HTTP-Referer': 'http://localhost',
+    'X-Title': 'Freeroam',
+  };
+}
+
+// Non-streaming completion. `meta` is logging context only (who/where).
+// Returns { text, reasoning, usage, timing } — reasoning is present when the
+// endpoint returned a reasoning/thinking trace (OpenRouter normalizes it);
+// usage is token counts (null fields if the endpoint didn't report them);
+// timing is wall-clock duration for tokens/sec display.
+async function callOpenRouter(cfg, messages, maxTokens, meta = '') {
+  const payload = completionPayload(cfg, messages, maxTokens);
+  logger.info('llm', `→ ${cfg.apiBase || DEFAULT_API_BASE} model=${cfg.model}${cfg.provider ? ` provider=${cfg.provider}` : ''}${meta ? ` — ${meta}` : ''}`);
+  logger.debug('llm', 'request payload', payload);
+
+  const startedAt = Date.now();
+  let r;
+  try {
+    r = await fetch(`${cfg.apiBase || DEFAULT_API_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: completionHeaders(cfg),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    logger.error('llm', `endpoint unreachable: ${err.message}`);
+    throw new Error(`Endpoint unreachable: ${err.message}`);
+  }
+
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const message = data?.error?.message || `Endpoint responded ${r.status}`;
+    logger.error('llm', `request failed (${r.status}): ${message}`);
+    const err = new Error(message);
+    err.status = r.status;
+    throw err;
+  }
+  const msg = data?.choices?.[0]?.message || {};
+  return {
+    text: msg.content ?? '',
+    reasoning: msg.reasoning || null,
+    usage: normalizeUsage(data.usage),
+    timing: { totalMs: Date.now() - startedAt, ttftMs: null }, // no meaningful "first token" without streaming
+  };
+}
+
+// Streaming completion (SSE). Calls onDelta({ text?, reasoning? }) per
+// chunk and resolves with the accumulated { text, reasoning, usage, timing }
+// — usage comes from the final chunk (stream_options.include_usage above);
+// timing includes time-to-first-token alongside total duration, since
+// that's only observable while actually streaming.
+async function streamOpenRouter(cfg, messages, maxTokens, meta, onDelta) {
+  const payload = completionPayload(cfg, messages, maxTokens, true);
+  logger.info('llm', `→ ${cfg.apiBase || DEFAULT_API_BASE} model=${cfg.model} (streaming)${meta ? ` — ${meta}` : ''}`);
+  logger.debug('llm', 'request payload', payload);
+
+  const startedAt = Date.now();
+  let r;
+  try {
+    r = await fetch(`${cfg.apiBase || DEFAULT_API_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: completionHeaders(cfg),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    logger.error('llm', `endpoint unreachable: ${err.message}`);
+    throw new Error(`Endpoint unreachable: ${err.message}`);
+  }
+
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    const message = data?.error?.message || `Endpoint responded ${r.status}`;
+    logger.error('llm', `stream request failed (${r.status}): ${message}`);
+    const err = new Error(message);
+    err.status = r.status;
+    throw err;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let text = '';
+  let reasoning = '';
+  let usage = null;
+  let firstTokenAt = null;
+  const reader = r.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const body = line.slice(5).trim();
+      if (body === '[DONE]') continue;
+      let json;
+      try { json = JSON.parse(body); } catch { continue; }
+      if (json.usage) usage = normalizeUsage(json.usage);
+      const delta = json?.choices?.[0]?.delta || {};
+      if (delta.content) {
+        if (firstTokenAt === null) firstTokenAt = Date.now();
+        text += delta.content;
+        onDelta({ text: delta.content });
+      }
+      if (delta.reasoning) {
+        if (firstTokenAt === null) firstTokenAt = Date.now();
+        reasoning += delta.reasoning;
+        onDelta({ reasoning: delta.reasoning });
+      }
+    }
+  }
+  return {
+    text,
+    reasoning: reasoning || null,
+    usage,
+    timing: { totalMs: Date.now() - startedAt, ttftMs: firstTokenAt ? firstTokenAt - startedAt : null },
+  };
+}
+
+app.post('/api/chat', async (req, res) => {
+  const cfg = loadConfig();
+  if (!cfg.apiKey) {
+    return res.status(400).json({ error: 'No OpenRouter API key configured. Add one in Settings.' });
+  }
+  const { system, messages, max_tokens } = req.body || {};
+  if (!Array.isArray(messages) || !messages.length) {
+    return res.status(400).json({ error: 'messages array is required' });
+  }
+
+  try {
+    const { text } = await callOpenRouter(cfg, [...(system ? [{ role: 'system', content: system }] : []), ...messages], max_tokens, 'direct /api/chat');
+    res.json({ text, model: cfg.model });
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
+// Consolidated, backend-owned generation endpoint. Chat isn't persisted
+// server-side, so the frontend still owns and sends its per-place `log`
+// array — but everything about what goes into the model request (present
+// characters, active persona/preset, relevant memories, the system prompt,
+// the token budget, and how much history fits) is decided here, not by the
+// browser. The frontend just renders whatever text comes back.
+// --- Persisted chat routes -------------------------------------------------
+// The backend owns chat entirely: logs live in data/chats/<placeId>.json,
+// survive page reloads, and every mutation (arrival markers, greetings,
+// user lines, generated replies) happens here. The frontend renders
+// whatever log these routes return.
+
+function presentCharIds(placeId, charactersById) {
+  const world = loadWorld();
+  return Object.entries(world.placements)
+    .filter(([, p]) => p && p.placeId === placeId)
+    .map(([cid]) => cid)
+    .filter((cid) => charactersById[cid]);
+}
+
+// What the speaking character knows about the people relevant to `query`
+// right now: who they are to them, and — with a randomized roll per
+// generation — whether they currently know where that person is. Same-area
+// presence and family ties raise the odds ("we live close / we talk"), so a
+// mother in the same district is usually locatable while a distant
+// acquaintance often isn't. Which relationships are even considered is
+// itself bounded — see retrieveRelevantRelationships — so a character who
+// knows a hundred people doesn't dump all hundred into every prompt.
+// Separately from moment-to-moment location, a target's own *schedule* for
+// the next time-of-day slot — routine, not real-time tracking — is always
+// mentioned when it differs from where they are now, so characters can
+// answer "where will they be" as well as "where are they."
+async function relationshipKnowledge(speakerId, charactersById, placesById, world, personaName, query) {
+  const lines = [];
+  const speakerPlaceId = world.placements[speakerId]?.placeId;
+  const speakerArea = speakerPlaceId && placesById[speakerPlaceId] ? placesById[speakerPlaceId].area : null;
+  const upcoming = nextTimeSlot(world.time);
+
+  const rows = await retrieveRelevantRelationships({ db, embedFn: embed, speakerId, query, charactersById });
+
+  rows.forEach((row) => {
+    const rel = row.labels.join(', ');
+    if (!rel) return;
+
+    if (row.direction === 'forward') {
+      if (row.otherId === 'user') {
+        lines.push(`${personaName || 'The visitor'} is your ${rel}.`);
+        return;
+      }
+      const target = charactersById[row.otherId];
+      if (!target) return;
+      const placement = world.placements[row.otherId];
+      const targetPlace = placement && placesById[placement.placeId];
+
+      let chance = 0.45;
+      if (targetPlace && speakerArea && targetPlace.area === speakerArea) chance += 0.35;
+      if (FAMILY_HINTS.some((h) => rel.toLowerCase().includes(h))) chance += 0.2;
+      const knows = targetPlace && Math.random() < Math.min(chance, 0.95);
+
+      const nextPlace = scheduledPlaceFor(target, upcoming.day, upcoming.timeOfDay, placesById);
+      const nextNote = (nextPlace && (!targetPlace || nextPlace.id !== targetPlace.id))
+        ? ` They're expected to be at ${nextPlace.name}${nextPlace.area ? ` (${nextPlace.area})` : ''} by ${upcoming.timeOfDay}.`
+        : '';
+
+      lines.push((knows
+        ? `${target.name} is your ${rel}. You happen to know they are currently at ${targetPlace.name}${targetPlace.area ? ` (${targetPlace.area})` : ''}.`
+        : `${target.name} is your ${rel}. You are not sure exactly where they are right now.`) + nextNote);
+    } else {
+      // reverse: someone else considers the speaker their ___
+      const other = charactersById[row.otherId];
+      if (other) lines.push(`You are ${other.name}'s ${rel}.`);
+    }
+  });
+
+  if (lines.length) logger.debug('memory', `relationship context for ${speakerId}`, lines);
+  return lines;
+}
+
+// Assembles everything needed for one character's turn — system prompt
+// (persona + relationships + memories + scene/time/world setting), the
+// budget-trimmed transcript, and token limits. Shared by the non-streaming
+// and streaming generation paths and by regenerate.
+async function buildTurnRequest({ place, speakerId, presentIds, charactersById, log }) {
+  const cfg = loadConfig();
+  const { personas, activePersonaId } = loadPersonas();
+  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+  const { presets, activePresetId } = loadPresets();
+  const activePreset = presets.find((p) => p.id === activePresetId) || null;
+  const world = loadWorld();
+  const placesById = {};
+  loadPlaces().forEach((p) => { placesById[p.id] = p; });
+
+  const speaker = charactersById[speakerId];
+  const userLabel = activePersona ? activePersona.name : 'Visitor';
+  const latestUserEntry = [...log].reverse().find((m) => m.type === 'user');
+  const memoryQuery = latestUserEntry ? latestUserEntry.text : `${userLabel} arrives at ${place.name}.`;
+
+  // The current interaction's own entries are already going into the
+  // messages array as real chat history below — excluding them here stops
+  // memory from re-quoting the same lines back in the system prompt (memory
+  // is for recall *outside* what's already directly visible in this window).
+  const currentInteractionIds = sliceSinceLastArrival(log).map((e) => e.id).filter(Boolean);
+
+  let memories = [];
+  try {
+    memories = await retrieveMemories({
+      db,
+      embedFn: embed,
+      characterIds: [speakerId],
+      query: memoryQuery,
+      excludeEntryIds: currentInteractionIds,
+      minScore: cfg.memoryMinScore,
+    });
+  } catch (err) {
+    logger.warn('memory', `retrieval failed, continuing without memories: ${err.message}`);
+    memories = []; // memory is best-effort — never block generation on it
+  }
+
+  const scene = {
+    chars: [{
+      name: speaker.name,
+      description: speaker.description,
+      personality: speaker.personality,
+      scenario: speaker.scenario,
+      exampleDialogue: speaker.exampleDialogue,
+    }],
+    othersPresent: presentIds.filter((cid) => cid !== speakerId).map((cid) => charactersById[cid].name),
+    place: {
+      name: place.name,
+      area: place.area,
+      desc: place.desc,
+      type: place.type,
+      ownerName: place.ownerId && charactersById[place.ownerId] ? charactersById[place.ownerId].name : null,
+    },
+    persona: activePersona ? { name: activePersona.name, description: activePersona.description } : null,
+    memories,
+    time: world.time,
+    worldSetting: world.setting,
+    relationships: await relationshipKnowledge(speakerId, charactersById, placesById, world, activePersona ? activePersona.name : null, memoryQuery),
+  };
+
+  // Real role-tagged prompt messages — no active preset falls back to
+  // Freeroam's own built-in prompt as a single system message; an active
+  // preset's blocks keep whatever role each was configured with (system/
+  // user/assistant) instead of everything being flattened into one system
+  // string, so a block explicitly set to "user" actually arrives as a user
+  // turn rather than getting lumped into the system message.
+  const promptMessages = (!activePreset || !activePreset.prompts.length)
+    ? [{ role: 'system', content: defaultSystemPrompt(scene) }]
+    : assemblePresetMessages(activePreset, scene);
+  const tail = `Continue the scene. Respond to the most recent line in the scene. Write ${speaker.name}'s next turn only — do not write for ${userLabel} or for the other characters present.`;
+
+  const { contextLength, maxReplyTokens } = contextSettingsFor(activePreset);
+  const systemPromptTokens = promptMessages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+  const budget = historyBudget({
+    contextLength,
+    maxReplyTokens,
+    systemPromptTokens,
+    instructionTokens: estimateTokens(tail),
+  });
+  // Everything else (prompts, world/area info, relationships, memories) is
+  // already spent from the context budget above; whatever's left over gets
+  // filled with as much of the current scene's history as fits, as real
+  // role-tagged messages (not one flattened blob) so the model can actually
+  // tell user turns from character turns.
+  const history = buildHistoryMessages(log, { userLabel, speakerId, tokenBudget: budget });
+  logger.debug('llm', `history: ${history.length} message(s), ~${systemPromptTokens} prompt tokens, budget ${budget}`);
+
+  const messages = [...promptMessages, ...history];
+  const last = messages[messages.length - 1];
+  if (last.role === 'user') last.content += '\n\n' + tail;
+  else messages.push({ role: 'user', content: tail });
+
+  return {
+    messages,
+    maxReplyTokens,
+    speaker: { id: speakerId, name: speaker.name },
+    present: presentIds.map((cid) => ({ id: cid, name: charactersById[cid].name })),
+    userLabel,
+    activePersonaId,
+    time: world.time,
+  };
+}
+
+// Attaches reasoning + generation stats (tokens, tokens/sec, timing) to the
+// entry the speaker's own line ends up as. usage/timing are whatever
+// callOpenRouter/streamOpenRouter reported — buildGenerationStats (lib/
+// context.js) handles either being partially or fully null when the
+// endpoint doesn't report token counts.
+async function turnEntriesFrom(text, reasoning, request, usage, timing, place, charactersById, suggestedActionsMode) {
+  const entries = parseCharacterTurn((text || '').trim(), request.speaker, request.present);
+  if (!entries.length || entries[0].type !== 'char') return entries;
+  if (reasoning) entries[0].reasoning = reasoning;
+  const stats = buildGenerationStats(usage, timing);
+  if (stats) entries[0].stats = stats;
+  const suggestions = await detectSuggestedActions(entries[0].text, {
+    places: loadPlaces(),
+    characters: Object.values(charactersById || {}),
+    currentPlaceId: place?.id ?? null,
+    mode: suggestedActionsMode,
+    personaName: request.userLabel,
+  });
+  if (suggestions.length) entries[0].suggestions = suggestions;
+  return entries;
+}
+
+// Generates ONE character's turn. Returns { entries } or { error }; the
+// caller decides whether to append or splice. Streams via onEvent — called
+// with { type: 'speaker', ... } once buildTurnRequest resolves and then
+// { type: 'delta', text?, reasoning? } per chunk — when cfg.streaming and an
+// onEvent callback are both given; otherwise falls back to a single
+// non-streaming completion call. Mirrors runReactionRound's per-character
+// branch (used by /say) so /regenerate gets the same live text+reasoning
+// streaming instead of only ever waiting for the full reply.
+async function generateCharacterTurn({ cfg, place, speakerId, presentIds, charactersById, log, onEvent = null }) {
+  const request = await buildTurnRequest({ place, speakerId, presentIds, charactersById, log });
+  if (onEvent) onEvent({ type: 'speaker', charId: speakerId, name: request.speaker.name });
+  try {
+    let text, reasoning, usage, timing;
+    if (onEvent && cfg.streaming) {
+      ({ text, reasoning, usage, timing } = await streamOpenRouter(cfg, request.messages, request.maxReplyTokens,
+        `${request.speaker.name} @ ${place.name}`, (delta) => onEvent({ type: 'delta', ...delta })));
+    } else {
+      ({ text, reasoning, usage, timing } = await callOpenRouter(cfg, request.messages, request.maxReplyTokens,
+        `${request.speaker.name} @ ${place.name}`));
+    }
+    return { entries: await turnEntriesFrom(text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode) };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+// Records a completed round into each present character's memory, tagged
+// with the in-world time and linked to the chat entries that formed it (so
+// later edits/deletes/regens can rebuild exactly these memories).
+function recordRound({ placeId, presentIds, turnEntries, userLabel, activePersonaId, time }) {
+  const relevant = turnEntries.filter((e) => e.type === 'system' || e.type === 'user' || e.type === 'char');
+  const turnText = relevant.map((e) => formatLogEntry(e, userLabel)).join('\n');
+  if (!turnText.trim()) return;
+  recordTurn({
+    db,
+    embedFn: embed,
+    characterIds: presentIds,
+    personaId: activePersonaId || null,
+    text: turnText,
+    placeId,
+    entryIds: relevant.map((e) => e.id).filter(Boolean),
+    day: time?.day ?? null,
+    timeOfDay: time?.timeOfDay ?? null,
+  }).catch((err) => logger.error('memory', `round recording failed: ${err.message}`));
+}
+
+// A full reaction round: every reacting character takes their own turn, in
+// order, each seeing the previous speakers' turns from this round (the log
+// is re-read per turn). Afterward the whole round (trigger entries +
+// everyone's turns) is recorded once into each present character's memory.
+// `onEvent`, when provided, streams progress (speaker/delta/turn events)
+// — the SSE path of /say. Returns { error } from the first failed turn;
+// earlier turns stay persisted.
+async function runReactionRound({ placeId, place, reactIds, presentIds, charactersById, turnEntriesSoFar, onEvent = null }) {
+  const cfg = loadConfig();
+  if (!cfg.apiKey) {
+    return { error: 'No API key configured. Add one in Settings.' };
+  }
+
+  const roundEntries = [];
+  let error = null;
+  let userLabel = 'Visitor';
+  let activePersonaId = null;
+  let time = null;
+
+  for (const speakerId of reactIds) {
+    const log = loadChatLog(CHAT_DIR, placeId);
+    const request = await buildTurnRequest({ place, speakerId, presentIds, charactersById, log });
+    userLabel = request.userLabel;
+    activePersonaId = request.activePersonaId;
+    time = request.time;
+
+    if (onEvent) onEvent({ type: 'speaker', charId: speakerId, name: request.speaker.name });
+
+    let text, reasoning, usage, timing;
+    try {
+      if (onEvent && cfg.streaming) {
+        ({ text, reasoning, usage, timing } = await streamOpenRouter(cfg, request.messages, request.maxReplyTokens,
+          `${request.speaker.name} @ ${place.name}`, (delta) => onEvent({ type: 'delta', ...delta })));
+      } else {
+        ({ text, reasoning, usage, timing } = await callOpenRouter(cfg, request.messages, request.maxReplyTokens,
+          `${request.speaker.name} @ ${place.name}`));
+      }
+    } catch (err) {
+      error = err.message;
+      break;
+    }
+
+    const entries = await turnEntriesFrom(text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode);
+    appendChatEntries(CHAT_DIR, placeId, entries);
+    roundEntries.push(...entries);
+    if (onEvent) onEvent({ type: 'turn', entries });
+  }
+
+  if (roundEntries.length) {
+    recordRound({
+      placeId, presentIds,
+      turnEntries: [...turnEntriesSoFar, ...roundEntries],
+      userLabel, activePersonaId, time,
+    });
+  }
+
+  return error ? { error } : {};
+}
+
+app.get('/api/places/:placeId/chat', (req, res) => {
+  const { placeId } = req.params;
+  if (!loadPlaces().some((p) => p.id === placeId)) return res.status(404).json({ error: 'Place not found.' });
+  res.json({ log: loadChatLog(CHAT_DIR, placeId) });
+});
+
+// Entering a place: on the first-ever arrival (empty log), persists the
+// arrival marker and scripted greetings. Revisits append NOTHING — a
+// misclicked room shouldn't pollute the history. Instead the response
+// carries returnMarkerPending; the client passes announceArrival on its
+// next /say and the "You return to X." marker is inserted just before the
+// user's line, only once they actually engage. Arrivals never generate.
+app.post('/api/places/:placeId/enter', (req, res) => {
+  const { placeId } = req.params;
+  const place = loadPlaces().find((p) => p.id === placeId);
+  if (!place) return res.status(404).json({ error: 'Place not found.' });
+
+  const charactersById = {};
+  loadCharacters().forEach((c) => { charactersById[c.id] = c; });
+  const charIds = presentCharIds(placeId, charactersById);
+
+  const existingLog = loadChatLog(CHAT_DIR, placeId);
+  const first = existingLog.length === 0;
+
+  if (!first) {
+    return res.json({ log: existingLog, returnMarkerPending: true });
+  }
+
+  const turnEntries = [{ type: 'system', text: `You arrive at ${place.name}.` }];
+
+  const world = loadWorld();
+  const greetedIds = new Set();
+  charIds.forEach((cid) => {
+    const placement = world.placements[cid];
+    const idx = placement ? placement.greetingIndex : null;
+    const greetings = charactersById[cid].greetings || [];
+    if (idx !== null && idx !== undefined && greetings[idx] !== undefined) {
+      turnEntries.push({ type: 'char', charId: cid, name: charactersById[cid].name, text: greetings[idx] });
+      greetedIds.add(cid);
+    }
+  });
+
+  appendChatEntries(CHAT_DIR, placeId, turnEntries);
+  logger.info('chat', `first arrival at ${place.name} (${greetedIds.size} greeting${greetedIds.size === 1 ? '' : 's'})`);
+
+  if (greetedIds.size) {
+    // Scripted greetings are still this turn's memory for those characters.
+    const { personas, activePersonaId } = loadPersonas();
+    const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+    const userLabel = activePersona ? activePersona.name : 'Visitor';
+    recordTurn({
+      db,
+      embedFn: embed,
+      characterIds: [...greetedIds],
+      personaId: activePersonaId || null,
+      text: turnEntries.map((e) => formatLogEntry(e, userLabel)).join('\n'),
+      placeId,
+      entryIds: turnEntries.map((e) => e.id).filter(Boolean),
+      day: world.time.day,
+      timeOfDay: world.time.timeOfDay,
+    }).catch((err) => logger.error('memory', `greeting recording failed: ${err.message}`));
+  }
+
+  res.json({ log: loadChatLog(CHAT_DIR, placeId), returnMarkerPending: false });
+});
+
+// Saying something: appends the user's line (preceded by the deferred
+// "You return to X." marker when announceArrival is set), then generates
+// the present characters' response — as SSE when streaming is enabled in
+// Settings, as one JSON response otherwise. The user's line persists even
+// when generation fails.
+app.post('/api/places/:placeId/say', async (req, res) => {
+  const { placeId } = req.params;
+  const { text, announceArrival } = req.body || {};
+  if (typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'text is required.' });
+  }
+
+  const place = loadPlaces().find((p) => p.id === placeId);
+  if (!place) return res.status(404).json({ error: 'Place not found.' });
+
+  const charactersById = {};
+  loadCharacters().forEach((c) => { charactersById[c.id] = c; });
+  const charIds = presentCharIds(placeId, charactersById);
+
+  const turnEntries = [];
+  if (announceArrival && loadChatLog(CHAT_DIR, placeId).length > 0) {
+    turnEntries.push({ type: 'system', text: `You return to ${place.name}.` });
+  }
+  turnEntries.push({ type: 'user', text: text.trim() });
+  appendChatEntries(CHAT_DIR, placeId, turnEntries);
+  logger.info('chat', `say @ ${place.name}: ${charIds.length} character(s) present`);
+
+  if (!charIds.length) {
+    appendChatEntries(CHAT_DIR, placeId, [{ type: 'system', text: 'Your words echo. No one is here to answer.' }]);
+    return res.json({ log: loadChatLog(CHAT_DIR, placeId) });
+  }
+
+  const cfg = loadConfig();
+  if (cfg.streaming && cfg.apiKey) {
+    // SSE: speaker/delta/turn events per character, then a final done event
+    // with the authoritative log (and the error, if a turn failed midway).
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    send({ type: 'ack', log: loadChatLog(CHAT_DIR, placeId) });
+
+    const result = await runReactionRound({
+      placeId, place, reactIds: charIds, presentIds: charIds, charactersById,
+      turnEntriesSoFar: turnEntries, onEvent: send,
+    });
+    send({ type: 'done', log: loadChatLog(CHAT_DIR, placeId), ...(result.error ? { error: result.error } : {}) });
+    return res.end();
+  }
+
+  const result = await runReactionRound({
+    placeId, place, reactIds: charIds, presentIds: charIds, charactersById, turnEntriesSoFar: turnEntries,
+  });
+  res.json({ log: loadChatLog(CHAT_DIR, placeId), ...(result.error ? { error: result.error } : {}) });
+});
+
+// Re-runs generation for the trailing user message when nobody replied —
+// either every reply under it was deleted, or the endpoint errored before
+// producing anything. Unlike /say, no new user entry is appended; the
+// existing dangling one is the trigger. 400s if the last user message
+// already has at least one character reply after it (that's what /say or
+// per-message regenerate are for) or if there's no user message at all yet.
+app.post('/api/places/:placeId/retry', async (req, res) => {
+  const { placeId } = req.params;
+  const place = loadPlaces().find((p) => p.id === placeId);
+  if (!place) return res.status(404).json({ error: 'Place not found.' });
+
+  const log = loadChatLog(CHAT_DIR, placeId);
+  let lastUserIdx = -1;
+  for (let i = log.length - 1; i >= 0; i--) { if (log[i].type === 'user') { lastUserIdx = i; break; } }
+  if (lastUserIdx === -1) {
+    return res.status(400).json({ error: 'Nothing to retry — say something first.' });
+  }
+  if (log.slice(lastUserIdx + 1).some((e) => e.type === 'char')) {
+    return res.status(400).json({ error: 'The last message already has a reply.' });
+  }
+
+  const charactersById = {};
+  loadCharacters().forEach((c) => { charactersById[c.id] = c; });
+  const charIds = presentCharIds(placeId, charactersById);
+  logger.info('chat', `retry @ ${place.name}: ${charIds.length} character(s) present`);
+
+  // Retry reuses this same trigger message across attempts rather than
+  // deleting it — if an earlier attempt's replies were all deleted, that
+  // round's memory rows are still linked to this message with no reply
+  // left in them. Clear those out before recording the fresh round, or
+  // every retry leaves one more stale "just the user's words" row behind.
+  const userEntryId = log[lastUserIdx].id;
+  if (userEntryId) {
+    pruneReplylessMemories(db, findMemoriesWitnessing(db, userEntryId), log);
+  }
+
+  if (!charIds.length) {
+    appendChatEntries(CHAT_DIR, placeId, [{ type: 'system', text: 'Your words echo. No one is here to answer.' }]);
+    return res.json({ log: loadChatLog(CHAT_DIR, placeId) });
+  }
+
+  const turnEntriesSoFar = [log[lastUserIdx]];
+  const cfg = loadConfig();
+  if (cfg.streaming && cfg.apiKey) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    send({ type: 'ack', log });
+
+    const result = await runReactionRound({
+      placeId, place, reactIds: charIds, presentIds: charIds, charactersById, turnEntriesSoFar, onEvent: send,
+    });
+    send({ type: 'done', log: loadChatLog(CHAT_DIR, placeId), ...(result.error ? { error: result.error } : {}) });
+    return res.end();
+  }
+
+  const result = await runReactionRound({
+    placeId, place, reactIds: charIds, presentIds: charIds, charactersById, turnEntriesSoFar,
+  });
+  res.json({ log: loadChatLog(CHAT_DIR, placeId), ...(result.error ? { error: result.error } : {}) });
+});
+
+// Regenerates one generated message in place: rebuilds the speaking
+// character's turn from everything before that entry, and splices the
+// result in where the old entry was (later entries are preserved). Every
+// memory that witnessed the original message is rebuilt around the new
+// text — for all present characters, not just the speaker.
+app.post('/api/places/:placeId/regenerate', async (req, res) => {
+  const { placeId } = req.params;
+  const { entryId } = req.body || {};
+  if (typeof entryId !== 'string' || !entryId) {
+    return res.status(400).json({ error: 'entryId is required.' });
+  }
+
+  const place = loadPlaces().find((p) => p.id === placeId);
+  if (!place) return res.status(404).json({ error: 'Place not found.' });
+
+  const log = loadChatLog(CHAT_DIR, placeId);
+  const idx = log.findIndex((e) => e.id === entryId);
+  if (idx === -1) return res.status(404).json({ error: 'Message not found.' });
+  const target = log[idx];
+  if (target.type !== 'char' || !target.charId) {
+    return res.status(400).json({ error: 'Only generated character messages can be regenerated.' });
+  }
+
+  const charactersById = {};
+  loadCharacters().forEach((c) => { charactersById[c.id] = c; });
+  if (!charactersById[target.charId]) {
+    return res.status(400).json({ error: 'This character no longer exists.' });
+  }
+
+  const cfg = loadConfig();
+  if (!cfg.apiKey) {
+    return res.status(400).json({ error: 'No API key configured. Add one in Settings.' });
+  }
+
+  // Whoever's present *now* frames the regeneration; the speaker is always
+  // included even if they've since been moved elsewhere.
+  const presentIds = presentCharIds(placeId, charactersById);
+  if (!presentIds.includes(target.charId)) presentIds.push(target.charId);
+
+  const { personas, activePersonaId } = loadPersonas();
+  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+  const userLabel = activePersona ? activePersona.name : 'Visitor';
+
+  // The reply being replaced may share a round-memory row with the user's
+  // message that prompted it (and with other characters' turns from the
+  // same round) — strip its contribution from those rows *before*
+  // generating the replacement, otherwise this very generation's memory
+  // retrieval would surface a "memory" quoting the exact reply about to be
+  // discarded.
+  const memoryIds = findMemoriesWitnessing(db, entryId);
+  await detachEntryFromMemories({
+    db, embedFn: embed, memoryIds, entryId,
+    log: log.slice(0, idx).concat(log.slice(idx + 1)),
+    userLabel, formatEntry: formatLogEntry,
+  }).catch((err) => logger.error('memory', `regen pre-detach failed: ${err.message}`));
+
+  // SSE mirrors /say's streaming branch: speaker/delta as the reply comes
+  // in, then a final turn/done pair once the log is spliced and memories
+  // are reattached.
+  const send = cfg.streaming
+    ? (() => {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.flushHeaders?.();
+      return (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    })()
+    : null;
+
+  const result = await generateCharacterTurn({
+    cfg, place, speakerId: target.charId, presentIds, charactersById,
+    log: log.slice(0, idx), onEvent: send,
+  });
+  if (result.error) {
+    if (send) { send({ type: 'done', log, error: result.error }); return res.end(); }
+    return res.status(502).json({ error: result.error });
+  }
+
+  result.entries.forEach((e) => { if (!e.id) e.id = crypto.randomUUID(); });
+  log.splice(idx, 1, ...result.entries);
+  saveChatLog(CHAT_DIR, placeId, log);
+  logger.info('chat', `regenerated message ${entryId} @ ${place.name}`);
+
+  await attachEntriesToMemories({
+    db, embedFn: embed, memoryIds,
+    newEntryIds: result.entries.map((e) => e.id),
+    log, userLabel, formatEntry: formatLogEntry,
+  }).catch((err) => logger.error('memory', `regen memory sync failed: ${err.message}`));
+
+  if (send) {
+    send({ type: 'turn', entries: result.entries });
+    send({ type: 'done', log });
+    return res.end();
+  }
+  res.json({ log });
+});
+
+// --- Message edit / delete ---------------------------------------------------
+// Both rewrite the persisted log AND rebuild every memory (for every
+// character) that witnessed the affected entry, so the characters'
+// recollection matches what the history now says.
+
+app.put('/api/places/:placeId/messages/:entryId', async (req, res) => {
+  const { placeId, entryId } = req.params;
+  const { text } = req.body || {};
+  if (typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'text is required.' });
+  }
+  if (!loadPlaces().some((p) => p.id === placeId)) return res.status(404).json({ error: 'Place not found.' });
+
+  const log = loadChatLog(CHAT_DIR, placeId);
+  const entry = log.find((e) => e.id === entryId);
+  if (!entry) return res.status(404).json({ error: 'Message not found.' });
+  if (entry.type !== 'char' && entry.type !== 'user') {
+    return res.status(400).json({ error: 'Only character and user messages can be edited.' });
+  }
+
+  entry.text = text.trim();
+  saveChatLog(CHAT_DIR, placeId, log);
+  logger.info('chat', `edited message ${entryId} @ ${placeId}`);
+
+  const { personas, activePersonaId } = loadPersonas();
+  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+  await syncMemoriesForEntry({
+    db, embedFn: embed, entryId, newEntryIds: null,
+    log, userLabel: activePersona ? activePersona.name : 'Visitor',
+    formatEntry: formatLogEntry,
+  }).catch((err) => logger.error('memory', `edit memory sync failed: ${err.message}`));
+
+  res.json({ log });
+});
+
+app.delete('/api/places/:placeId/messages/:entryId', async (req, res) => {
+  const { placeId, entryId } = req.params;
+  if (!loadPlaces().some((p) => p.id === placeId)) return res.status(404).json({ error: 'Place not found.' });
+
+  const log = loadChatLog(CHAT_DIR, placeId);
+  const idx = log.findIndex((e) => e.id === entryId);
+  if (idx === -1) return res.status(404).json({ error: 'Message not found.' });
+
+  log.splice(idx, 1);
+  saveChatLog(CHAT_DIR, placeId, log);
+  logger.info('chat', `deleted message ${entryId} @ ${placeId}`);
+
+  const { personas, activePersonaId } = loadPersonas();
+  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+  await syncMemoriesForEntry({
+    db, embedFn: embed, entryId, newEntryIds: [],
+    log, userLabel: activePersona ? activePersona.name : 'Visitor',
+    formatEntry: formatLogEntry,
+  }).catch((err) => logger.error('memory', `delete memory sync failed: ${err.message}`));
+
+  res.json({ log });
+});
+
+// Multer errors (bad file type, too large) land here instead of crashing.
+app.use((err, req, res, next) => {
+  if (err) return res.status(400).json({ error: err.message });
+  next();
+});
+
+// Only bind a real port when run directly (`node server.js` / `npm start`),
+// not when imported by the test suite as `{ app }`.
+const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === __filename;
+if (isMainModule) {
+  const PORT = process.env.PORT || 3001;
+  app.listen(PORT, () => {
+    console.log(`Freeroam backend running at http://localhost:${PORT}`);
+  });
+}
+
+export { app, db };
