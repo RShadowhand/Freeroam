@@ -17,13 +17,13 @@
      --accent-colored background) together; --accent-rgb is the same color
      as a bare "R,G,B" triple so rgba(var(--accent-rgb), 0.08) works for
      tinted backgrounds without a separate var per opacity. Applied via
-     data-theme on <html> — see loadThemePrefs/applyTheme in index.html.
+     data-theme on <html> — see stores/theme.js.
      Defaults to the amber look this app always had. */
   --accent:#E0A458;
   --accent-rgb:224,164,88;
   --accent-text:#2A1E10;
 
-  /* Formatted-message text colors (SillyTavern-style *italics*/**bold**/
+  /* Formatted-message text colors (SillyTavern-style *italics*, **bold**,
      "quotes") — independent of the accent theme so a reader can pick
      colors for readability without changing every button in the app.
      Only applies to character bubbles; the user's own (violet) bubble

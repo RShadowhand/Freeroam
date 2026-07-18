@@ -16,32 +16,49 @@ just to have something to click around on.
 ```
 freeroam/
 ├── backend/
-│   ├── server.js            Express app: serves the frontend + /api routes
-│   ├── lib/tavernCard.js    PNG chunk parser + TavernCard v1/v2/v3 normalizer
+│   ├── server.js            Express app: serves the frontend build + /api routes
+│   ├── lib/                 context assembly, memory, relationships, NLP, TavernCard parsing, ...
 │   ├── package.json
 │   ├── config.json          created on first run: OpenRouter key + model (gitignored)
-│   ├── data/
-│   │   ├── characters.json  created on first run: built-in + uploaded characters (gitignored)
-│   │   ├── places.json      created on first run: the map (gitignored)
-│   │   └── world.json       created on first run: characterId → {placeId, greetingIndex} (gitignored)
+│   ├── data/                characters/places/world/personas/presets JSON + the memory/relationship SQLite db (gitignored)
 │   └── uploads/avatars/     uploaded card PNGs, served at /avatars/<id>.png (gitignored)
-└── frontend/
-    ├── index.html       the map + chat
-    ├── places.html      add / edit / remove places
-    ├── cast.html        upload character cards, place them anywhere
-    ├── settings.html    key / model picker + connection test
-    └── shared.css
+└── frontend/                Vue 3 + Vite SPA (hash-based routing)
+    ├── index.html           Vite entry point
+    ├── package.json
+    ├── vite.config.js       dev-server proxy for /api and /avatars -> :3001
+    ├── dist/                production build server.js serves (gitignored — `npm run build` to create it)
+    └── src/
+        ├── main.js
+        ├── App.vue
+        ├── router/          hash-based routes, mirrors the original #/world/..., #/settings/... scheme
+        ├── stores/          Pinia: world, chat, settings, theme, ui
+        ├── api/             thin fetch wrappers, one file per backend resource
+        ├── composables/     shared singleton UI state (modals, quick-move popover, quick-add-place)
+        ├── components/      layout/, freeroam/, world/, cast/, persona/, prompts/, settings/, shared/
+        ├── views/           one per route
+        └── styles/          shared.css (theme CSS custom properties) + main.css (everything else)
 ```
 
 ## Run it
 
+Build the frontend once (or after pulling frontend changes), then start the backend, which serves that build:
+
 ```bash
-cd backend
+cd frontend
+npm install
+npm run build
+
+cd ../backend
 npm install
 npm start
 ```
 
 Then open **http://localhost:3001**.
+
+For frontend development with hot-reload instead, run `npm run dev` in
+`frontend/` (Vite serves the SPA itself and proxies `/api`/`/avatars`
+requests through to the backend on :3001, which still needs to be running
+separately) and open the URL Vite prints instead.
 
 1. Go to **Settings** and paste an OpenRouter API key
    (get one at https://openrouter.ai/keys), then pick a model — the list is

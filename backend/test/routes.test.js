@@ -1001,22 +1001,29 @@ describe('Relationships', () => {
 });
 
 describe('Settings: endpoint config fields', () => {
-  test('round-trips apiBase, streaming, reasoning, provider', async () => {
+  test('round-trips apiBase, streaming, reasoning, providers', async () => {
     const res = await postJson('/api/settings', {
-      apiBase: 'https://example.com/v1/', streaming: true, reasoning: 'high', provider: 'SomeProvider',
+      apiBase: 'https://example.com/v1/', streaming: true, reasoning: 'high', providers: ['SomeProvider', 'AnotherProvider'],
     });
     const cfg = await res.json();
     assert.equal(cfg.apiBase, 'https://example.com/v1'); // trailing slash trimmed
     assert.equal(cfg.streaming, true);
     assert.equal(cfg.reasoning, 'high');
-    assert.equal(cfg.provider, 'SomeProvider');
+    assert.deepEqual(cfg.providers, ['SomeProvider', 'AnotherProvider']);
 
     // Providers endpoint is OpenRouter-only — a custom base gets [] without a network call.
     const { providers } = await (await fetch(`${baseUrl}/api/models/providers?model=any/model`)).json();
     assert.deepEqual(providers, []);
 
     // Restore defaults so later tests are unaffected.
-    await postJson('/api/settings', { apiBase: 'https://openrouter.ai/api/v1', streaming: false, reasoning: 'off', provider: '' });
+    await postJson('/api/settings', { apiBase: 'https://openrouter.ai/api/v1', streaming: false, reasoning: 'off', providers: [] });
+  });
+
+  test('providers: non-string entries are dropped, duplicates and blanks are cleaned up', async () => {
+    const res = await postJson('/api/settings', { providers: ['Foo', '  ', 'Foo', 42, 'Bar'] });
+    const cfg = await res.json();
+    assert.deepEqual(cfg.providers, ['Foo', 'Bar']);
+    await postJson('/api/settings', { providers: [] });
   });
 
   test('invalid reasoning values are ignored', async () => {

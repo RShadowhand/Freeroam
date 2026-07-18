@@ -96,7 +96,7 @@ const DEFAULT_CONFIG = {
   apiBase: DEFAULT_API_BASE,          // any OpenAI-spec-compliant endpoint
   streaming: false,                    // opt-in; some endpoints don't support SSE
   reasoning: 'off',                    // off | low | medium | high (OpenRouter reasoning effort)
-  provider: '',                        // pin an OpenRouter provider ('' = let it route)
+  providers: [],                       // pin one or more OpenRouter providers, tried in this order ([] = let it route)
   memoryMinScore: 0.35,                 // cosine-similarity floor for memory recall (see retrieveMemories)
   suggestedActionsMode: 'regex',        // regex | hybrid | ml — see lib/suggestedActions.js
 };
@@ -106,11 +106,16 @@ function isOpenRouter(cfg) {
 }
 
 function loadConfig() {
+  let cfg;
   try {
-    return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8')) };
+    cfg = { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8')) };
   } catch {
-    return { ...DEFAULT_CONFIG };
+    cfg = { ...DEFAULT_CONFIG };
   }
+  // Migrate the old single `provider` string (pre-multi-provider) into the
+  // new `providers` array the first time an old config.json is read.
+  if (!cfg.providers?.length && cfg.provider) cfg.providers = [cfg.provider];
+  return cfg;
 }
 function saveConfig(cfg) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
@@ -312,7 +317,12 @@ function savePresets(data) {
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '..', 'frontend')));
+// The frontend is now a Vue/Vite project (frontend/src) — this serves its
+// production build (frontend/dist, built via `npm run build` in frontend/),
+// not the source. For local development with hot-reload, run Vite's own
+// dev server (`npm run dev` in frontend/) instead, which proxies /api and
+// /avatars requests through to this server (see frontend/vite.config.js).
+app.use(express.static(path.join(__dirname, '..', 'frontend', 'dist')));
 app.use('/avatars', express.static(AVATAR_DIR));
 
 const upload = multer({
@@ -342,7 +352,7 @@ function publicConfig(cfg) {
     apiBase: cfg.apiBase || DEFAULT_API_BASE,
     streaming: !!cfg.streaming,
     reasoning: cfg.reasoning || 'off',
-    provider: cfg.provider || '',
+    providers: Array.isArray(cfg.providers) ? cfg.providers : [],
     memoryMinScore: Number.isFinite(cfg.memoryMinScore) ? cfg.memoryMinScore : DEFAULT_CONFIG.memoryMinScore,
     suggestedActionsMode: cfg.suggestedActionsMode || DEFAULT_CONFIG.suggestedActionsMode,
   };
@@ -354,13 +364,15 @@ app.get('/api/settings', (req, res) => {
 
 app.post('/api/settings', (req, res) => {
   const cfg = loadConfig();
-  const { apiKey, model, apiBase, streaming, reasoning, provider, memoryMinScore, suggestedActionsMode } = req.body || {};
+  const { apiKey, model, apiBase, streaming, reasoning, providers, memoryMinScore, suggestedActionsMode } = req.body || {};
   if (typeof apiKey === 'string' && apiKey.trim()) cfg.apiKey = apiKey.trim();
   if (typeof model === 'string' && model.trim()) cfg.model = model.trim();
   if (typeof apiBase === 'string') cfg.apiBase = apiBase.trim().replace(/\/+$/, '') || DEFAULT_API_BASE;
   if (typeof streaming === 'boolean') cfg.streaming = streaming;
   if (['off', 'low', 'medium', 'high'].includes(reasoning)) cfg.reasoning = reasoning;
-  if (typeof provider === 'string') cfg.provider = provider.trim();
+  if (Array.isArray(providers)) {
+    cfg.providers = [...new Set(providers.filter((p) => typeof p === 'string' && p.trim()).map((p) => p.trim()))];
+  }
   if (typeof memoryMinScore === 'number' && Number.isFinite(memoryMinScore)) {
     cfg.memoryMinScore = Math.max(0, Math.min(1, memoryMinScore));
   }
@@ -1207,7 +1219,11 @@ function completionPayload(cfg, messages, maxTokens, stream = false) {
   // OpenAI-spec endpoint may reject unknown fields.
   if (isOpenRouter(cfg)) {
     if (cfg.reasoning && cfg.reasoning !== 'off') payload.reasoning = { effort: cfg.reasoning };
-    if (cfg.provider) payload.provider = { order: [cfg.provider], allow_fallbacks: false };
+    // order is a preference list, tried in this sequence; allow_fallbacks:
+    // false keeps OpenRouter from reaching outside it, not from trying the
+    // next entry within it — so picking several providers here means "try
+    // these, in this order," not "pin to exactly one."
+    if (cfg.providers?.length) payload.provider = { order: cfg.providers, allow_fallbacks: false };
   }
   return payload;
 }
@@ -1228,7 +1244,7 @@ function completionHeaders(cfg) {
 // timing is wall-clock duration for tokens/sec display.
 async function callOpenRouter(cfg, messages, maxTokens, meta = '') {
   const payload = completionPayload(cfg, messages, maxTokens);
-  logger.info('llm', `→ ${cfg.apiBase || DEFAULT_API_BASE} model=${cfg.model}${cfg.provider ? ` provider=${cfg.provider}` : ''}${meta ? ` — ${meta}` : ''}`);
+  logger.info('llm', `→ ${cfg.apiBase || DEFAULT_API_BASE} model=${cfg.model}${cfg.providers?.length ? ` providers=${cfg.providers.join(',')}` : ''}${meta ? ` — ${meta}` : ''}`);
   logger.debug('llm', 'request payload', payload);
 
   const startedAt = Date.now();
