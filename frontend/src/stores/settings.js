@@ -24,6 +24,8 @@ export const useSettingsStore = defineStore('settings', {
     // just flips this flag and reveals the field for typing; nothing gets
     // saved until the user actually enters a real URL.
     endpointMode: 'openrouter', // 'openrouter' | 'custom'
+    draftPersonaPrompt: '', // the effective text (backend already falls back to its built-in default)
+    draftPersonaPromptIsCustom: false,
   }),
   getters: {
     // Providers are an OpenRouter-only concept — a custom OpenAI-spec
@@ -42,6 +44,8 @@ export const useSettingsStore = defineStore('settings', {
       this.memoryMinScore = Number.isFinite(data.memoryMinScore) ? data.memoryMinScore : 0.35;
       this.suggestedActionsMode = data.suggestedActionsMode || 'regex';
       this.selectedProviders = Array.isArray(data.providers) ? data.providers : [];
+      this.draftPersonaPrompt = data.draftPersonaPrompt || '';
+      this.draftPersonaPromptIsCustom = !!data.draftPersonaPromptIsCustom;
       await this.loadAvailableProviders();
     },
     async loadModels() {
@@ -104,6 +108,14 @@ export const useSettingsStore = defineStore('settings', {
     async setSuggestedActionsMode(mode) {
       this.suggestedActionsMode = mode;
       await saveSettings({ suggestedActionsMode: mode });
+    },
+    async setDraftPersonaPrompt(text) {
+      const { data } = await saveSettings({ draftPersonaPrompt: text });
+      this.draftPersonaPrompt = data.draftPersonaPrompt || '';
+      this.draftPersonaPromptIsCustom = !!data.draftPersonaPromptIsCustom;
+    },
+    async resetDraftPersonaPrompt() {
+      await this.setDraftPersonaPrompt('');
     },
     async saveApiKey(key) {
       const { data } = await saveSettings({ apiKey: key });

@@ -51,6 +51,7 @@ import {
   STANDARD_LABEL,
   normalizeUsage,
   buildGenerationStats,
+  substituteMacros,
 } from './lib/context.js';
 import { loadChatLog, saveChatLog, appendChatEntries, deleteChatLog } from './lib/chatStore.js';
 import { openDb, importJsonMemories } from './lib/db.js';
@@ -90,6 +91,13 @@ importJsonMemories(db, MEMORY_DIR);
 // --- Config (endpoint + model) ---------------------------------------------
 
 const DEFAULT_API_BASE = 'https://openrouter.ai/api/v1';
+
+// Same {{macro}} vocabulary as everywhere else (see lib/context.js) —
+// {{char}} is the one that matters most here (the name being drafted),
+// but {{world}}/{{user}}/{{persona}}/{{day}}/{{time}}/{{weekday}} all
+// resolve too, in case a customized prompt wants to lean on them.
+const DEFAULT_DRAFT_PERSONA_PROMPT = 'You are a character-sheet writing assistant for a roleplay app. Based on the world setting and scene excerpt below, write a short persona description for the character named "{{char}}": 2 to 4 sentences, factual character-sheet voice covering personality, manner of speaking, and role in the scene. No dialogue, no first person, no meta-commentary — output only the description text.';
+
 const DEFAULT_CONFIG = {
   apiKey: '',
   model: 'anthropic/claude-3.5-sonnet',
@@ -99,6 +107,7 @@ const DEFAULT_CONFIG = {
   providers: [],                       // pin one or more OpenRouter providers, tried in this order ([] = let it route)
   memoryMinScore: 0.35,                 // cosine-similarity floor for memory recall (see retrieveMemories)
   suggestedActionsMode: 'regex',        // regex | hybrid | ml — see lib/suggestedActions.js
+  draftPersonaPrompt: '',              // '' = use DEFAULT_DRAFT_PERSONA_PROMPT; see /api/characters/draft
 };
 
 function isOpenRouter(cfg) {
@@ -355,6 +364,8 @@ function publicConfig(cfg) {
     providers: Array.isArray(cfg.providers) ? cfg.providers : [],
     memoryMinScore: Number.isFinite(cfg.memoryMinScore) ? cfg.memoryMinScore : DEFAULT_CONFIG.memoryMinScore,
     suggestedActionsMode: cfg.suggestedActionsMode || DEFAULT_CONFIG.suggestedActionsMode,
+    draftPersonaPrompt: (cfg.draftPersonaPrompt || '').trim() || DEFAULT_DRAFT_PERSONA_PROMPT,
+    draftPersonaPromptIsCustom: !!(cfg.draftPersonaPrompt || '').trim(),
   };
 }
 
@@ -364,7 +375,7 @@ app.get('/api/settings', (req, res) => {
 
 app.post('/api/settings', (req, res) => {
   const cfg = loadConfig();
-  const { apiKey, model, apiBase, streaming, reasoning, providers, memoryMinScore, suggestedActionsMode } = req.body || {};
+  const { apiKey, model, apiBase, streaming, reasoning, providers, memoryMinScore, suggestedActionsMode, draftPersonaPrompt } = req.body || {};
   if (typeof apiKey === 'string' && apiKey.trim()) cfg.apiKey = apiKey.trim();
   if (typeof model === 'string' && model.trim()) cfg.model = model.trim();
   if (typeof apiBase === 'string') cfg.apiBase = apiBase.trim().replace(/\/+$/, '') || DEFAULT_API_BASE;
@@ -377,6 +388,9 @@ app.post('/api/settings', (req, res) => {
     cfg.memoryMinScore = Math.max(0, Math.min(1, memoryMinScore));
   }
   if (['regex', 'hybrid', 'ml'].includes(suggestedActionsMode)) cfg.suggestedActionsMode = suggestedActionsMode;
+  // '' is a valid, meaningful value here (reset to the built-in default —
+  // see publicConfig), so this only guards the type, not truthiness.
+  if (typeof draftPersonaPrompt === 'string') cfg.draftPersonaPrompt = draftPersonaPrompt.trim();
   saveConfig(cfg);
   res.json(publicConfig(cfg));
 });
@@ -525,10 +539,27 @@ app.post('/api/characters/draft', async (req, res) => {
   // can carry genre/tone/world-rules info a persona draft should respect
   // just as much as the scene excerpt does, so it goes in alongside it
   // rather than being left for the model to guess at.
-  const worldSetting = loadWorld().setting;
+  const world = loadWorld();
+  const worldSetting = world.setting;
   const worldBlock = worldSetting && worldSetting.trim() ? `${STANDARD_LABEL.worldInfoBefore}:\n${worldSetting.trim()}\n\n` : '';
 
-  const system = `You are a character-sheet writing assistant for a roleplay app. Based on the world setting and scene excerpt below, write a short persona description for the character named "${name.trim()}": 2 to 4 sentences, factual character-sheet voice covering personality, manner of speaking, and role in the scene. No dialogue, no first person, no meta-commentary — output only the description text.`;
+  // The system prompt itself is user-editable (Settings > Draft persona
+  // prompt) and runs through the same {{macro}} vocabulary as every other
+  // prompt block, so a custom prompt can reference {{char}}, {{world}},
+  // {{user}}/{{persona}}, and {{day}}/{{time}}/{{weekday}} instead of only
+  // ever describing the character being drafted by a hardcoded position.
+  const { personas, activePersonaId } = loadPersonas();
+  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+  const macroCtx = {
+    userName: activePersona ? activePersona.name : (typeof userLabel === 'string' && userLabel.trim() ? userLabel.trim() : 'Visitor'),
+    charNames: [name.trim()],
+    personaDescription: activePersona ? activePersona.description : '',
+    worldSetting: worldSetting || '',
+    timeOfDay: world.time?.timeOfDay || '',
+    day: world.time?.day ?? null,
+  };
+  const template = (cfg.draftPersonaPrompt || '').trim() || DEFAULT_DRAFT_PERSONA_PROMPT;
+  const system = substituteMacros(template, macroCtx);
   const userContent = context.trim()
     ? `${worldBlock}${context.trim()}`
     : `${worldBlock}${worldBlock ? 'No scene context was provided beyond the world setting above.' : 'No scene context was provided.'} Invent a short, plausible persona for a character named "${name.trim()}"${worldBlock ? ' that fits the world setting' : ''}.`;

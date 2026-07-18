@@ -344,6 +344,60 @@ describe('POST /api/characters/draft (empty-response handling, real OpenRouter c
 
     assert.ok(capturedBody.max_tokens > 300, `expected a larger budget with reasoning on, got ${capturedBody.max_tokens}`);
   });
+
+  test('a custom draft-persona prompt is sent as the system message, with {{char}}/{{world}} substituted', async (t) => {
+    await postJson('/api/settings', {
+      draftPersonaPrompt: 'Write a one-line bio for {{char}}. Setting: {{world}}. Keep it under 15 words.',
+    });
+    await postJson('/api/world/setting', { setting: 'a neon-lit megacity' });
+
+    let capturedBody = null;
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async (url, opts) => {
+      capturedBody = JSON.parse(opts.body);
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'A brief persona.' } }] }), { status: 200 });
+    }));
+
+    await postJson('/api/characters/draft', { name: 'Reeve Alcatraz', log: [] });
+
+    await postJson('/api/settings', { draftPersonaPrompt: '' }); // restore before later tests
+    await postJson('/api/world/setting', { setting: '' });
+
+    const systemMessage = capturedBody.messages.find((m) => m.role === 'system').content;
+    assert.equal(systemMessage, 'Write a one-line bio for Reeve Alcatraz. Setting: a neon-lit megacity. Keep it under 15 words.');
+  });
+
+  test('falls back to the built-in default prompt when none is configured', async (t) => {
+    let capturedBody = null;
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async (url, opts) => {
+      capturedBody = JSON.parse(opts.body);
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'A brief persona.' } }] }), { status: 200 });
+    }));
+
+    await postJson('/api/characters/draft', { name: 'A Mysterious Stranger', log: [] });
+
+    const systemMessage = capturedBody.messages.find((m) => m.role === 'system').content;
+    assert.match(systemMessage, /character-sheet writing assistant/i);
+    assert.match(systemMessage, /"A Mysterious Stranger"/);
+  });
+});
+
+describe('Settings: draftPersonaPrompt', () => {
+  test('defaults to the built-in prompt text, reported as not customized', async () => {
+    const cfg = await (await fetch(`${baseUrl}/api/settings`)).json();
+    assert.match(cfg.draftPersonaPrompt, /character-sheet writing assistant/i);
+    assert.equal(cfg.draftPersonaPromptIsCustom, false);
+  });
+
+  test('round-trips a custom prompt, then resets to default on an empty string', async () => {
+    const custom = 'Describe {{char}} in exactly one sentence.';
+    const saved = await (await postJson('/api/settings', { draftPersonaPrompt: custom })).json();
+    assert.equal(saved.draftPersonaPrompt, custom);
+    assert.equal(saved.draftPersonaPromptIsCustom, true);
+
+    const reset = await (await postJson('/api/settings', { draftPersonaPrompt: '' })).json();
+    assert.match(reset.draftPersonaPrompt, /character-sheet writing assistant/i);
+    assert.equal(reset.draftPersonaPromptIsCustom, false);
+  });
 });
 
 describe('POST/PUT /api/presets — memoryAsSeparateMessage', () => {
