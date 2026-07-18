@@ -41,6 +41,21 @@ export async function upsertRelationship({ db, embedFn, characterId, targetId, t
   return { labels: cleaned };
 }
 
+// Re-embeds every stored relationship row — same rationale as
+// rebuildAllMemoryEmbeddings in memoryStore.js. Needs charactersById to
+// rebuild each row's fact text (target_id === 'user' is the one sentinel
+// that isn't a real character).
+export async function rebuildAllRelationshipEmbeddings({ db, embedFn, charactersById = {} }) {
+  const rows = db.prepare('SELECT character_id, target_id, labels FROM relationships').all();
+  const update = db.prepare('UPDATE relationships SET embedding = ? WHERE character_id = ? AND target_id = ?');
+  for (const row of rows) {
+    const labels = JSON.parse(row.labels || '[]');
+    const otherName = row.target_id === 'user' ? 'the visitor' : (charactersById[row.target_id]?.name || row.target_id);
+    update.run(encodeEmbedding(await embedFn(relationshipFactText(otherName, labels))), row.character_id, row.target_id);
+  }
+  return rows.length;
+}
+
 function isCore(candidate, familyHints) {
   return candidate.otherId === 'user' || candidate.labels.some((l) => familyHints.some((h) => l.toLowerCase().includes(h)));
 }

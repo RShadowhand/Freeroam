@@ -198,6 +198,19 @@ export async function updateCharacterMemory({ db, embedFn, characterId, entryId,
   return rowToMemory(db.prepare('SELECT * FROM memories WHERE id = ?').get(entryId));
 }
 
+// Re-embeds every stored memory row with whatever embedFn is passed in —
+// used when the embedding model changes, since old vectors live in a
+// different vector space and aren't comparable to freshly embedded queries.
+// Deliberately never called automatically; see /api/settings/rebuild-embeddings.
+export async function rebuildAllMemoryEmbeddings({ db, embedFn }) {
+  const rows = db.prepare('SELECT id, text FROM memories').all();
+  const update = db.prepare('UPDATE memories SET embedding = ? WHERE id = ?');
+  for (const row of rows) {
+    update.run(encodeEmbedding(await embedFn(row.text)), row.id);
+  }
+  return rows.length;
+}
+
 export function deleteCharacterMemory(db, characterId, entryId) {
   const result = db.prepare('DELETE FROM memories WHERE id = ? AND character_id = ?').run(entryId, characterId);
   if (result.changes > 0) {

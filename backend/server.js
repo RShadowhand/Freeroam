@@ -25,10 +25,16 @@ import {
   detachEntryFromMemories,
   attachEntriesToMemories,
   pruneReplylessMemories,
+  rebuildAllMemoryEmbeddings,
 } from './lib/memoryStore.js';
-import { upsertRelationship, retrieveRelevantRelationships, FAMILY_HINTS } from './lib/relationshipStore.js';
+import {
+  upsertRelationship,
+  retrieveRelevantRelationships,
+  rebuildAllRelationshipEmbeddings,
+  FAMILY_HINTS,
+} from './lib/relationshipStore.js';
 import { detectSuggestedActions } from './lib/suggestedActions.js';
-import { embed } from './lib/embeddings.js';
+import { embed, MODEL_ID as EMBEDDING_MODEL_ID } from './lib/embeddings.js';
 import {
   estimateTokens,
   contextSettingsFor,
@@ -109,6 +115,11 @@ const DEFAULT_CONFIG = {
   suggestedActionsMode: 'regex',        // regex | hybrid | ml — see lib/suggestedActions.js
   draftPersonaPrompt: '',              // '' = use DEFAULT_DRAFT_PERSONA_PROMPT; see /api/characters/draft
 };
+
+// The model in use before embeddingModelVersion existed — configs saved
+// before this feature have no record of what built their stored vectors,
+// so absence of the field is treated as "built with this."
+const LEGACY_EMBEDDING_MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
 
 function isOpenRouter(cfg) {
   return (cfg.apiBase || DEFAULT_API_BASE).includes('openrouter.ai');
@@ -366,6 +377,8 @@ function publicConfig(cfg) {
     suggestedActionsMode: cfg.suggestedActionsMode || DEFAULT_CONFIG.suggestedActionsMode,
     draftPersonaPrompt: (cfg.draftPersonaPrompt || '').trim() || DEFAULT_DRAFT_PERSONA_PROMPT,
     draftPersonaPromptIsCustom: !!(cfg.draftPersonaPrompt || '').trim(),
+    embeddingModel: EMBEDDING_MODEL_ID,
+    embeddingsStale: (cfg.embeddingModelVersion || LEGACY_EMBEDDING_MODEL_ID) !== EMBEDDING_MODEL_ID,
   };
 }
 
@@ -400,6 +413,28 @@ app.post('/api/settings/clear-key', (req, res) => {
   cfg.apiKey = '';
   saveConfig(cfg);
   res.json({ hasKey: false, model: cfg.model });
+});
+
+// Re-embeds every stored memory + relationship row with the current
+// embedding model. Never triggered automatically (see embeddings.js) — only
+// this explicit, user-initiated action re-computes vectors, since it's a
+// synchronous local-model pass over the whole DB and can take a while on a
+// large history.
+app.post('/api/settings/rebuild-embeddings', async (req, res) => {
+  try {
+    const charactersById = {};
+    loadCharacters().forEach((c) => { charactersById[c.id] = c; });
+    const memories = await rebuildAllMemoryEmbeddings({ db, embedFn: embed });
+    const relationships = await rebuildAllRelationshipEmbeddings({ db, embedFn: embed, charactersById });
+    const cfg = loadConfig();
+    cfg.embeddingModelVersion = EMBEDDING_MODEL_ID;
+    saveConfig(cfg);
+    logger.info('memory', `rebuilt embeddings for ${memories} memories, ${relationships} relationships (model ${EMBEDDING_MODEL_ID})`);
+    res.json({ memories, relationships, model: EMBEDDING_MODEL_ID });
+  } catch (err) {
+    logger.error('memory', `embedding rebuild failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Model list from whatever endpoint is configured (OpenAI /models spec).

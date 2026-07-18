@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { getSettings, saveSettings, clearApiKey, getModels, getModelProviders } from '../api/settings';
+import { getSettings, saveSettings, clearApiKey, getModels, getModelProviders, rebuildEmbeddings as rebuildEmbeddingsRequest } from '../api/settings';
 
 export const OPENROUTER_API_BASE = 'https://openrouter.ai/api/v1';
 
@@ -26,6 +26,8 @@ export const useSettingsStore = defineStore('settings', {
     endpointMode: 'openrouter', // 'openrouter' | 'custom'
     draftPersonaPrompt: '', // the effective text (backend already falls back to its built-in default)
     draftPersonaPromptIsCustom: false,
+    embeddingModel: '',
+    embeddingsStale: false, // true when stored memory/relationship vectors were built with a different model
   }),
   getters: {
     // Providers are an OpenRouter-only concept — a custom OpenAI-spec
@@ -46,6 +48,8 @@ export const useSettingsStore = defineStore('settings', {
       this.selectedProviders = Array.isArray(data.providers) ? data.providers : [];
       this.draftPersonaPrompt = data.draftPersonaPrompt || '';
       this.draftPersonaPromptIsCustom = !!data.draftPersonaPromptIsCustom;
+      this.embeddingModel = data.embeddingModel || '';
+      this.embeddingsStale = !!data.embeddingsStale;
       await this.loadAvailableProviders();
     },
     async loadModels() {
@@ -116,6 +120,11 @@ export const useSettingsStore = defineStore('settings', {
     },
     async resetDraftPersonaPrompt() {
       await this.setDraftPersonaPrompt('');
+    },
+    async rebuildEmbeddings() {
+      const { ok, data } = await rebuildEmbeddingsRequest();
+      if (ok) this.embeddingsStale = false;
+      return { ok, data };
     },
     async saveApiKey(key) {
       const { data } = await saveSettings({ apiKey: key });

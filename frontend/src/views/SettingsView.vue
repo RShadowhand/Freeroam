@@ -4,6 +4,7 @@ import { useSettingsStore } from '../stores/settings';
 import Brand from '../components/shared/Brand.vue';
 import EndpointCard from '../components/settings/EndpointCard.vue';
 import MemoryCard from '../components/settings/MemoryCard.vue';
+import EmbeddingsCard from '../components/settings/EmbeddingsCard.vue';
 import SuggestedActionsCard from '../components/settings/SuggestedActionsCard.vue';
 import ModelCard from '../components/settings/ModelCard.vue';
 import DraftPersonaPromptCard from '../components/settings/DraftPersonaPromptCard.vue';
@@ -24,6 +25,7 @@ onMounted(async () => {
     <Brand tag="keys · endpoint · models · prompts" />
     <EndpointCard />
     <MemoryCard />
+    <EmbeddingsCard />
     <SuggestedActionsCard />
     <ModelCard />
     <DraftPersonaPromptCard />

@@ -6,13 +6,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Local-first embeddings: runs entirely in-process via ONNX Runtime, no
 // external API call (and no OpenRouter dependency) per embedding. The
-// ~90MB model is fetched from the Hugging Face hub once and cached here
+// model is fetched from the Hugging Face hub once and cached here
 // afterward — "local-first" means no per-request network call, not
 // zero-network-ever; the first embed() call after a fresh install needs
 // internet to populate the cache.
+//
+// Changing MODEL_ID makes new embeddings incompatible with ones already
+// stored in the DB (different model = different vector space, even at the
+// same dimension) — server.js tracks which model existing rows were built
+// with and exposes a "rebuild embeddings" settings action rather than
+// silently re-embedding everything on startup.
 env.cacheDir = path.join(__dirname, '..', '.cache', 'transformers');
 
-const MODEL_ID = 'Xenova/all-MiniLM-L6-v2'; // 384-dim sentence embeddings, small enough to run on CPU
+export const MODEL_ID = 'Xenova/bge-small-en-v1.5'; // 384-dim sentence embeddings, small enough to run on CPU
 
 let pipelinePromise = null;
 

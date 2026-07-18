@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { embed } from '../lib/embeddings.js';
 import { cosineSimilarity } from '../lib/memoryStore.js';
 
-// These exercise the real local model (Xenova/all-MiniLM-L6-v2 via
+// These exercise the real local model (Xenova/bge-small-en-v1.5 via
 // @huggingface/transformers), not a fake. The first run downloads and
-// caches the ~90MB model from the Hugging Face hub, so this needs network
+// caches the model from the Hugging Face hub, so this needs network
 // access once and is slower than the rest of the suite — hence the longer
 // per-test timeout.
 const MODEL_TIMEOUT_MS = 120_000;
@@ -14,7 +14,7 @@ describe('embed (real local model)', () => {
   test('returns a fixed-length array of finite numbers', async () => {
     const vector = await embed('The archivist keeps meticulous records.');
     assert.ok(Array.isArray(vector));
-    assert.equal(vector.length, 384); // all-MiniLM-L6-v2 output dimension
+    assert.equal(vector.length, 384); // bge-small-en-v1.5 output dimension
     vector.forEach(n => assert.equal(Number.isFinite(n), true));
   }, { timeout: MODEL_TIMEOUT_MS });
 
