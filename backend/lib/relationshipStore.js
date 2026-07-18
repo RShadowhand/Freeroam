@@ -1,5 +1,6 @@
 import { encodeEmbedding, decodeEmbedding } from './db.js';
-import { rankBySimilarity } from './memoryStore.js';
+import { cosineSimilarity } from './memoryStore.js';
+import { getCharacterEmbedding } from './characterEmbeddings.js';
 import { logger } from './log.js';
 
 // Relationships as a small RAG store, same idea as character memory: a
@@ -19,21 +20,26 @@ import { logger } from './log.js';
 export const FAMILY_HINTS = ['mother', 'father', 'parent', 'daughter', 'son', 'child', 'sister', 'brother', 'sibling',
   'wife', 'husband', 'spouse', 'grandmother', 'grandfather', 'aunt', 'uncle', 'cousin', 'niece', 'nephew', 'family'];
 
-export function relationshipFactText(otherName, labels) {
-  return `${otherName}: ${labels.join(', ')}`;
+// Labels only, no names: the row's embedding carries pure relation
+// semantics ("friend, coworker"), and *who* the other person is — their
+// name, looks, demeanor — is scored separately against their identity
+// embedding (characterEmbeddings.js) at retrieval time. That keeps the
+// vector direction-neutral (usable from either party's perspective) and
+// means renaming or redescribing a character never touches these rows.
+export function relationshipFactText(labels) {
+  return labels.join(', ');
 }
 
 // Writes (or, for an empty label list, deletes) one directed relationship
-// row and its embedding. `targetName` is only used to build the embedded
-// text — pass 'the visitor' for the target_id === 'user' sentinel.
-export async function upsertRelationship({ db, embedFn, characterId, targetId, targetName, labels }) {
+// row and its embedding.
+export async function upsertRelationship({ db, embedFn, characterId, targetId, labels }) {
   const cleaned = [...new Set((labels || []).map((l) => l.trim()).filter(Boolean))];
   if (!cleaned.length) {
     db.prepare('DELETE FROM relationships WHERE character_id = ? AND target_id = ?').run(characterId, targetId);
     return { removed: true };
   }
 
-  const embedding = encodeEmbedding(await embedFn(relationshipFactText(targetName, cleaned)));
+  const embedding = encodeEmbedding(await embedFn(relationshipFactText(cleaned)));
   db.prepare(`
     INSERT INTO relationships (character_id, target_id, labels, embedding) VALUES (?, ?, ?, ?)
     ON CONFLICT(character_id, target_id) DO UPDATE SET labels = excluded.labels, embedding = excluded.embedding
@@ -42,16 +48,13 @@ export async function upsertRelationship({ db, embedFn, characterId, targetId, t
 }
 
 // Re-embeds every stored relationship row — same rationale as
-// rebuildAllMemoryEmbeddings in memoryStore.js. Needs charactersById to
-// rebuild each row's fact text (target_id === 'user' is the one sentinel
-// that isn't a real character).
-export async function rebuildAllRelationshipEmbeddings({ db, embedFn, charactersById = {} }) {
+// rebuildAllMemoryEmbeddings in memoryStore.js.
+export async function rebuildAllRelationshipEmbeddings({ db, embedFn }) {
   const rows = db.prepare('SELECT character_id, target_id, labels FROM relationships').all();
   const update = db.prepare('UPDATE relationships SET embedding = ? WHERE character_id = ? AND target_id = ?');
   for (const row of rows) {
     const labels = JSON.parse(row.labels || '[]');
-    const otherName = row.target_id === 'user' ? 'the visitor' : (charactersById[row.target_id]?.name || row.target_id);
-    update.run(encodeEmbedding(await embedFn(relationshipFactText(otherName, labels))), row.character_id, row.target_id);
+    update.run(encodeEmbedding(await embedFn(relationshipFactText(labels))), row.character_id, row.target_id);
   }
   return rows.length;
 }
@@ -82,8 +85,7 @@ export async function retrieveRelevantRelationships({ db, embedFn, speakerId, qu
   // only for this speaker's (small) candidate set, not the whole table.
   for (const c of candidates) {
     if (c.embedding) continue;
-    const otherName = c.otherId === 'user' ? 'the visitor' : (charactersById[c.otherId]?.name || c.otherId);
-    const vec = encodeEmbedding(await embedFn(relationshipFactText(otherName, c.labels)));
+    const vec = encodeEmbedding(await embedFn(relationshipFactText(c.labels)));
     db.prepare('UPDATE relationships SET embedding = ? WHERE character_id = ? AND target_id = ?')
       .run(vec, c.characterId, c.targetId);
     c.embedding = vec;
@@ -96,8 +98,24 @@ export async function retrieveRelevantRelationships({ db, embedFn, speakerId, qu
   if (rest.length) {
     if (query && query.trim()) {
       const queryEmbedding = await embedFn(query);
-      const ranked = rankBySimilarity(queryEmbedding, rest.map((c) => ({ ...c, embedding: decodeEmbedding(c.embedding) })));
-      chosen = chosen.concat(ranked.slice(0, topK).map((r) => r.entry));
+      // Two-signal ranking: how well the query matches the *relation*
+      // (this row's label vector) and how well it matches the *person*
+      // (the other party's identity vector, from the speaker's
+      // perspective — for reverse rows that's the row owner, which a
+      // single stored embedding could never express). "Your friend with
+      // the blue eyes" scores on both; "your mother" on the label alone;
+      // "the one who never stops joking" mostly on the identity.
+      const scored = [];
+      for (const c of rest) {
+        const labelSim = cosineSimilarity(queryEmbedding, decodeEmbedding(c.embedding));
+        const otherChar = c.otherId === 'user' ? null : charactersById[c.otherId];
+        const charSim = otherChar
+          ? cosineSimilarity(queryEmbedding, await getCharacterEmbedding({ db, embedFn, char: otherChar }))
+          : null;
+        scored.push({ entry: c, score: charSim === null ? labelSim : (labelSim + charSim) / 2 });
+      }
+      scored.sort((a, b) => b.score - a.score);
+      chosen = chosen.concat(scored.slice(0, topK).map((r) => r.entry));
     } else {
       chosen = chosen.concat(rest.slice(0, topK));
     }

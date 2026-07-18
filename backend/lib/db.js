@@ -44,6 +44,11 @@ export function openDb(dbPath) {
       embedding BLOB,
       PRIMARY KEY (character_id, target_id)
     );
+
+    CREATE TABLE IF NOT EXISTS character_embeddings (
+      character_id TEXT PRIMARY KEY,
+      embedding BLOB NOT NULL
+    );
   `);
 
   // Upgrade path for databases created before relationships were embeddable

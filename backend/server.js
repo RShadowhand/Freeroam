@@ -33,6 +33,11 @@ import {
   rebuildAllRelationshipEmbeddings,
   FAMILY_HINTS,
 } from './lib/relationshipStore.js';
+import {
+  refreshCharacterEmbedding,
+  deleteCharacterEmbedding,
+  rebuildAllCharacterEmbeddings,
+} from './lib/characterEmbeddings.js';
 import { detectSuggestedActions } from './lib/suggestedActions.js';
 import { embed, MODEL_ID as EMBEDDING_MODEL_ID } from './lib/embeddings.js';
 import {
@@ -422,15 +427,14 @@ app.post('/api/settings/clear-key', (req, res) => {
 // large history.
 app.post('/api/settings/rebuild-embeddings', async (req, res) => {
   try {
-    const charactersById = {};
-    loadCharacters().forEach((c) => { charactersById[c.id] = c; });
     const memories = await rebuildAllMemoryEmbeddings({ db, embedFn: embed });
-    const relationships = await rebuildAllRelationshipEmbeddings({ db, embedFn: embed, charactersById });
+    const relationships = await rebuildAllRelationshipEmbeddings({ db, embedFn: embed });
+    const characters = await rebuildAllCharacterEmbeddings({ db, embedFn: embed, characters: loadCharacters() });
     const cfg = loadConfig();
     cfg.embeddingModelVersion = EMBEDDING_MODEL_ID;
     saveConfig(cfg);
-    logger.info('memory', `rebuilt embeddings for ${memories} memories, ${relationships} relationships (model ${EMBEDDING_MODEL_ID})`);
-    res.json({ memories, relationships, model: EMBEDDING_MODEL_ID });
+    logger.info('memory', `rebuilt embeddings for ${memories} memories, ${relationships} relationships, ${characters} characters (model ${EMBEDDING_MODEL_ID})`);
+    res.json({ memories, relationships, characters, model: EMBEDDING_MODEL_ID });
   } catch (err) {
     logger.error('memory', `embedding rebuild failed: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -649,21 +653,27 @@ app.delete('/api/characters/:id', (req, res) => {
   });
   if (placesChanged) savePlaces(places);
 
-  // Clean up the character's memories and any relationships either way.
+  // Clean up the character's memories, relationships either way, and
+  // identity embedding.
   deleteAllCharacterMemories(db, id);
   db.prepare('DELETE FROM relationships WHERE character_id = ? OR target_id = ?').run(id, id);
+  deleteCharacterEmbedding(db, id);
 
   res.json({ ok: true });
 });
 
 // Edit a character's fields directly (any source, including builtin).
-app.put('/api/characters/:id', (req, res) => {
+app.put('/api/characters/:id', async (req, res) => {
   const { id } = req.params;
   const characters = loadCharacters();
   const character = characters.find((c) => c.id === id);
   if (!character) return res.status(404).json({ error: 'Character not found.' });
 
   const { name, description, personality, scenario, exampleDialogue } = req.body || {};
+  const identityChanged =
+    (typeof name === 'string' && name.trim() && name.trim() !== character.name) ||
+    (typeof description === 'string' && description.trim() !== character.description) ||
+    (typeof personality === 'string' && personality.trim() !== character.personality);
   if (typeof name === 'string' && name.trim()) character.name = name.trim();
   if (typeof description === 'string') character.description = description.trim();
   if (typeof personality === 'string') character.personality = personality.trim();
@@ -671,6 +681,13 @@ app.put('/api/characters/:id', (req, res) => {
   if (typeof exampleDialogue === 'string') character.exampleDialogue = exampleDialogue.trim();
 
   saveCharacters(characters);
+  // The identity embedding (characterEmbeddings.js) is built from name +
+  // description/personality — recompute the character's one row when any
+  // of those changed.
+  if (identityChanged) {
+    await refreshCharacterEmbedding({ db, embedFn: embed, char: character });
+    logger.info('memory', `refreshed identity embedding for ${character.name}`);
+  }
   res.json({ character });
 });
 
@@ -1257,8 +1274,7 @@ app.put('/api/relationships/:characterId/:targetId', async (req, res) => {
     return res.status(400).json({ error: 'A character cannot have a relationship with themselves.' });
   }
 
-  const targetName = targetId === 'user' ? 'the visitor' : targetChar.name;
-  const result = await upsertRelationship({ db, embedFn: embed, characterId, targetId, targetName, labels });
+  const result = await upsertRelationship({ db, embedFn: embed, characterId, targetId, labels });
   if (result.removed) return res.json({ ok: true, removed: true });
   res.json({ ok: true, labels: result.labels });
 });

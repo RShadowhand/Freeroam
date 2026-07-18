@@ -14,7 +14,7 @@ async function rebuild() {
   try {
     const { ok, data } = await settings.rebuildEmbeddings();
     if (!ok) throw new Error(data.error || 'request failed');
-    result.value = `✓ Rebuilt ${data.memories} memories, ${data.relationships} relationships.`;
+    result.value = `✓ Rebuilt ${data.memories} memories, ${data.relationships} relationships, ${data.characters} character profiles.`;
   } catch (err) {
     result.value = `✗ ${err.message}`;
     ui.showError(`Rebuild embeddings failed: ${err.message}`);

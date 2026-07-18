@@ -19,6 +19,8 @@ function fakeEmbed(text) {
     lower.includes('mother') ? 1 : 0,
     lower.includes('guild') ? 1 : 0,
     lower.includes('thief') ? 1 : 0,
+    lower.includes('blue') ? 1 : 0,
+    lower.includes('friend') ? 1 : 0,
   ];
 }
 const embedFn = async (t) => fakeEmbed(t);
@@ -29,14 +31,14 @@ function withDb(fn) {
 }
 
 describe('relationshipFactText', () => {
-  test('joins the other party\'s name with their labels', () => {
-    assert.equal(relationshipFactText('Mireille', ['sister', 'best friend']), 'Mireille: sister, best friend');
+  test('joins the labels — no names, relation semantics only', () => {
+    assert.equal(relationshipFactText(['sister', 'best friend']), 'sister, best friend');
   });
 });
 
 describe('upsertRelationship', () => {
   test('writes a row with a computed embedding', () => withDb(async (db) => {
-    const result = await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', targetName: 'Mireille', labels: ['sister'] });
+    const result = await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', labels: ['sister'] });
     assert.deepEqual(result.labels, ['sister']);
     const row = db.prepare('SELECT labels, embedding FROM relationships WHERE character_id = ? AND target_id = ?').get('ezra', 'mireille');
     assert.deepEqual(JSON.parse(row.labels), ['sister']);
@@ -44,20 +46,20 @@ describe('upsertRelationship', () => {
   }));
 
   test('dedupes and trims labels', () => withDb(async (db) => {
-    const result = await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', targetName: 'Mireille', labels: [' sister ', 'sister', 'friend', ''] });
+    const result = await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', labels: [' sister ', 'sister', 'friend', ''] });
     assert.deepEqual(result.labels, ['sister', 'friend']);
   }));
 
   test('an empty label list deletes the row instead of writing one', () => withDb(async (db) => {
-    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', targetName: 'Mireille', labels: ['sister'] });
-    const result = await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', targetName: 'Mireille', labels: [] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', labels: ['sister'] });
+    const result = await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', labels: [] });
     assert.equal(result.removed, true);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM relationships').get().n, 0);
   }));
 
   test('re-upserting recomputes the embedding for the new labels', () => withDb(async (db) => {
-    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', targetName: 'Mireille', labels: ['acquaintance'] });
-    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', targetName: 'Mireille', labels: ['mother'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', labels: ['acquaintance'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', labels: ['mother'] });
     const rows = await retrieveRelevantRelationships({ db, embedFn, speakerId: 'ezra', query: 'guild business' });
     assert.deepEqual(rows[0].labels, ['mother']); // family label makes it "core" regardless of query
   }));
@@ -69,13 +71,13 @@ describe('retrieveRelevantRelationships', () => {
   }));
 
   test('the user\'s own relation to the speaker is always included, regardless of query relevance', () => withDb(async (db) => {
-    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'user', targetName: 'the visitor', labels: ['mentor'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'user', labels: ['mentor'] });
     const rows = await retrieveRelevantRelationships({ db, embedFn, speakerId: 'ezra', query: 'completely unrelated thief business' });
     assert.deepEqual(rows, [{ direction: 'forward', otherId: 'user', labels: ['mentor'] }]);
   }));
 
   test('family-labeled relationships are always included ("core"), even when the query doesn\'t match them', () => withDb(async (db) => {
-    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', targetName: 'Mireille', labels: ['mother'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', labels: ['mother'] });
     assert.ok(FAMILY_HINTS.includes('mother'));
     const rows = await retrieveRelevantRelationships({ db, embedFn, speakerId: 'ezra', query: 'guild business, nothing about family' });
     assert.equal(rows.length, 1);
@@ -83,10 +85,10 @@ describe('retrieveRelevantRelationships', () => {
   }));
 
   test('non-core relationships are ranked by relevance to the query and bounded to topK', () => withDb(async (db) => {
-    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'a', targetName: 'A', labels: ['guild contact'] });
-    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'b', targetName: 'B', labels: ['guild rival'] });
-    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'c', targetName: 'C', labels: ['old thief acquaintance'] });
-    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'd', targetName: 'D', labels: ['neighbor'] }); // matches nothing
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'a', labels: ['guild contact'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'b', labels: ['guild rival'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'c', labels: ['old thief acquaintance'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'd', labels: ['neighbor'] }); // matches nothing
 
     const rows = await retrieveRelevantRelationships({ db, embedFn, speakerId: 'ezra', query: 'tell me about the guild', topK: 2 });
     assert.equal(rows.length, 2);
@@ -94,16 +96,53 @@ describe('retrieveRelevantRelationships', () => {
   }));
 
   test('reverse relationships (someone else names the speaker as their relation) are included, correctly directioned', () => withDb(async (db) => {
-    await upsertRelationship({ db, embedFn, characterId: 'mireille', targetId: 'ezra', targetName: 'Ezra', labels: ['brother'] });
+    await upsertRelationship({ db, embedFn, characterId: 'mireille', targetId: 'ezra', labels: ['brother'] });
     const rows = await retrieveRelevantRelationships({ db, embedFn, speakerId: 'ezra', query: 'anything' });
     assert.deepEqual(rows, [{ direction: 'reverse', otherId: 'mireille', labels: ['brother'] }]);
   }));
 
   test('a topK of 0 still returns the core set', () => withDb(async (db) => {
-    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'user', targetName: 'the visitor', labels: ['friend'] });
-    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'a', targetName: 'A', labels: ['guild contact'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'user', labels: ['friend'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'a', labels: ['guild contact'] });
     const rows = await retrieveRelevantRelationships({ db, embedFn, speakerId: 'ezra', query: 'guild', topK: 0 });
     assert.deepEqual(rows, [{ direction: 'forward', otherId: 'user', labels: ['friend'] }]);
+  }));
+
+  test('a relationship can be found by describing the person, via their identity embedding', () => withDb(async (db) => {
+    // Two friends with identical labels — indistinguishable by relation
+    // vector alone; only the identity-embedding cross-check can tell
+    // "that friend of yours with the blue eyes" points at Wren.
+    const charactersById = {
+      wren: { id: 'wren', name: 'Wren', description: 'Blue eyes, sharp grin.' },
+      dara: { id: 'dara', name: 'Dara', description: 'Brown eyes, soft-spoken.' },
+    };
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'wren', labels: ['friend'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'dara', labels: ['friend'] });
+
+    const rows = await retrieveRelevantRelationships({
+      db, embedFn, speakerId: 'ezra', charactersById,
+      query: 'that friend of yours with the blue eyes', topK: 1,
+    });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].otherId, 'wren');
+  }));
+
+  test('identity scoring works for reverse rows too — it describes the other party, not the row target', () => withDb(async (db) => {
+    // Both rows name ezra as target; from ezra's perspective the person to
+    // describe is each row's *owner*.
+    const charactersById = {
+      wren: { id: 'wren', name: 'Wren', description: 'Blue eyes, sharp grin.' },
+      dara: { id: 'dara', name: 'Dara', description: 'Brown eyes, soft-spoken.' },
+    };
+    await upsertRelationship({ db, embedFn, characterId: 'wren', targetId: 'ezra', labels: ['coworker'] });
+    await upsertRelationship({ db, embedFn, characterId: 'dara', targetId: 'ezra', labels: ['coworker'] });
+
+    const rows = await retrieveRelevantRelationships({
+      db, embedFn, speakerId: 'ezra', charactersById,
+      query: 'your coworker with the blue eyes', topK: 1,
+    });
+    assert.equal(rows.length, 1);
+    assert.deepEqual(rows[0], { direction: 'reverse', otherId: 'wren', labels: ['coworker'] });
   }));
 
   test('lazily backfills an embedding for a row saved before this feature existed', () => withDb(async (db) => {
