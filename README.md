@@ -15,6 +15,7 @@ just to have something to click around on.
 
 ```
 freeroam/
+├── package.json             root of the npm workspace — see "Run it" below
 ├── backend/
 │   ├── server.js            Express app: serves the frontend build + /api routes
 │   ├── lib/                 context assembly, memory, relationships, NLP, TavernCard parsing, ...
@@ -26,7 +27,7 @@ freeroam/
     ├── index.html           Vite entry point
     ├── package.json
     ├── vite.config.js       dev-server proxy for /api and /avatars -> :3001
-    ├── dist/                production build server.js serves (gitignored — `npm run build` to create it)
+    ├── dist/                production build server.js serves (gitignored — built automatically, see below)
     └── src/
         ├── main.js
         ├── App.vue
@@ -39,26 +40,26 @@ freeroam/
         └── styles/          shared.css (theme CSS custom properties) + main.css (everything else)
 ```
 
+`backend/` and `frontend/` are two npm workspaces under the root
+`package.json` — one `npm install` at the repo root installs both (into a
+single root `node_modules`), and the root `npm start` builds the frontend
+then launches the backend that serves it.
+
 ## Run it
 
-Build the frontend once (or after pulling frontend changes), then start the backend, which serves that build:
-
 ```bash
-cd frontend
-npm install
-npm run build
-
-cd ../backend
 npm install
 npm start
 ```
 
-Then open **http://localhost:3001**.
+Then open **http://localhost:3001**. `npm start` always rebuilds the
+frontend first, so pulling frontend changes and re-running `npm start` is
+all you need — no separate build step.
 
-For frontend development with hot-reload instead, run `npm run dev` in
-`frontend/` (Vite serves the SPA itself and proxies `/api`/`/avatars`
-requests through to the backend on :3001, which still needs to be running
-separately) and open the URL Vite prints instead.
+For frontend development with hot-reload instead, run `npm run dev` from
+the repo root (Vite serves the SPA itself and proxies `/api`/`/avatars`
+requests through to the backend on :3001, which you still need to run
+separately — `npm start --workspace=backend`) and open the URL Vite prints.
 
 1. Go to **Settings** and paste an OpenRouter API key
    (get one at https://openrouter.ai/keys), then pick a model — the list is
