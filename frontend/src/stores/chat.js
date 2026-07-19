@@ -3,13 +3,24 @@ import { useWorldStore } from './world';
 import { useUiStore } from './ui';
 import { placeCharacter } from '../api/characters';
 import { getSettings } from '../api/settings';
+import { getStoredWorldId } from '../api/worldId';
 import {
   enterPlaceApi, sayApi, retryApi, regenerateApi,
   sayStreamRequest, retryStreamRequest, regenerateStreamRequest,
   updateMessage, deleteMessageApi,
 } from '../api/chat';
 
-const LAST_PLACE_KEY = 'freeroam.lastPlace';
+// "Last place" is scoped per-world (each save slot resumes independently) —
+// reads getStoredWorldId() directly rather than the worlds Pinia store, to
+// avoid a store <-> store circular import (worlds.js already depends on
+// this store for switchWorld's $reset()). Pre-worlds installs only ever
+// had the flat LEGACY key; initFreeroam() below copies it forward once so
+// upgrading doesn't lose an existing user's resume point.
+const LEGACY_LAST_PLACE_KEY = 'freeroam.lastPlace';
+function lastPlaceKey() {
+  const worldId = getStoredWorldId();
+  return worldId ? `freeroam.lastPlace.${worldId}` : LEGACY_LAST_PLACE_KEY;
+}
 
 // Chat is persisted and owned by the backend (data/chats/<placeId>.json):
 // entering a place and saying something are single API calls that append
@@ -94,7 +105,7 @@ export const useChatStore = defineStore('chat', {
 
         this.logs[id] = data.log;
         if (data.returnMarkerPending) this.pendingReturnMarker.add(id); else this.pendingReturnMarker.delete(id);
-        localStorage.setItem(LAST_PLACE_KEY, id);
+        localStorage.setItem(lastPlaceKey(), id);
       } catch (err) {
         this.logs[id] = [...(this.logs[id] || []), { type: 'error', text: `Something goes wrong trying to reach the room. (${err.message})` }];
         useUiStore().showError(`Couldn't enter that place. (${err.message})`);
@@ -107,12 +118,22 @@ export const useChatStore = defineStore('chat', {
     async initFreeroam() {
       const world = useWorldStore();
       await world.loadWorldState();
+
+      // One-time forward-copy: an existing (pre-worlds) install's flat
+      // "last place" becomes this world's scoped key, so upgrading doesn't
+      // strand the user back at the first place in the list.
+      const key = lastPlaceKey();
+      if (key !== LEGACY_LAST_PLACE_KEY && localStorage.getItem(key) === null) {
+        const legacy = localStorage.getItem(LEGACY_LAST_PLACE_KEY);
+        if (legacy) localStorage.setItem(key, legacy);
+      }
+
       if (world.places.length) {
         // Resume wherever the visitor left off last session, falling back
         // to the first place for a genuinely new world. enterPlace() is
         // idempotent for an already-visited place (no duplicate arrival
         // marker, no generation) — it just loads the persisted log.
-        const savedId = localStorage.getItem(LAST_PLACE_KEY);
+        const savedId = localStorage.getItem(key);
         const start = (savedId && world.placeById(savedId)) || world.places[0];
         await this.enterPlace(start.id);
       }

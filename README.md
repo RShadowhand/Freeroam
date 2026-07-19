@@ -18,11 +18,14 @@ freeroam/
 ├── package.json             root of the npm workspace — see "Run it" below
 ├── backend/
 │   ├── server.js            Express app: serves the frontend build + /api routes
-│   ├── lib/                 context assembly, memory, relationships, NLP, TavernCard parsing, ...
+│   ├── lib/                 context assembly, memory, relationships, NLP, TavernCard parsing, worldRegistry, ...
 │   ├── package.json
-│   ├── config.json          created on first run: OpenRouter key + model (gitignored)
-│   ├── data/                characters/places/world/personas/presets JSON + the memory/relationship SQLite db (gitignored)
-│   └── uploads/avatars/     uploaded card PNGs, served at /avatars/<id>.png (gitignored)
+│   ├── config.json          created on first run: OpenRouter key + model — global, shared by every world (gitignored)
+│   ├── data/
+│   │   ├── worlds.json      registry: [{ id, name, createdAt, lastPlayedAt }], defaultWorldId (gitignored)
+│   │   └── worlds/<id>/     one world (save slot) per directory — its own characters/places/world/
+│   │                        personas/presets JSON, its own chats/, its own memory/relationship SQLite db (gitignored)
+│   └── uploads/avatars/<id>/  uploaded card PNGs, world-scoped, served at /avatars/<worldId>/<id>.png (gitignored)
 └── frontend/                Vue 3 + Vite SPA (hash-based routing)
     ├── index.html           Vite entry point
     ├── package.json
@@ -69,6 +72,29 @@ separately — `npm start --workspace=backend`) and open the URL Vite prints.
 3. Go to **Cast** to see the built-in characters, upload your own, and place
    anyone in any place.
 4. Head back to **Freeroam** and start walking around.
+
+## Worlds (save slots)
+
+A **world** is a full save slot: its own cast, places, chat history, and
+memory — switching worlds is a clean break, not a shared space. Everything
+is world-scoped except `config.json` (the OpenRouter key/model and
+narrator/memory settings, which apply everywhere).
+
+- The **💾 world name** chip at the right of the nav bar shows which world
+  you're in and links to **Worlds**, where you can switch, rename,
+  duplicate (optionally without chat history — a "restart the campaign"
+  reset that keeps the cast/places/relationships), or delete a world (the
+  last remaining one can't be deleted).
+- **Multiple people can use one running instance in different worlds at
+  the same time** — each browser tracks its own current world (a header
+  sent with every request), not the server. This means multiple *browser
+  tabs/users* work fine; running more than one *server process* against
+  the same `backend/data` at once is still unsupported, same as before.
+- **Upgrading from before this feature existed**: the first time the
+  server starts, your existing single world of data is automatically moved
+  (not copied) into `data/worlds/<a-new-id>/` as a world named "My World"
+  and set as the default — no action needed, and old bookmarks/tabs land on
+  it exactly as before.
 
 ## Places
 

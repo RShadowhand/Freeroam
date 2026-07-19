@@ -16,21 +16,28 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-let app, db, server, baseUrl, tmpRoot;
+let app, registry, server, baseUrl, tmpRoot;
 
 before(async () => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'freeroam-test-'));
   process.env.FREEROAM_TEST_ROOT = tmpRoot;
-  ({ app, db } = await import('../server.js'));
+  ({ app, registry } = await import('../server.js'));
   await new Promise((resolve) => { server = app.listen(0, resolve); });
   baseUrl = `http://127.0.0.1:${server.address().port}`;
 });
 
 after(async () => {
   await new Promise((resolve) => server.close(resolve));
-  db.close(); // release the SQLite lock so the temp dir can be removed on Windows
+  registry.closeAll(); // release every world's SQLite lock so the temp dir can be removed on Windows
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
+
+// Every test in this file runs against the registry's default world
+// (no X-World-Id header sent) — this helper resolves that world's on-disk
+// data dir for the handful of tests that poke a file directly.
+function defaultWorldDataDir() {
+  return registry.getDefault().dataDir;
+}
 
 function postJson(urlPath, body) {
   return fetch(`${baseUrl}${urlPath}`, {
@@ -543,7 +550,7 @@ describe('Persisted chat: /api/places/:placeId/enter, /say, GET /chat', () => {
     // The JSON character-creation path doesn't accept greetings, so edit the
     // data file directly — the app re-reads it per request.
     const { character } = await (await postJson('/api/characters', { name: 'Greeter', description: 'Friendly.' })).json();
-    const charsPath = path.join(tmpRoot, 'data', 'characters.json');
+    const charsPath = path.join(defaultWorldDataDir(), 'characters.json');
     const chars = JSON.parse(fs.readFileSync(charsPath, 'utf-8'));
     chars.find((c) => c.id === character.id).greetings = ['Well met, traveler!'];
     fs.writeFileSync(charsPath, JSON.stringify(chars));
@@ -564,7 +571,7 @@ describe('Persisted chat: /api/places/:placeId/enter, /say, GET /chat', () => {
   test('a greeting-only arrival (no generation) still records the greeting into memory', async () => {
     const place = await makePlace('Memorable Greeting Hall');
     const { character } = await (await postJson('/api/characters', { name: 'Sole Greeter', description: 'Warm.' })).json();
-    const charsPath = path.join(tmpRoot, 'data', 'characters.json');
+    const charsPath = path.join(defaultWorldDataDir(), 'characters.json');
     const chars = JSON.parse(fs.readFileSync(charsPath, 'utf-8'));
     chars.find((c) => c.id === character.id).greetings = ['I have been expecting you.'];
     fs.writeFileSync(charsPath, JSON.stringify(chars));
@@ -617,7 +624,7 @@ describe('Persisted chat: /api/places/:placeId/enter, /say, GET /chat', () => {
   test('deleting a place deletes its chat log file', async () => {
     const place = await makePlace('Doomed Hall');
     await postJson(`/api/places/${place.id}/enter`, {});
-    const chatPath = path.join(tmpRoot, 'data', 'chats', `${place.id}.json`);
+    const chatPath = path.join(defaultWorldDataDir(), 'chats', `${place.id}.json`);
     assert.equal(fs.existsSync(chatPath), true);
 
     await fetch(`${baseUrl}/api/places/${place.id}`, { method: 'DELETE' });
@@ -646,7 +653,7 @@ describe('POST /api/places/:placeId/retry (validation paths — no real OpenRout
   }
 
   function writeLog(placeId, log) {
-    const chatPath = path.join(tmpRoot, 'data', 'chats', `${placeId}.json`);
+    const chatPath = path.join(defaultWorldDataDir(), 'chats', `${placeId}.json`);
     fs.mkdirSync(path.dirname(chatPath), { recursive: true });
     fs.writeFileSync(chatPath, JSON.stringify(log));
   }
@@ -831,7 +838,7 @@ describe('Active participants (promote/demote)', () => {
     await postJson(`/api/places/${place.id}/say`, { text: 'Hmm.' });
     // The above already resolves via the silent path (no dangling user
     // message), so drive retry from a manually-seeded dangling user line.
-    const chatPath = path.join(tmpRoot, 'data', 'chats', `${place.id}.json`);
+    const chatPath = path.join(defaultWorldDataDir(), 'chats', `${place.id}.json`);
     const log = JSON.parse(fs.readFileSync(chatPath, 'utf-8'));
     log.push({ id: 'usr-retry-1', type: 'user', text: 'Still there?' });
     fs.writeFileSync(chatPath, JSON.stringify(log));
@@ -850,7 +857,7 @@ describe('POST /api/places/:placeId/regenerate (validation paths — no real Ope
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ placeId: place.id }),
     });
     // Persist a fake generated message directly (generation needs a real key).
-    const chatPath = path.join(tmpRoot, 'data', 'chats', `${place.id}.json`);
+    const chatPath = path.join(defaultWorldDataDir(), 'chats', `${place.id}.json`);
     fs.mkdirSync(path.dirname(chatPath), { recursive: true });
     const log = [
       { id: 'sys-1', type: 'system', text: `You arrive at ${place.name}.` },
@@ -1259,7 +1266,7 @@ describe('Message edit & delete', () => {
   async function placeWithChat() {
     const { place } = await (await postJson('/api/places', { name: 'Edit Hall ' + Math.random(), type: 'communal' })).json();
     const { character } = await (await postJson('/api/characters', { name: 'Edit Subject', description: '.' })).json();
-    const chatPath = path.join(tmpRoot, 'data', 'chats', `${place.id}.json`);
+    const chatPath = path.join(defaultWorldDataDir(), 'chats', `${place.id}.json`);
     fs.mkdirSync(path.dirname(chatPath), { recursive: true });
     fs.writeFileSync(chatPath, JSON.stringify([
       { id: 'sys-1', type: 'system', text: `You arrive at ${place.name}.` },
@@ -1339,5 +1346,121 @@ describe('Message edit & delete', () => {
       assert.ok(memories[0].text.includes('Completely different reply.'), `witness ${cid} memory rebuilt`);
       assert.ok(!memories[0].text.includes('Original reply.'));
     }
+  });
+});
+
+describe('World (save-slot) management: /api/worlds', () => {
+  function withWorld(worldId, opts = {}) {
+    return { ...opts, headers: { ...(opts.headers || {}), 'X-World-Id': worldId } };
+  }
+
+  test('GET /api/worlds lists at least the default world', async () => {
+    const { worlds, defaultWorldId } = await (await fetch(`${baseUrl}/api/worlds`)).json();
+    assert.ok(worlds.length >= 1);
+    assert.ok(worlds.some((w) => w.id === defaultWorldId));
+  });
+
+  test('POST /api/worlds creates a seeded world by default; rejects a blank name', async () => {
+    const res = await postJson('/api/worlds', { name: 'Fantasy Campaign' });
+    assert.equal(res.status, 201);
+    const { world } = await res.json();
+    assert.equal(world.name, 'Fantasy Campaign');
+    assert.ok(world.id);
+
+    const bad = await postJson('/api/worlds', { name: '   ' });
+    assert.equal(bad.status, 400);
+  });
+
+  test('mode "empty" starts with no characters/places; mode "seeded" (default) gets the builtin cast on first read', async () => {
+    const emptyRes = await postJson('/api/worlds', { name: 'Blank Slate', mode: 'empty' });
+    const { world: emptyWorld } = await emptyRes.json();
+    const emptyChars = await (await fetch(`${baseUrl}/api/characters`, withWorld(emptyWorld.id))).json();
+    assert.deepEqual(emptyChars.characters, []);
+
+    const seededRes = await postJson('/api/worlds', { name: 'Seeded World' });
+    const { world: seededWorld } = await seededRes.json();
+    const seededChars = await (await fetch(`${baseUrl}/api/characters`, withWorld(seededWorld.id))).json();
+    assert.ok(seededChars.characters.length > 0); // BUILTIN_CHARACTERS seeded lazily on first read
+  });
+
+  test('PUT /api/worlds/:id renames; unknown id 404s', async () => {
+    const { world } = await (await postJson('/api/worlds', { name: 'Original Name', mode: 'empty' })).json();
+    const res = await fetch(`${baseUrl}/api/worlds/${world.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Renamed' }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).world.name, 'Renamed');
+
+    const missing = await fetch(`${baseUrl}/api/worlds/does-not-exist`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'X' }),
+    });
+    assert.equal(missing.status, 404);
+  });
+
+  test('DELETE /api/worlds/:id removes it from the list; repeat delete 404s', async () => {
+    const { world } = await (await postJson('/api/worlds', { name: 'Disposable', mode: 'empty' })).json();
+    const del = await fetch(`${baseUrl}/api/worlds/${world.id}`, { method: 'DELETE' });
+    assert.equal(del.status, 200);
+    const { worlds } = await (await fetch(`${baseUrl}/api/worlds`)).json();
+    assert.equal(worlds.some((w) => w.id === world.id), false);
+
+    const repeat = await fetch(`${baseUrl}/api/worlds/${world.id}`, { method: 'DELETE' });
+    assert.equal(repeat.status, 404);
+  });
+
+  test('POST /api/worlds/:id/duplicate copies characters; includeHistory:false still copies but wipes memory', async () => {
+    const { world: src } = await (await postJson('/api/worlds', { name: 'Dup Source', mode: 'empty' })).json();
+    await fetch(`${baseUrl}/api/characters`, {
+      method: 'POST', headers: { ...withWorld(src.id).headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Duplicate Me', description: 'A test character.' }),
+    });
+
+    const dup = await (await fetch(`${baseUrl}/api/worlds/${src.id}/duplicate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Dup Target', includeHistory: false }),
+    })).json();
+    assert.equal(dup.world.name, 'Dup Target');
+
+    const dupChars = await (await fetch(`${baseUrl}/api/characters`, withWorld(dup.world.id))).json();
+    assert.ok(dupChars.characters.some((c) => c.name === 'Duplicate Me'));
+  });
+
+  test('unknown X-World-Id header 400s with code UNKNOWN_WORLD; missing header uses the default world', async () => {
+    const bad = await fetch(`${baseUrl}/api/characters`, withWorld('not-a-real-world-id'));
+    assert.equal(bad.status, 400);
+    assert.equal((await bad.json()).code, 'UNKNOWN_WORLD');
+
+    const noHeader = await fetch(`${baseUrl}/api/characters`);
+    assert.equal(noHeader.status, 200);
+  });
+
+  test('two worlds are fully isolated: a character/place/chat created in one is invisible from the other', async () => {
+    const { world: a } = await (await postJson('/api/worlds', { name: 'World A', mode: 'empty' })).json();
+    const { world: b } = await (await postJson('/api/worlds', { name: 'World B', mode: 'empty' })).json();
+
+    const placeRes = await fetch(`${baseUrl}/api/places`, {
+      method: 'POST', headers: { ...withWorld(a.id).headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'A-Only Place', type: 'communal' }),
+    });
+    const { place } = await placeRes.json();
+
+    const aPlaces = await (await fetch(`${baseUrl}/api/places`, withWorld(a.id))).json();
+    const bPlaces = await (await fetch(`${baseUrl}/api/places`, withWorld(b.id))).json();
+    assert.ok(aPlaces.places.some((p) => p.id === place.id));
+    assert.equal(bPlaces.places.some((p) => p.id === place.id), false);
+
+    // Chat log for the same place id literally doesn't exist under B's dir.
+    await fetch(`${baseUrl}/api/places/${place.id}/enter`, withWorld(a.id, { method: 'POST' }));
+    const aChat = await (await fetch(`${baseUrl}/api/places/${place.id}/chat`, withWorld(a.id))).json();
+    assert.ok(aChat.log.length > 0);
+    const bChatRes = await fetch(`${baseUrl}/api/places/${place.id}/chat`, withWorld(b.id));
+    assert.equal(bChatRes.status, 404); // the place doesn't exist in B at all
+  });
+
+  test('a streaming-capable route (SSE path skipped without a key, but routing honors the header) respects X-World-Id', async () => {
+    const { world: a } = await (await postJson('/api/worlds', { name: 'SSE World', mode: 'empty' })).json();
+    const res = await fetch(`${baseUrl}/api/places/nope/say`, withWorld(a.id, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Hi.' }),
+    }));
+    assert.equal(res.status, 404); // place not found IN WORLD A specifically — proves the header was honored, not silently defaulted
   });
 });

@@ -32,6 +32,7 @@
 }
 .nav-tab:hover{ border-color:var(--accent); color:var(--accent); }
 .nav-tab.active{ border-color:var(--accent); color:var(--accent); background:rgba(var(--accent-rgb),0.08); }
+.world-chip{ margin-left:auto; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 .sub-nav{
   display:flex; justify-content:center; gap:6px;
@@ -696,6 +697,22 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   margin:0 0 4px;
 }
 .settings-card input{ margin-bottom:10px; }
+
+.world-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:14px; }
+.world-card{
+  background:var(--panel); border:1px solid var(--border); border-radius:10px;
+  padding:16px 18px; display:flex; flex-direction:column; gap:8px;
+}
+.world-card.current{ border-color:var(--accent); }
+.world-card-header{ display:flex; align-items:center; gap:8px; }
+.world-card-header h3{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.1rem; margin:0; flex:1; min-width:0; }
+.world-badge{
+  font-family:'IBM Plex Mono',monospace; font-size:0.6rem; letter-spacing:0.06em; text-transform:uppercase;
+  color:var(--accent); border:1px solid var(--accent); border-radius:20px; padding:2px 8px; flex-shrink:0;
+}
+.world-card-meta{ font-size:0.76rem; color:var(--dim); }
+.world-card-actions{ display:flex; gap:6px; flex-wrap:wrap; margin-top:4px; }
+.world-card-checkbox{ display:flex; align-items:center; gap:6px; font-size:0.82rem; }
 .row{ display:flex; gap:10px; align-items:center; }
 .row input{ margin-bottom:0; }
 .status{

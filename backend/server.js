@@ -71,7 +71,7 @@ import {
   substituteMacros,
 } from './lib/context.js';
 import { loadChatLog, saveChatLog, appendChatEntries, deleteChatLog } from './lib/chatStore.js';
-import { openDb, importJsonMemories } from './lib/db.js';
+import { createWorldRegistry } from './lib/worldRegistry.js';
 import { logger } from './lib/log.js';
 logger.setLevel("debug")
 
@@ -84,26 +84,16 @@ const __dirname = path.dirname(__filename);
 const ROOT_DIR = process.env.FREEROAM_TEST_ROOT || __dirname;
 
 const CONFIG_PATH = path.join(ROOT_DIR, 'config.json');
-const DATA_DIR = path.join(ROOT_DIR, 'data');
-const CHARACTERS_PATH = path.join(DATA_DIR, 'characters.json');
-const PLACES_PATH = path.join(DATA_DIR, 'places.json');
-const WORLD_PATH = path.join(DATA_DIR, 'world.json');
-const PERSONAS_PATH = path.join(DATA_DIR, 'personas.json');
-const PRESETS_PATH = path.join(DATA_DIR, 'presets.json');
-const AVATAR_DIR = path.join(ROOT_DIR, 'uploads', 'avatars');
-const PERSONA_AVATAR_DIR = path.join(AVATAR_DIR, 'personas');
-const MEMORY_DIR = path.join(DATA_DIR, 'memories');
-const CHAT_DIR = path.join(DATA_DIR, 'chats');
+const AVATAR_ROOT = path.join(ROOT_DIR, 'uploads', 'avatars');
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
-fs.mkdirSync(AVATAR_DIR, { recursive: true });
-fs.mkdirSync(PERSONA_AVATAR_DIR, { recursive: true });
-
-// SQLite holds memories (vectors as binary blobs) and relationships; any
-// pre-existing JSON memory files get imported once, then the old directory
-// is renamed out of the way.
-const db = openDb(path.join(DATA_DIR, 'freeroam.db'));
-importJsonMemories(db, MEMORY_DIR);
+// Every world (save slot) gets its own characters/places/world-state/
+// personas/presets, its own chat logs, and its own SQLite db — resolved
+// per-request from the X-World-Id header (see the middleware below), never
+// from a server-side "current world" pointer, so different browsers/users
+// can be in different worlds on the same running instance at once.
+// config.json (API key/model/narrator/memory settings) stays global.
+const registry = createWorldRegistry({ rootDir: ROOT_DIR });
+await registry.init();
 
 // --- Config (endpoint + model) ---------------------------------------------
 
@@ -185,16 +175,16 @@ const SEED_PLACES = [
     desc: "A locked workshop where the neighborhood's clockwork gets quietly repaired." },
 ];
 
-function loadPlaces() {
+function loadPlaces(w) {
   try {
-    return JSON.parse(fs.readFileSync(PLACES_PATH, 'utf-8'));
+    return JSON.parse(fs.readFileSync(w.paths.places, 'utf-8'));
   } catch {
-    savePlaces(SEED_PLACES);
+    savePlaces(w, SEED_PLACES);
     return SEED_PLACES;
   }
 }
-function savePlaces(list) {
-  fs.writeFileSync(PLACES_PATH, JSON.stringify(list, null, 2));
+function savePlaces(w, list) {
+  fs.writeFileSync(w.paths.places, JSON.stringify(list, null, 2));
 }
 
 function slugify(name) {
@@ -254,18 +244,18 @@ function normalizeCharacter(c) {
   return base;
 }
 
-function loadCharacters() {
+function loadCharacters(w) {
   let raw;
   try {
-    raw = JSON.parse(fs.readFileSync(CHARACTERS_PATH, 'utf-8'));
+    raw = JSON.parse(fs.readFileSync(w.paths.characters, 'utf-8'));
   } catch {
     raw = BUILTIN_CHARACTERS;
-    saveCharacters(raw);
+    saveCharacters(w, raw);
   }
   return raw.map(normalizeCharacter);
 }
-function saveCharacters(list) {
-  fs.writeFileSync(CHARACTERS_PATH, JSON.stringify(list, null, 2));
+function saveCharacters(w, list) {
+  fs.writeFileSync(w.paths.characters, JSON.stringify(list, null, 2));
 }
 
 // World state: placements + the in-world clock + the global setting text.
@@ -278,17 +268,17 @@ function normalizeWorld(world) {
   };
 }
 
-function loadWorld() {
+function loadWorld(w) {
   try {
-    return normalizeWorld(JSON.parse(fs.readFileSync(WORLD_PATH, 'utf-8')));
+    return normalizeWorld(JSON.parse(fs.readFileSync(w.paths.world, 'utf-8')));
   } catch {
     const world = normalizeWorld({ placements: DEFAULT_PLACEMENTS });
-    saveWorld(world);
+    saveWorld(w, world);
     return world;
   }
 }
-function saveWorld(world) {
-  fs.writeFileSync(WORLD_PATH, JSON.stringify(world, null, 2));
+function saveWorld(w, world) {
+  fs.writeFileSync(w.paths.world, JSON.stringify(world, null, 2));
 }
 
 // Deterministic-ish color for uploaded characters, spread around the wheel.
@@ -306,16 +296,16 @@ function colorForName(name) {
 
 const DEFAULT_PERSONAS = { personas: [], activePersonaId: null };
 
-function loadPersonas() {
+function loadPersonas(w) {
   try {
-    return { ...DEFAULT_PERSONAS, ...JSON.parse(fs.readFileSync(PERSONAS_PATH, 'utf-8')) };
+    return { ...DEFAULT_PERSONAS, ...JSON.parse(fs.readFileSync(w.paths.personas, 'utf-8')) };
   } catch {
-    savePersonas(DEFAULT_PERSONAS);
+    savePersonas(w, DEFAULT_PERSONAS);
     return { ...DEFAULT_PERSONAS };
   }
 }
-function savePersonas(data) {
-  fs.writeFileSync(PERSONAS_PATH, JSON.stringify(data, null, 2));
+function savePersonas(w, data) {
+  fs.writeFileSync(w.paths.personas, JSON.stringify(data, null, 2));
 }
 
 const EXT_FOR_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
@@ -332,16 +322,16 @@ const EXT_FOR_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'w
 
 const DEFAULT_PRESETS = { presets: [], activePresetId: null };
 
-function loadPresets() {
+function loadPresets(w) {
   try {
-    return { ...DEFAULT_PRESETS, ...JSON.parse(fs.readFileSync(PRESETS_PATH, 'utf-8')) };
+    return { ...DEFAULT_PRESETS, ...JSON.parse(fs.readFileSync(w.paths.presets, 'utf-8')) };
   } catch {
-    savePresets(DEFAULT_PRESETS);
+    savePresets(w, DEFAULT_PRESETS);
     return { ...DEFAULT_PRESETS };
   }
 }
-function savePresets(data) {
-  fs.writeFileSync(PRESETS_PATH, JSON.stringify(data, null, 2));
+function savePresets(w, data) {
+  fs.writeFileSync(w.paths.presets, JSON.stringify(data, null, 2));
 }
 
 // --- App ----------------------------------------------------------------
@@ -355,7 +345,29 @@ app.use(express.json());
 // dev server (`npm run dev` in frontend/) instead, which proxies /api and
 // /avatars requests through to this server (see frontend/vite.config.js).
 app.use(express.static(path.join(__dirname, '..', 'frontend', 'dist')));
-app.use('/avatars', express.static(AVATAR_DIR));
+// One static mount for every world's avatars — express.static happily
+// serves nested paths, so /avatars/<worldId>/<file> and
+// /avatars/<worldId>/personas/<file> both resolve here without any
+// per-world route. World isolation for avatars is path-encoded rather than
+// header-based because an <img src> can't send a custom header.
+app.use('/avatars', express.static(AVATAR_ROOT));
+
+// Resolves the active world for every /api request from the X-World-Id
+// header — absent means the registry's default world (old tabs, curl, the
+// test suite all keep working); present-but-unknown is a 400, never a
+// silent fallback, since that could write into the wrong save. /api/worlds*
+// manages the registry itself and is exempted: it must keep working even
+// when the caller's stored world id no longer exists, since GET /api/worlds
+// is exactly how the frontend recovers from that.
+app.use('/api', (req, res, next) => {
+  if (req.path === '/worlds' || req.path.startsWith('/worlds/')) return next();
+  const headerId = req.get('X-World-Id');
+  const world = headerId ? registry.get(headerId) : registry.getDefault();
+  if (!world) return res.status(400).json({ error: 'Unknown world id.', code: 'UNKNOWN_WORLD' });
+  req.world = world;
+  registry.touch(world.id);
+  next();
+});
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -429,20 +441,26 @@ app.post('/api/settings/clear-key', (req, res) => {
   res.json({ hasKey: false, model: cfg.model });
 });
 
-// Re-embeds every stored memory + relationship row with the current
-// embedding model. Never triggered automatically (see embeddings.js) — only
-// this explicit, user-initiated action re-computes vectors, since it's a
-// synchronous local-model pass over the whole DB and can take a while on a
-// large history.
+// Re-embeds every stored memory + relationship + character row with the
+// current embedding model, across EVERY world — embeddingModelVersion is
+// global config, so a rebuild should make every save consistent with it,
+// not just whichever world happened to trigger the request. Never
+// triggered automatically (see embeddings.js) — only this explicit,
+// user-initiated action re-computes vectors, since it's a synchronous
+// local-model pass over every world's whole DB and can take a while.
 app.post('/api/settings/rebuild-embeddings', async (req, res) => {
   try {
-    const memories = await rebuildAllMemoryEmbeddings({ db, embedFn: embed });
-    const relationships = await rebuildAllRelationshipEmbeddings({ db, embedFn: embed });
-    const characters = await rebuildAllCharacterEmbeddings({ db, embedFn: embed, characters: loadCharacters() });
+    let memories = 0, relationships = 0, characters = 0;
+    for (const { id } of registry.list().worlds) {
+      const w = registry.get(id);
+      memories += await rebuildAllMemoryEmbeddings({ db: w.db, embedFn: embed });
+      relationships += await rebuildAllRelationshipEmbeddings({ db: w.db, embedFn: embed });
+      characters += await rebuildAllCharacterEmbeddings({ db: w.db, embedFn: embed, characters: loadCharacters(w) });
+    }
     const cfg = loadConfig();
     cfg.embeddingModelVersion = EMBEDDING_MODEL_ID;
     saveConfig(cfg);
-    logger.info('memory', `rebuilt embeddings for ${memories} memories, ${relationships} relationships, ${characters} characters (model ${EMBEDDING_MODEL_ID})`);
+    logger.info('memory', `rebuilt embeddings for ${memories} memories, ${relationships} relationships, ${characters} characters across all worlds (model ${EMBEDDING_MODEL_ID})`);
     res.json({ memories, relationships, characters, model: EMBEDDING_MODEL_ID });
   } catch (err) {
     logger.error('memory', `embedding rebuild failed: ${err.message}`);
@@ -491,10 +509,57 @@ app.get('/api/models/providers', async (req, res) => {
   }
 });
 
+// --- World (save-slot) management routes -----------------------------
+// These manage the registry of worlds itself — exempted from the
+// world-resolution middleware above (req.world is not set/needed here).
+
+app.get('/api/worlds', (req, res) => {
+  res.json(registry.list());
+});
+
+app.post('/api/worlds', async (req, res) => {
+  const { name, mode, cloneFromId, includeHistory } = req.body || {};
+  try {
+    const world = await registry.create({ name, mode, cloneFromId, includeHistory });
+    res.status(201).json({ world });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.put('/api/worlds/:id', (req, res) => {
+  const { name } = req.body || {};
+  try {
+    const world = registry.rename(req.params.id, name);
+    res.json({ world });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/worlds/:id', async (req, res) => {
+  try {
+    const result = await registry.remove(req.params.id);
+    res.json({ ok: true, defaultWorldId: result.defaultWorldId });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/worlds/:id/duplicate', async (req, res) => {
+  const { name, includeHistory } = req.body || {};
+  try {
+    const world = await registry.duplicate(req.params.id, { name, includeHistory });
+    res.status(201).json({ world });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 // --- Character routes -------------------------------------------------
 
 app.get('/api/characters', (req, res) => {
-  res.json({ characters: loadCharacters() });
+  res.json({ characters: loadCharacters(req.world) });
 });
 
 // Accepts either a multipart TavernCard PNG upload (field "card") or a
@@ -502,6 +567,7 @@ app.get('/api/characters', (req, res) => {
 // for characters created without a card — e.g. an NPC introduced mid-scene
 // and saved via the "Save as character" flow, or one entered from scratch.
 app.post('/api/characters', upload.single('card'), (req, res) => {
+  const w = req.world;
   if (req.file) {
     let card;
     try {
@@ -511,7 +577,7 @@ app.post('/api/characters', upload.single('card'), (req, res) => {
     }
 
     const id = crypto.randomUUID();
-    fs.writeFileSync(path.join(AVATAR_DIR, `${id}.png`), req.file.buffer);
+    fs.writeFileSync(path.join(w.avatarDir, `${id}.png`), req.file.buffer);
 
     const character = {
       id,
@@ -522,16 +588,16 @@ app.post('/api/characters', upload.single('card'), (req, res) => {
       exampleDialogue: card.exampleDialogue,
       greetings: card.greetings,
       source: 'upload',
-      avatarUrl: `/avatars/${id}.png`,
+      avatarUrl: `${w.avatarUrlBase}/${id}.png`,
       color: colorForName(card.name),
       tags: card.tags,
       creator: card.creator,
       spec: card.spec,
     };
 
-    const characters = loadCharacters();
+    const characters = loadCharacters(w);
     characters.push(character);
-    saveCharacters(characters);
+    saveCharacters(w, characters);
     return res.status(201).json({ character });
   }
 
@@ -554,9 +620,9 @@ app.post('/api/characters', upload.single('card'), (req, res) => {
     color: colorForName(name.trim()),
   };
 
-  const characters = loadCharacters();
+  const characters = loadCharacters(w);
   characters.push(character);
-  saveCharacters(characters);
+  saveCharacters(w, characters);
   res.status(201).json({ character });
 });
 
@@ -565,6 +631,7 @@ app.post('/api/characters', upload.single('card'), (req, res) => {
 // "Save as character" modal's "Draft persona" button — the result is a
 // starting point the user edits before saving, not a final answer.
 app.post('/api/characters/draft', async (req, res) => {
+  const w = req.world;
   const { name, log, userLabel } = req.body || {};
   if (typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'A character name is required.' });
@@ -587,7 +654,7 @@ app.post('/api/characters/draft', async (req, res) => {
   // can carry genre/tone/world-rules info a persona draft should respect
   // just as much as the scene excerpt does, so it goes in alongside it
   // rather than being left for the model to guess at.
-  const world = loadWorld();
+  const world = loadWorld(w);
   const worldSetting = world.setting;
   const worldBlock = worldSetting && worldSetting.trim() ? `${STANDARD_LABEL.worldInfoBefore}:\n${worldSetting.trim()}\n\n` : '';
 
@@ -596,7 +663,7 @@ app.post('/api/characters/draft', async (req, res) => {
   // prompt block, so a custom prompt can reference {{char}}, {{world}},
   // {{user}}/{{persona}}, and {{day}}/{{time}}/{{weekday}} instead of only
   // ever describing the character being drafted by a hardcoded position.
-  const { personas, activePersonaId } = loadPersonas();
+  const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
   const macroCtx = {
     userName: activePersona ? activePersona.name : (typeof userLabel === 'string' && userLabel.trim() ? userLabel.trim() : 'Visitor'),
@@ -636,45 +703,47 @@ app.post('/api/characters/draft', async (req, res) => {
 });
 
 app.delete('/api/characters/:id', (req, res) => {
+  const w = req.world;
   const { id } = req.params;
-  const characters = loadCharacters();
+  const characters = loadCharacters(w);
   const target = characters.find((c) => c.id === id);
   if (!target) return res.status(404).json({ error: 'Character not found.' });
 
   const remaining = characters.filter((c) => c.id !== id);
-  saveCharacters(remaining);
+  saveCharacters(w, remaining);
 
   if (target.avatarUrl) {
-    const avatarPath = path.join(AVATAR_DIR, path.basename(target.avatarUrl));
+    const avatarPath = path.join(w.avatarDir, path.basename(target.avatarUrl));
     fs.rm(avatarPath, { force: true }, () => {});
   }
 
-  const world = loadWorld();
+  const world = loadWorld(w);
   if (world.placements[id] !== undefined) {
     delete world.placements[id];
-    saveWorld(world);
+    saveWorld(w, world);
   }
 
-  const places = loadPlaces();
+  const places = loadPlaces(w);
   let placesChanged = false;
   places.forEach((p) => {
     if (p.ownerId === id) { p.ownerId = null; placesChanged = true; }
   });
-  if (placesChanged) savePlaces(places);
+  if (placesChanged) savePlaces(w, places);
 
   // Clean up the character's memories, relationships either way, and
   // identity embedding.
-  deleteAllCharacterMemories(db, id);
-  db.prepare('DELETE FROM relationships WHERE character_id = ? OR target_id = ?').run(id, id);
-  deleteCharacterEmbedding(db, id);
+  deleteAllCharacterMemories(w.db, id);
+  w.db.prepare('DELETE FROM relationships WHERE character_id = ? OR target_id = ?').run(id, id);
+  deleteCharacterEmbedding(w.db, id);
 
   res.json({ ok: true });
 });
 
 // Edit a character's fields directly (any source, including builtin).
 app.put('/api/characters/:id', async (req, res) => {
+  const w = req.world;
   const { id } = req.params;
-  const characters = loadCharacters();
+  const characters = loadCharacters(w);
   const character = characters.find((c) => c.id === id);
   if (!character) return res.status(404).json({ error: 'Character not found.' });
 
@@ -689,12 +758,12 @@ app.put('/api/characters/:id', async (req, res) => {
   if (typeof scenario === 'string') character.scenario = scenario.trim();
   if (typeof exampleDialogue === 'string') character.exampleDialogue = exampleDialogue.trim();
 
-  saveCharacters(characters);
+  saveCharacters(w, characters);
   // The identity embedding (characterEmbeddings.js) is built from name +
   // description/personality — recompute the character's one row when any
   // of those changed.
   if (identityChanged) {
-    await refreshCharacterEmbedding({ db, embedFn: embed, char: character });
+    await refreshCharacterEmbedding({ db: w.db, embedFn: embed, char: character });
     logger.info('memory', `refreshed identity embedding for ${character.name}`);
   }
   res.json({ character });
@@ -705,6 +774,7 @@ app.put('/api/characters/:id', async (req, res) => {
 // by nothing else — movement itself happens automatically in
 // POST /api/world/time, not through this route.
 app.put('/api/characters/:id/schedule/:day/:timeOfDay', (req, res) => {
+  const w = req.world;
   const { id, day, timeOfDay } = req.params;
   if (!WEEKDAYS.includes(day)) {
     return res.status(400).json({ error: `day must be one of: ${WEEKDAYS.join(', ')}` });
@@ -713,7 +783,7 @@ app.put('/api/characters/:id/schedule/:day/:timeOfDay', (req, res) => {
     return res.status(400).json({ error: `timeOfDay must be one of: ${TIMES_OF_DAY.join(', ')}` });
   }
 
-  const characters = loadCharacters();
+  const characters = loadCharacters(w);
   const character = characters.find((c) => c.id === id);
   if (!character) return res.status(404).json({ error: 'Character not found.' });
 
@@ -723,25 +793,26 @@ app.put('/api/characters/:id/schedule/:day/:timeOfDay', (req, res) => {
   if (!placeId) {
     if (character.schedule[day]) delete character.schedule[day][timeOfDay];
   } else {
-    if (!loadPlaces().some((p) => p.id === placeId)) {
+    if (!loadPlaces(w).some((p) => p.id === placeId)) {
       return res.status(404).json({ error: 'Place not found.' });
     }
     if (!character.schedule[day]) character.schedule[day] = {};
     character.schedule[day][timeOfDay] = { placeId, reason: typeof reason === 'string' ? reason.trim() : '' };
   }
 
-  saveCharacters(characters);
+  saveCharacters(w, characters);
   res.json({ character });
 });
 
 // --- Persona routes -----------------------------------------------------
 
 app.get('/api/personas', (req, res) => {
-  res.json(loadPersonas());
+  res.json(loadPersonas(req.world));
 });
 
 // Accepts multipart (name, description, optional "avatar" file) or plain JSON.
 app.post('/api/personas', uploadPersonaAvatar.single('avatar'), (req, res) => {
+  const w = req.world;
   const { name, description } = req.body || {};
   if (typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'A persona name is required.' });
@@ -751,8 +822,8 @@ app.post('/api/personas', uploadPersonaAvatar.single('avatar'), (req, res) => {
   let avatarUrl = null;
   if (req.file) {
     const ext = EXT_FOR_MIME[req.file.mimetype];
-    fs.writeFileSync(path.join(PERSONA_AVATAR_DIR, `${id}.${ext}`), req.file.buffer);
-    avatarUrl = `/avatars/personas/${id}.${ext}`;
+    fs.writeFileSync(path.join(w.personaAvatarDir, `${id}.${ext}`), req.file.buffer);
+    avatarUrl = `${w.avatarUrlBase}/personas/${id}.${ext}`;
   }
 
   const persona = {
@@ -763,15 +834,16 @@ app.post('/api/personas', uploadPersonaAvatar.single('avatar'), (req, res) => {
     color: colorForName(name.trim()),
   };
 
-  const data = loadPersonas();
+  const data = loadPersonas(w);
   data.personas.push(persona);
-  savePersonas(data);
+  savePersonas(w, data);
   res.status(201).json({ persona });
 });
 
 app.put('/api/personas/:id', uploadPersonaAvatar.single('avatar'), (req, res) => {
+  const w = req.world;
   const { id } = req.params;
-  const data = loadPersonas();
+  const data = loadPersonas(w);
   const persona = data.personas.find((p) => p.id === id);
   if (!persona) return res.status(404).json({ error: 'Persona not found.' });
 
@@ -781,49 +853,51 @@ app.put('/api/personas/:id', uploadPersonaAvatar.single('avatar'), (req, res) =>
 
   if (req.file) {
     if (persona.avatarUrl) {
-      fs.rm(path.join(AVATAR_DIR, 'personas', path.basename(persona.avatarUrl)), { force: true }, () => {});
+      fs.rm(path.join(w.personaAvatarDir, path.basename(persona.avatarUrl)), { force: true }, () => {});
     }
     const ext = EXT_FOR_MIME[req.file.mimetype];
-    fs.writeFileSync(path.join(PERSONA_AVATAR_DIR, `${id}.${ext}`), req.file.buffer);
-    persona.avatarUrl = `/avatars/personas/${id}.${ext}`;
+    fs.writeFileSync(path.join(w.personaAvatarDir, `${id}.${ext}`), req.file.buffer);
+    persona.avatarUrl = `${w.avatarUrlBase}/personas/${id}.${ext}`;
   }
 
-  savePersonas(data);
+  savePersonas(w, data);
   res.json({ persona });
 });
 
 app.delete('/api/personas/:id', (req, res) => {
+  const w = req.world;
   const { id } = req.params;
-  const data = loadPersonas();
+  const data = loadPersonas(w);
   const target = data.personas.find((p) => p.id === id);
   if (!target) return res.status(404).json({ error: 'Persona not found.' });
 
   data.personas = data.personas.filter((p) => p.id !== id);
   if (data.activePersonaId === id) data.activePersonaId = null;
-  savePersonas(data);
+  savePersonas(w, data);
 
   if (target.avatarUrl) {
-    fs.rm(path.join(AVATAR_DIR, 'personas', path.basename(target.avatarUrl)), { force: true }, () => {});
+    fs.rm(path.join(w.personaAvatarDir, path.basename(target.avatarUrl)), { force: true }, () => {});
   }
 
   res.json({ ok: true });
 });
 
 app.post('/api/personas/active', (req, res) => {
+  const w = req.world;
   const { id } = req.body || {};
-  const data = loadPersonas();
+  const data = loadPersonas(w);
   if (id !== null && id !== undefined && !data.personas.some((p) => p.id === id)) {
     return res.status(400).json({ error: 'Unknown persona id.' });
   }
   data.activePersonaId = id || null;
-  savePersonas(data);
+  savePersonas(w, data);
   res.json({ activePersonaId: data.activePersonaId });
 });
 
 // --- Prompt preset routes -------------------------------------------------
 
 app.get('/api/presets', (req, res) => {
-  res.json(loadPresets());
+  res.json(loadPresets(req.world));
 });
 
 // Catalog for the Prompts view's "insert standard block" dropdown — see
@@ -832,7 +906,7 @@ app.get('/api/prompts/standard-blocks', (req, res) => {
   res.json({ blocks: STANDARD_PROMPT_BLOCKS });
 });
 
-function createPreset({ name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage }) {
+function createPreset(w, { name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage }) {
   const preset = {
     id: crypto.randomUUID(),
     name: name.trim(),
@@ -841,18 +915,19 @@ function createPreset({ name, prompts, contextLength, maxReplyTokens, memoryAsSe
     prompts: normalizePromptList(prompts),
     memoryAsSeparateMessage: !!memoryAsSeparateMessage,
   };
-  const data = loadPresets();
+  const data = loadPresets(w);
   data.presets.push(preset);
-  savePresets(data);
+  savePresets(w, data);
   return preset;
 }
 
 app.post('/api/presets', (req, res) => {
+  const w = req.world;
   const { name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage } = req.body || {};
   if (typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'A preset name is required.' });
   }
-  res.status(201).json({ preset: createPreset({ name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage }) });
+  res.status(201).json({ preset: createPreset(w, { name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage }) });
 });
 
 // Transforms a raw SillyTavern Chat Completion preset export into a
@@ -860,13 +935,14 @@ app.post('/api/presets', (req, res) => {
 // it read from a dropped file plus a fallback name (from the filename,
 // since ST presets don't carry their own "name" field).
 app.post('/api/presets/import', (req, res) => {
+  const w = req.world;
   const { raw, fallbackName } = req.body || {};
   if (!raw || typeof raw !== 'object') {
     return res.status(400).json({ error: 'A raw SillyTavern preset object is required.' });
   }
   try {
     const parsed = importSillyTavernPreset(raw, fallbackName);
-    res.status(201).json({ preset: createPreset(parsed) });
+    res.status(201).json({ preset: createPreset(w, parsed) });
   } catch (err) {
     res.status(400).json({ error: err.message || 'Could not import this preset.' });
   }
@@ -888,8 +964,9 @@ app.post('/api/presets/export', (req, res) => {
 });
 
 app.put('/api/presets/:id', (req, res) => {
+  const w = req.world;
   const { id } = req.params;
-  const data = loadPresets();
+  const data = loadPresets(w);
   const preset = data.presets.find((p) => p.id === id);
   if (!preset) return res.status(404).json({ error: 'Preset not found.' });
 
@@ -900,52 +977,55 @@ app.put('/api/presets/:id', (req, res) => {
   if (maxReplyTokens !== undefined) preset.maxReplyTokens = normalizeContextNumber(maxReplyTokens, preset.maxReplyTokens || DEFAULT_MAX_REPLY_TOKENS);
   if (typeof memoryAsSeparateMessage === 'boolean') preset.memoryAsSeparateMessage = memoryAsSeparateMessage;
 
-  savePresets(data);
+  savePresets(w, data);
   res.json({ preset });
 });
 
 app.delete('/api/presets/:id', (req, res) => {
+  const w = req.world;
   const { id } = req.params;
-  const data = loadPresets();
+  const data = loadPresets(w);
   if (!data.presets.some((p) => p.id === id)) return res.status(404).json({ error: 'Preset not found.' });
 
   data.presets = data.presets.filter((p) => p.id !== id);
   if (data.activePresetId === id) data.activePresetId = null;
-  savePresets(data);
+  savePresets(w, data);
   res.json({ ok: true });
 });
 
 app.post('/api/presets/active', (req, res) => {
+  const w = req.world;
   const { id } = req.body || {};
-  const data = loadPresets();
+  const data = loadPresets(w);
   if (id !== null && id !== undefined && !data.presets.some((p) => p.id === id)) {
     return res.status(400).json({ error: 'Unknown preset id.' });
   }
   data.activePresetId = id || null;
-  savePresets(data);
+  savePresets(w, data);
   res.json({ activePresetId: data.activePresetId });
 });
 
 // --- Places routes ----------------------------------------------------
 
 app.get('/api/places', (req, res) => {
-  res.json({ places: loadPlaces() });
+  res.json({ places: loadPlaces(req.world) });
 });
 
 app.post('/api/places', (req, res) => {
+  const w = req.world;
   const { name, desc, type, ownerId, area } = req.body || {};
   if (typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'A place name is required.' });
   }
   const placeType = type === 'private' ? 'private' : 'communal';
   if (placeType === 'private' && ownerId) {
-    const characters = loadCharacters();
+    const characters = loadCharacters(w);
     if (!characters.some((c) => c.id === ownerId)) {
       return res.status(400).json({ error: 'Unknown owner character id.' });
     }
   }
 
-  const places = loadPlaces();
+  const places = loadPlaces(w);
   const place = {
     id: uniquePlaceId(name.trim(), places),
     name: name.trim(),
@@ -955,13 +1035,14 @@ app.post('/api/places', (req, res) => {
     area: (area || '').trim(),
   };
   places.push(place);
-  savePlaces(places);
+  savePlaces(w, places);
   res.status(201).json({ place });
 });
 
 app.put('/api/places/:id', (req, res) => {
+  const w = req.world;
   const { id } = req.params;
-  const places = loadPlaces();
+  const places = loadPlaces(w);
   const place = places.find((p) => p.id === id);
   if (!place) return res.status(404).json({ error: 'Place not found.' });
 
@@ -973,7 +1054,7 @@ app.put('/api/places/:id', (req, res) => {
   if (place.type === 'private') {
     if (ownerId !== undefined) {
       if (ownerId) {
-        const characters = loadCharacters();
+        const characters = loadCharacters(w);
         if (!characters.some((c) => c.id === ownerId)) {
           return res.status(400).json({ error: 'Unknown owner character id.' });
         }
@@ -984,25 +1065,26 @@ app.put('/api/places/:id', (req, res) => {
     place.ownerId = null;
   }
 
-  savePlaces(places);
+  savePlaces(w, places);
   res.json({ place });
 });
 
 app.delete('/api/places/:id', (req, res) => {
+  const w = req.world;
   const { id } = req.params;
-  const places = loadPlaces();
+  const places = loadPlaces(w);
   if (!places.some((p) => p.id === id)) return res.status(404).json({ error: 'Place not found.' });
 
-  savePlaces(places.filter((p) => p.id !== id));
+  savePlaces(w, places.filter((p) => p.id !== id));
 
-  const world = loadWorld();
+  const world = loadWorld(w);
   let changed = false;
   Object.entries(world.placements).forEach(([charId, placement]) => {
     if (placement.placeId === id) { delete world.placements[charId]; changed = true; }
   });
-  if (changed) saveWorld(world);
+  if (changed) saveWorld(w, world);
 
-  deleteChatLog(CHAT_DIR, id);
+  deleteChatLog(w.chatDir, id);
 
   res.json({ ok: true });
 });
@@ -1010,8 +1092,9 @@ app.delete('/api/places/:id', (req, res) => {
 // --- World / placement routes ------------------------------------------
 
 app.get('/api/world', (req, res) => {
-  const world = loadWorld();
-  res.json({ places: loadPlaces(), placements: world.placements, time: world.time, setting: world.setting });
+  const w = req.world;
+  const world = loadWorld(w);
+  res.json({ places: loadPlaces(w), placements: world.placements, time: world.time, setting: world.setting });
 });
 
 // Place (or unplace, with placeId: null) a character, set which greeting
@@ -1021,19 +1104,20 @@ app.get('/api/world', (req, res) => {
 // never leaves them silently stuck inactive there. Fields not included in
 // the body are left as-is.
 app.post('/api/characters/:id/place', (req, res) => {
+  const w = req.world;
   const { id } = req.params;
   const { placeId, greetingIndex, active } = req.body || {};
 
-  const characters = loadCharacters();
+  const characters = loadCharacters(w);
   const character = characters.find((c) => c.id === id);
   if (!character) return res.status(404).json({ error: 'Character not found.' });
 
-  const world = loadWorld();
-  const placeIds = loadPlaces().map((p) => p.id);
+  const world = loadWorld(w);
+  const placeIds = loadPlaces(w).map((p) => p.id);
 
   if (placeId === null) {
     delete world.placements[id];
-    saveWorld(world);
+    saveWorld(w, world);
     return res.json({ placements: world.placements });
   }
 
@@ -1060,27 +1144,28 @@ app.post('/api/characters/:id/place', (req, res) => {
   }
 
   world.placements[id] = existing;
-  saveWorld(world);
+  saveWorld(w, world);
   res.json({ placements: world.placements });
 });
 
 // Scatter every known character across the places at random.
 // Randomized placements always start with no scripted greeting (AI-improvised arrival).
 app.post('/api/world/randomize', (req, res) => {
+  const w = req.world;
   const { placeIds } = req.body || {};
-  const allIds = loadPlaces().map((p) => p.id);
+  const allIds = loadPlaces(w).map((p) => p.id);
   const pool = Array.isArray(placeIds) && placeIds.length ? placeIds.filter((p) => allIds.includes(p)) : allIds;
   if (!pool.length) return res.status(400).json({ error: 'No valid places to place characters in.' });
 
-  const characters = loadCharacters();
+  const characters = loadCharacters(w);
   const placements = {};
   characters.forEach((c) => {
     placements[c.id] = { placeId: pool[Math.floor(Math.random() * pool.length)], greetingIndex: null };
   });
 
-  const world = loadWorld();
+  const world = loadWorld(w);
   world.placements = placements;
-  saveWorld(world);
+  saveWorld(w, world);
   res.json({ placements });
 });
 
@@ -1107,8 +1192,9 @@ function applyScheduledPlacements(world, characters) {
 }
 
 app.post('/api/world/time', (req, res) => {
+  const w = req.world;
   const { advance, retreat, day, timeOfDay } = req.body || {};
-  const world = loadWorld();
+  const world = loadWorld(w);
 
   if (advance) {
     const idx = TIMES_OF_DAY.indexOf(world.time.timeOfDay);
@@ -1134,17 +1220,18 @@ app.post('/api/world/time', (req, res) => {
     world.time.day = n;
   }
 
-  applyScheduledPlacements(world, loadCharacters());
-  saveWorld(world);
+  applyScheduledPlacements(world, loadCharacters(w));
+  saveWorld(w, world);
   res.json({ time: world.time, placements: world.placements });
 });
 
 app.post('/api/world/setting', (req, res) => {
+  const w = req.world;
   const { setting } = req.body || {};
   if (typeof setting !== 'string') return res.status(400).json({ error: 'setting must be a string.' });
-  const world = loadWorld();
+  const world = loadWorld(w);
   world.setting = setting.trim();
-  saveWorld(world);
+  saveWorld(w, world);
   res.json({ setting: world.setting });
 });
 
@@ -1155,6 +1242,7 @@ app.post('/api/world/setting', (req, res) => {
 // characterMemory preset marker) and /record after a turn completes.
 
 app.post('/api/memory/record', async (req, res) => {
+  const w = req.world;
   const { text, placeId, personaId, characterIds, entryIds, day, timeOfDay } = req.body || {};
   if (typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'text is required.' });
@@ -1165,7 +1253,7 @@ app.post('/api/memory/record', async (req, res) => {
 
   try {
     const result = await recordTurn({
-      db,
+      db: w.db,
       embedFn: embed,
       characterIds,
       personaId: personaId || null,
@@ -1182,6 +1270,7 @@ app.post('/api/memory/record', async (req, res) => {
 });
 
 app.post('/api/memory/retrieve', async (req, res) => {
+  const w = req.world;
   const { query, characterIds, topKPerCharacter } = req.body || {};
   if (typeof query !== 'string' || !query.trim() || !Array.isArray(characterIds) || !characterIds.length) {
     return res.json({ memories: [] });
@@ -1189,7 +1278,7 @@ app.post('/api/memory/retrieve', async (req, res) => {
 
   try {
     const memories = await retrieveMemories({
-      db,
+      db: w.db,
       embedFn: embed,
       characterIds,
       query,
@@ -1207,10 +1296,11 @@ app.post('/api/memory/retrieve', async (req, res) => {
 // /record and /retrieve routes so those aren't shadowed by :characterId.
 
 app.get('/api/memory/:characterId', (req, res) => {
-  res.json({ memories: listCharacterMemories(db, req.params.characterId) });
+  res.json({ memories: listCharacterMemories(req.world.db, req.params.characterId) });
 });
 
 app.post('/api/memory/:characterId', async (req, res) => {
+  const w = req.world;
   const { text, personaId, placeId } = req.body || {};
   if (typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'text is required.' });
@@ -1218,7 +1308,7 @@ app.post('/api/memory/:characterId', async (req, res) => {
 
   try {
     const memory = await addCharacterMemory({
-      db,
+      db: w.db,
       embedFn: embed,
       characterId: req.params.characterId,
       personaId: personaId || null,
@@ -1232,6 +1322,7 @@ app.post('/api/memory/:characterId', async (req, res) => {
 });
 
 app.put('/api/memory/:characterId/:entryId', async (req, res) => {
+  const w = req.world;
   const { text } = req.body || {};
   if (typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'text is required.' });
@@ -1239,7 +1330,7 @@ app.put('/api/memory/:characterId/:entryId', async (req, res) => {
 
   try {
     const memory = await updateCharacterMemory({
-      db,
+      db: w.db,
       embedFn: embed,
       characterId: req.params.characterId,
       entryId: req.params.entryId,
@@ -1253,7 +1344,7 @@ app.put('/api/memory/:characterId/:entryId', async (req, res) => {
 });
 
 app.delete('/api/memory/:characterId/:entryId', (req, res) => {
-  const ok = deleteCharacterMemory(db, req.params.characterId, req.params.entryId);
+  const ok = deleteCharacterMemory(req.world.db, req.params.characterId, req.params.entryId);
   if (!ok) return res.status(404).json({ error: 'Memory not found.' });
   res.json({ ok: true });
 });
@@ -1266,19 +1357,20 @@ app.delete('/api/memory/:characterId/:entryId', (req, res) => {
 // ones are just typed in.
 
 app.get('/api/relationships', (req, res) => {
-  const relationships = db.prepare('SELECT character_id, target_id, labels FROM relationships').all()
+  const relationships = req.world.db.prepare('SELECT character_id, target_id, labels FROM relationships').all()
     .map((r) => ({ characterId: r.character_id, targetId: r.target_id, labels: JSON.parse(r.labels || '[]') }));
   res.json({ relationships });
 });
 
 app.put('/api/relationships/:characterId/:targetId', async (req, res) => {
+  const w = req.world;
   const { characterId, targetId } = req.params;
   const { labels } = req.body || {};
   if (!Array.isArray(labels) || labels.some((l) => typeof l !== 'string')) {
     return res.status(400).json({ error: 'labels must be an array of strings.' });
   }
 
-  const characters = loadCharacters();
+  const characters = loadCharacters(w);
   if (!characters.some((c) => c.id === characterId)) {
     return res.status(404).json({ error: 'Character not found.' });
   }
@@ -1290,7 +1382,7 @@ app.put('/api/relationships/:characterId/:targetId', async (req, res) => {
     return res.status(400).json({ error: 'A character cannot have a relationship with themselves.' });
   }
 
-  const result = await upsertRelationship({ db, embedFn: embed, characterId, targetId, labels });
+  const result = await upsertRelationship({ db: w.db, embedFn: embed, characterId, targetId, labels });
   if (result.removed) return res.json({ ok: true, removed: true });
   res.json({ ok: true, labels: result.labels });
 });
@@ -1474,13 +1566,13 @@ app.post('/api/chat', async (req, res) => {
 // the token budget, and how much history fits) is decided here, not by the
 // browser. The frontend just renders whatever text comes back.
 // --- Persisted chat routes -------------------------------------------------
-// The backend owns chat entirely: logs live in data/chats/<placeId>.json,
+// The backend owns chat entirely: logs live in data/worlds/<id>/chats/<placeId>.json,
 // survive page reloads, and every mutation (arrival markers, greetings,
 // user lines, generated replies) happens here. The frontend renders
 // whatever log these routes return.
 
-function presentCharIds(placeId, charactersById) {
-  return presentCharIdsFor(loadWorld().placements, charactersById, placeId);
+function presentCharIds(w, placeId, charactersById) {
+  return presentCharIdsFor(loadWorld(w).placements, charactersById, placeId);
 }
 
 // The subset of presentCharIds who actually take a turn each round. Active
@@ -1488,8 +1580,8 @@ function presentCharIds(placeId, charactersById) {
 // saves and every current call site keep behaving exactly as before until
 // someone is explicitly demoted — this is what makes a crowd's replies
 // trimmable rather than everyone always talking.
-function activeCharIds(placeId, charactersById) {
-  return activeCharIdsFor(loadWorld().placements, charactersById, placeId);
+function activeCharIds(w, placeId, charactersById) {
+  return activeCharIdsFor(loadWorld(w).placements, charactersById, placeId);
 }
 
 // What the speaking character knows about the people relevant to `query`
@@ -1504,13 +1596,13 @@ function activeCharIds(placeId, charactersById) {
 // the next time-of-day slot — routine, not real-time tracking — is always
 // mentioned when it differs from where they are now, so characters can
 // answer "where will they be" as well as "where are they."
-async function relationshipKnowledge(speakerId, charactersById, placesById, world, personaName, query) {
+async function relationshipKnowledge(w, speakerId, charactersById, placesById, world, personaName, query) {
   const lines = [];
   const speakerPlaceId = world.placements[speakerId]?.placeId;
   const speakerArea = speakerPlaceId && placesById[speakerPlaceId] ? placesById[speakerPlaceId].area : null;
   const upcoming = nextTimeSlot(world.time);
 
-  const rows = await retrieveRelevantRelationships({ db, embedFn: embed, speakerId, query, charactersById });
+  const rows = await retrieveRelevantRelationships({ db: w.db, embedFn: embed, speakerId, query, charactersById });
 
   rows.forEach((row) => {
     const rel = row.labels.join(', ');
@@ -1554,15 +1646,15 @@ async function relationshipKnowledge(speakerId, charactersById, placesById, worl
 // (persona + relationships + memories + scene/time/world setting), the
 // budget-trimmed transcript, and token limits. Shared by the non-streaming
 // and streaming generation paths and by regenerate.
-async function buildTurnRequest({ place, speakerId, presentIds, charactersById, log }) {
+async function buildTurnRequest({ w, place, speakerId, presentIds, charactersById, log }) {
   const cfg = loadConfig();
-  const { personas, activePersonaId } = loadPersonas();
+  const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
-  const { presets, activePresetId } = loadPresets();
+  const { presets, activePresetId } = loadPresets(w);
   const activePreset = presets.find((p) => p.id === activePresetId) || null;
-  const world = loadWorld();
+  const world = loadWorld(w);
   const placesById = {};
-  loadPlaces().forEach((p) => { placesById[p.id] = p; });
+  loadPlaces(w).forEach((p) => { placesById[p.id] = p; });
 
   const speaker = charactersById[speakerId];
   const userLabel = activePersona ? activePersona.name : 'Visitor';
@@ -1578,7 +1670,7 @@ async function buildTurnRequest({ place, speakerId, presentIds, charactersById, 
   let memories = [];
   try {
     memories = await retrieveMemories({
-      db,
+      db: w.db,
       embedFn: embed,
       characterIds: [speakerId],
       query: memoryQuery,
@@ -1610,7 +1702,7 @@ async function buildTurnRequest({ place, speakerId, presentIds, charactersById, 
     memories,
     time: world.time,
     worldSetting: world.setting,
-    relationships: await relationshipKnowledge(speakerId, charactersById, placesById, world, activePersona ? activePersona.name : null, memoryQuery),
+    relationships: await relationshipKnowledge(w, speakerId, charactersById, placesById, world, activePersona ? activePersona.name : null, memoryQuery),
   };
 
   // Real role-tagged prompt messages — no active preset falls back to
@@ -1661,7 +1753,7 @@ async function buildTurnRequest({ place, speakerId, presentIds, charactersById, 
 // callOpenRouter/streamOpenRouter reported — buildGenerationStats (lib/
 // context.js) handles either being partially or fully null when the
 // endpoint doesn't report token counts.
-async function turnEntriesFrom(text, reasoning, request, usage, timing, place, charactersById, suggestedActionsMode, backgroundIds = []) {
+async function turnEntriesFrom(w, text, reasoning, request, usage, timing, place, charactersById, suggestedActionsMode, backgroundIds = []) {
   const entries = parseCharacterTurn((text || '').trim(), request.speaker, request.present);
   if (!entries.length || entries[0].type !== 'char') return entries;
   if (reasoning) entries[0].reasoning = reasoning;
@@ -1672,7 +1764,7 @@ async function turnEntriesFrom(text, reasoning, request, usage, timing, place, c
     .filter(Boolean)
     .map((c) => ({ id: c.id, name: c.name }));
   const suggestions = await detectSuggestedActions(entries[0].text, {
-    places: loadPlaces(),
+    places: loadPlaces(w),
     characters: Object.values(charactersById || {}),
     currentPlaceId: place?.id ?? null,
     mode: suggestedActionsMode,
@@ -1693,8 +1785,8 @@ async function turnEntriesFrom(text, reasoning, request, usage, timing, place, c
 // non-streaming completion call. Mirrors runReactionRound's per-character
 // branch (used by /say) so /regenerate gets the same live text+reasoning
 // streaming instead of only ever waiting for the full reply.
-async function generateCharacterTurn({ cfg, place, speakerId, presentIds, charactersById, log, onEvent = null, backgroundIds = [] }) {
-  const request = await buildTurnRequest({ place, speakerId, presentIds, charactersById, log });
+async function generateCharacterTurn({ w, cfg, place, speakerId, presentIds, charactersById, log, onEvent = null, backgroundIds = [] }) {
+  const request = await buildTurnRequest({ w, place, speakerId, presentIds, charactersById, log });
   if (onEvent) onEvent({ type: 'speaker', charId: speakerId, name: request.speaker.name });
   try {
     let text, reasoning, usage, timing;
@@ -1705,7 +1797,7 @@ async function generateCharacterTurn({ cfg, place, speakerId, presentIds, charac
       ({ text, reasoning, usage, timing } = await callOpenRouter(cfg, request.messages, request.maxReplyTokens,
         `${request.speaker.name} @ ${place.name}`));
     }
-    return { entries: await turnEntriesFrom(text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode, backgroundIds) };
+    return { entries: await turnEntriesFrom(w, text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode, backgroundIds) };
   } catch (err) {
     return { error: err.message };
   }
@@ -1714,12 +1806,12 @@ async function generateCharacterTurn({ cfg, place, speakerId, presentIds, charac
 // Records a completed round into each present character's memory, tagged
 // with the in-world time and linked to the chat entries that formed it (so
 // later edits/deletes/regens can rebuild exactly these memories).
-function recordRound({ placeId, presentIds, turnEntries, userLabel, activePersonaId, time }) {
+function recordRound(w, { placeId, presentIds, turnEntries, userLabel, activePersonaId, time }) {
   const relevant = turnEntries.filter((e) => e.type === 'system' || e.type === 'user' || e.type === 'char' || e.type === 'narrator');
   const turnText = relevant.map((e) => formatLogEntry(e, userLabel)).join('\n');
   if (!turnText.trim()) return;
   recordTurn({
-    db,
+    db: w.db,
     embedFn: embed,
     characterIds: presentIds,
     personaId: activePersonaId || null,
@@ -1736,13 +1828,13 @@ function recordRound({ placeId, presentIds, turnEntries, userLabel, activePerson
 // a missing key, a failed request, or the model choosing NARRATOR_SILENCE
 // all just mean "no narration this round" (null) rather than an error, so
 // callers never let a narrator hiccup block or fail an otherwise-fine round.
-async function attemptNarratorTurn({ cfg, place, presentIds, backgroundIds, charactersById, log }) {
+async function attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, charactersById, log }) {
   if (!cfg.apiKey) return null;
   try {
-    const { personas, activePersonaId } = loadPersonas();
+    const { personas, activePersonaId } = loadPersonas(w);
     const activePersona = personas.find((p) => p.id === activePersonaId) || null;
     const userLabel = activePersona ? activePersona.name : 'Visitor';
-    const world = loadWorld();
+    const world = loadWorld(w);
 
     const backgroundChars = backgroundIds
       .map((cid) => charactersById[cid])
@@ -1772,17 +1864,17 @@ async function attemptNarratorTurn({ cfg, place, presentIds, backgroundIds, char
 // Nobody's present at all: tries a narrator line describing the empty
 // scene before falling back to the flat echo note. No characters means
 // nothing to record into memory either way.
-async function narrateEmptyPlaceOrEcho({ placeId, place }) {
+async function narrateEmptyPlaceOrEcho({ w, placeId, place }) {
   const cfg = loadConfig();
   let note = null;
   if (cfg.narratorEnabled !== false) {
-    const log = loadChatLog(CHAT_DIR, placeId);
+    const log = loadChatLog(w.chatDir, placeId);
     if (shouldNarrate({ placeType: place.type, presentCount: 0, backgroundCount: 0, log })) {
-      note = await attemptNarratorTurn({ cfg, place, presentIds: [], backgroundIds: [], charactersById: {}, log });
+      note = await attemptNarratorTurn({ w, cfg, place, presentIds: [], backgroundIds: [], charactersById: {}, log });
     }
   }
   if (!note) note = { type: 'system', text: 'Your words echo. No one is here to answer.' };
-  appendChatEntries(CHAT_DIR, placeId, [note]);
+  appendChatEntries(w.chatDir, placeId, [note]);
 }
 
 // Present characters can all be inactive at once (everyone's in the room
@@ -1792,26 +1884,26 @@ async function narrateEmptyPlaceOrEcho({ placeId, place }) {
 // case); falls back to a flat note if the narrator is off, unavailable, or
 // has nothing to add. Either way the round is recorded into every present
 // character's memory, same as a normal round would, minus any replies.
-async function recordSilentRound({ placeId, place, presentIds, charactersById, turnEntries }) {
+async function recordSilentRound({ w, placeId, place, presentIds, charactersById, turnEntries }) {
   const cfg = loadConfig();
   let note = null;
   if (cfg.narratorEnabled !== false) {
-    const log = loadChatLog(CHAT_DIR, placeId);
+    const log = loadChatLog(w.chatDir, placeId);
     if (shouldNarrate({ placeType: place.type, presentCount: presentIds.length, backgroundCount: presentIds.length, log })) {
-      note = await attemptNarratorTurn({ cfg, place, presentIds, backgroundIds: presentIds, charactersById, log });
+      note = await attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds: presentIds, charactersById, log });
     }
   }
   if (!note) note = { type: 'system', text: 'No one reacts.' };
 
-  appendChatEntries(CHAT_DIR, placeId, [note]);
-  const { personas, activePersonaId } = loadPersonas();
+  appendChatEntries(w.chatDir, placeId, [note]);
+  const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
-  recordRound({
+  recordRound(w, {
     placeId, presentIds,
     turnEntries: [...turnEntries, note],
     userLabel: activePersona ? activePersona.name : 'Visitor',
     activePersonaId,
-    time: loadWorld().time,
+    time: loadWorld(w).time,
   });
 }
 
@@ -1822,7 +1914,7 @@ async function recordSilentRound({ placeId, place, presentIds, charactersById, t
 // `onEvent`, when provided, streams progress (speaker/delta/turn events)
 // — the SSE path of /say. Returns { error } from the first failed turn;
 // earlier turns stay persisted.
-async function runReactionRound({ placeId, place, reactIds, presentIds, charactersById, turnEntriesSoFar, onEvent = null }) {
+async function runReactionRound({ w, placeId, place, reactIds, presentIds, charactersById, turnEntriesSoFar, onEvent = null }) {
   const cfg = loadConfig();
   if (!cfg.apiKey) {
     return { error: 'No API key configured. Add one in Settings.' };
@@ -1836,8 +1928,8 @@ async function runReactionRound({ placeId, place, reactIds, presentIds, characte
   const backgroundIds = presentIds.filter((id) => !reactIds.includes(id));
 
   for (const speakerId of reactIds) {
-    const log = loadChatLog(CHAT_DIR, placeId);
-    const request = await buildTurnRequest({ place, speakerId, presentIds, charactersById, log });
+    const log = loadChatLog(w.chatDir, placeId);
+    const request = await buildTurnRequest({ w, place, speakerId, presentIds, charactersById, log });
     userLabel = request.userLabel;
     activePersonaId = request.activePersonaId;
     time = request.time;
@@ -1858,8 +1950,8 @@ async function runReactionRound({ placeId, place, reactIds, presentIds, characte
       break;
     }
 
-    const entries = await turnEntriesFrom(text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode, backgroundIds);
-    appendChatEntries(CHAT_DIR, placeId, entries);
+    const entries = await turnEntriesFrom(w, text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode, backgroundIds);
+    appendChatEntries(w.chatDir, placeId, entries);
     roundEntries.push(...entries);
     if (onEvent) onEvent({ type: 'turn', entries });
   }
@@ -1870,11 +1962,11 @@ async function runReactionRound({ placeId, place, reactIds, presentIds, characte
   // entirely if a character turn already failed above: don't compound a
   // generation problem with another likely-to-fail call.
   if (!error && cfg.narratorEnabled !== false) {
-    const log = loadChatLog(CHAT_DIR, placeId);
+    const log = loadChatLog(w.chatDir, placeId);
     if (shouldNarrate({ placeType: place.type, presentCount: presentIds.length, backgroundCount: backgroundIds.length, log })) {
-      const narration = await attemptNarratorTurn({ cfg, place, presentIds, backgroundIds, charactersById, log });
+      const narration = await attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, charactersById, log });
       if (narration) {
-        appendChatEntries(CHAT_DIR, placeId, [narration]);
+        appendChatEntries(w.chatDir, placeId, [narration]);
         roundEntries.push(narration);
         if (onEvent) onEvent({ type: 'turn', entries: [narration] });
       }
@@ -1882,7 +1974,7 @@ async function runReactionRound({ placeId, place, reactIds, presentIds, characte
   }
 
   if (roundEntries.length) {
-    recordRound({
+    recordRound(w, {
       placeId, presentIds,
       turnEntries: [...turnEntriesSoFar, ...roundEntries],
       userLabel, activePersonaId, time,
@@ -1893,9 +1985,10 @@ async function runReactionRound({ placeId, place, reactIds, presentIds, characte
 }
 
 app.get('/api/places/:placeId/chat', (req, res) => {
+  const w = req.world;
   const { placeId } = req.params;
-  if (!loadPlaces().some((p) => p.id === placeId)) return res.status(404).json({ error: 'Place not found.' });
-  res.json({ log: loadChatLog(CHAT_DIR, placeId) });
+  if (!loadPlaces(w).some((p) => p.id === placeId)) return res.status(404).json({ error: 'Place not found.' });
+  res.json({ log: loadChatLog(w.chatDir, placeId) });
 });
 
 // Entering a place: on the first-ever arrival (empty log), persists the
@@ -1905,15 +1998,16 @@ app.get('/api/places/:placeId/chat', (req, res) => {
 // next /say and the "You return to X." marker is inserted just before the
 // user's line, only once they actually engage. Arrivals never generate.
 app.post('/api/places/:placeId/enter', (req, res) => {
+  const w = req.world;
   const { placeId } = req.params;
-  const place = loadPlaces().find((p) => p.id === placeId);
+  const place = loadPlaces(w).find((p) => p.id === placeId);
   if (!place) return res.status(404).json({ error: 'Place not found.' });
 
   const charactersById = {};
-  loadCharacters().forEach((c) => { charactersById[c.id] = c; });
-  const charIds = presentCharIds(placeId, charactersById);
+  loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+  const charIds = presentCharIds(w, placeId, charactersById);
 
-  const existingLog = loadChatLog(CHAT_DIR, placeId);
+  const existingLog = loadChatLog(w.chatDir, placeId);
   const first = existingLog.length === 0;
 
   if (!first) {
@@ -1922,7 +2016,7 @@ app.post('/api/places/:placeId/enter', (req, res) => {
 
   const turnEntries = [{ type: 'system', text: `You arrive at ${place.name}.` }];
 
-  const world = loadWorld();
+  const world = loadWorld(w);
   const greetedIds = new Set();
   charIds.forEach((cid) => {
     const placement = world.placements[cid];
@@ -1934,16 +2028,16 @@ app.post('/api/places/:placeId/enter', (req, res) => {
     }
   });
 
-  appendChatEntries(CHAT_DIR, placeId, turnEntries);
+  appendChatEntries(w.chatDir, placeId, turnEntries);
   logger.info('chat', `first arrival at ${place.name} (${greetedIds.size} greeting${greetedIds.size === 1 ? '' : 's'})`);
 
   if (greetedIds.size) {
     // Scripted greetings are still this turn's memory for those characters.
-    const { personas, activePersonaId } = loadPersonas();
+    const { personas, activePersonaId } = loadPersonas(w);
     const activePersona = personas.find((p) => p.id === activePersonaId) || null;
     const userLabel = activePersona ? activePersona.name : 'Visitor';
     recordTurn({
-      db,
+      db: w.db,
       embedFn: embed,
       characterIds: [...greetedIds],
       personaId: activePersonaId || null,
@@ -1955,7 +2049,7 @@ app.post('/api/places/:placeId/enter', (req, res) => {
     }).catch((err) => logger.error('memory', `greeting recording failed: ${err.message}`));
   }
 
-  res.json({ log: loadChatLog(CHAT_DIR, placeId), returnMarkerPending: false });
+  res.json({ log: loadChatLog(w.chatDir, placeId), returnMarkerPending: false });
 });
 
 // Saying something: appends the user's line (preceded by the deferred
@@ -1964,36 +2058,37 @@ app.post('/api/places/:placeId/enter', (req, res) => {
 // Settings, as one JSON response otherwise. The user's line persists even
 // when generation fails.
 app.post('/api/places/:placeId/say', async (req, res) => {
+  const w = req.world;
   const { placeId } = req.params;
   const { text, announceArrival } = req.body || {};
   if (typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'text is required.' });
   }
 
-  const place = loadPlaces().find((p) => p.id === placeId);
+  const place = loadPlaces(w).find((p) => p.id === placeId);
   if (!place) return res.status(404).json({ error: 'Place not found.' });
 
   const charactersById = {};
-  loadCharacters().forEach((c) => { charactersById[c.id] = c; });
-  const charIds = presentCharIds(placeId, charactersById);
-  const activeIds = activeCharIds(placeId, charactersById);
+  loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+  const charIds = presentCharIds(w, placeId, charactersById);
+  const activeIds = activeCharIds(w, placeId, charactersById);
 
   const turnEntries = [];
-  if (announceArrival && loadChatLog(CHAT_DIR, placeId).length > 0) {
+  if (announceArrival && loadChatLog(w.chatDir, placeId).length > 0) {
     turnEntries.push({ type: 'system', text: `You return to ${place.name}.` });
   }
   turnEntries.push({ type: 'user', text: text.trim() });
-  appendChatEntries(CHAT_DIR, placeId, turnEntries);
+  appendChatEntries(w.chatDir, placeId, turnEntries);
   logger.info('chat', `say @ ${place.name}: ${charIds.length} character(s) present, ${activeIds.length} active`);
 
   if (!charIds.length) {
-    await narrateEmptyPlaceOrEcho({ placeId, place });
-    return res.json({ log: loadChatLog(CHAT_DIR, placeId) });
+    await narrateEmptyPlaceOrEcho({ w, placeId, place });
+    return res.json({ log: loadChatLog(w.chatDir, placeId) });
   }
 
   if (!activeIds.length) {
-    await recordSilentRound({ placeId, place, presentIds: charIds, charactersById, turnEntries });
-    return res.json({ log: loadChatLog(CHAT_DIR, placeId) });
+    await recordSilentRound({ w, placeId, place, presentIds: charIds, charactersById, turnEntries });
+    return res.json({ log: loadChatLog(w.chatDir, placeId) });
   }
 
   const cfg = loadConfig();
@@ -2005,20 +2100,20 @@ app.post('/api/places/:placeId/say', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
     const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
-    send({ type: 'ack', log: loadChatLog(CHAT_DIR, placeId) });
+    send({ type: 'ack', log: loadChatLog(w.chatDir, placeId) });
 
     const result = await runReactionRound({
-      placeId, place, reactIds: activeIds, presentIds: charIds, charactersById,
+      w, placeId, place, reactIds: activeIds, presentIds: charIds, charactersById,
       turnEntriesSoFar: turnEntries, onEvent: send,
     });
-    send({ type: 'done', log: loadChatLog(CHAT_DIR, placeId), ...(result.error ? { error: result.error } : {}) });
+    send({ type: 'done', log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
     return res.end();
   }
 
   const result = await runReactionRound({
-    placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar: turnEntries,
+    w, placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar: turnEntries,
   });
-  res.json({ log: loadChatLog(CHAT_DIR, placeId), ...(result.error ? { error: result.error } : {}) });
+  res.json({ log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
 });
 
 // Re-runs generation for the trailing user message when nobody replied —
@@ -2028,11 +2123,12 @@ app.post('/api/places/:placeId/say', async (req, res) => {
 // already has at least one character reply after it (that's what /say or
 // per-message regenerate are for) or if there's no user message at all yet.
 app.post('/api/places/:placeId/retry', async (req, res) => {
+  const w = req.world;
   const { placeId } = req.params;
-  const place = loadPlaces().find((p) => p.id === placeId);
+  const place = loadPlaces(w).find((p) => p.id === placeId);
   if (!place) return res.status(404).json({ error: 'Place not found.' });
 
-  const log = loadChatLog(CHAT_DIR, placeId);
+  const log = loadChatLog(w.chatDir, placeId);
   let lastUserIdx = -1;
   for (let i = log.length - 1; i >= 0; i--) { if (log[i].type === 'user') { lastUserIdx = i; break; } }
   if (lastUserIdx === -1) {
@@ -2043,9 +2139,9 @@ app.post('/api/places/:placeId/retry', async (req, res) => {
   }
 
   const charactersById = {};
-  loadCharacters().forEach((c) => { charactersById[c.id] = c; });
-  const charIds = presentCharIds(placeId, charactersById);
-  const activeIds = activeCharIds(placeId, charactersById);
+  loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+  const charIds = presentCharIds(w, placeId, charactersById);
+  const activeIds = activeCharIds(w, placeId, charactersById);
   logger.info('chat', `retry @ ${place.name}: ${charIds.length} character(s) present, ${activeIds.length} active`);
 
   // Retry reuses this same trigger message across attempts rather than
@@ -2055,19 +2151,19 @@ app.post('/api/places/:placeId/retry', async (req, res) => {
   // every retry leaves one more stale "just the user's words" row behind.
   const userEntryId = log[lastUserIdx].id;
   if (userEntryId) {
-    pruneReplylessMemories(db, findMemoriesWitnessing(db, userEntryId), log);
+    pruneReplylessMemories(w.db, findMemoriesWitnessing(w.db, userEntryId), log);
   }
 
   if (!charIds.length) {
-    await narrateEmptyPlaceOrEcho({ placeId, place });
-    return res.json({ log: loadChatLog(CHAT_DIR, placeId) });
+    await narrateEmptyPlaceOrEcho({ w, placeId, place });
+    return res.json({ log: loadChatLog(w.chatDir, placeId) });
   }
 
   const turnEntriesSoFar = [log[lastUserIdx]];
 
   if (!activeIds.length) {
-    await recordSilentRound({ placeId, place, presentIds: charIds, charactersById, turnEntries: turnEntriesSoFar });
-    return res.json({ log: loadChatLog(CHAT_DIR, placeId) });
+    await recordSilentRound({ w, placeId, place, presentIds: charIds, charactersById, turnEntries: turnEntriesSoFar });
+    return res.json({ log: loadChatLog(w.chatDir, placeId) });
   }
 
   const cfg = loadConfig();
@@ -2080,16 +2176,16 @@ app.post('/api/places/:placeId/retry', async (req, res) => {
     send({ type: 'ack', log });
 
     const result = await runReactionRound({
-      placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar, onEvent: send,
+      w, placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar, onEvent: send,
     });
-    send({ type: 'done', log: loadChatLog(CHAT_DIR, placeId), ...(result.error ? { error: result.error } : {}) });
+    send({ type: 'done', log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
     return res.end();
   }
 
   const result = await runReactionRound({
-    placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar,
+    w, placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar,
   });
-  res.json({ log: loadChatLog(CHAT_DIR, placeId), ...(result.error ? { error: result.error } : {}) });
+  res.json({ log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
 });
 
 // Regenerates one generated message in place: rebuilds the speaking
@@ -2098,16 +2194,17 @@ app.post('/api/places/:placeId/retry', async (req, res) => {
 // memory that witnessed the original message is rebuilt around the new
 // text — for all present characters, not just the speaker.
 app.post('/api/places/:placeId/regenerate', async (req, res) => {
+  const w = req.world;
   const { placeId } = req.params;
   const { entryId } = req.body || {};
   if (typeof entryId !== 'string' || !entryId) {
     return res.status(400).json({ error: 'entryId is required.' });
   }
 
-  const place = loadPlaces().find((p) => p.id === placeId);
+  const place = loadPlaces(w).find((p) => p.id === placeId);
   if (!place) return res.status(404).json({ error: 'Place not found.' });
 
-  const log = loadChatLog(CHAT_DIR, placeId);
+  const log = loadChatLog(w.chatDir, placeId);
   const idx = log.findIndex((e) => e.id === entryId);
   if (idx === -1) return res.status(404).json({ error: 'Message not found.' });
   const target = log[idx];
@@ -2116,7 +2213,7 @@ app.post('/api/places/:placeId/regenerate', async (req, res) => {
   }
 
   const charactersById = {};
-  loadCharacters().forEach((c) => { charactersById[c.id] = c; });
+  loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
   if (!charactersById[target.charId]) {
     return res.status(400).json({ error: 'This character no longer exists.' });
   }
@@ -2128,16 +2225,16 @@ app.post('/api/places/:placeId/regenerate', async (req, res) => {
 
   // Whoever's present *now* frames the regeneration; the speaker is always
   // included even if they've since been moved elsewhere.
-  const presentIds = presentCharIds(placeId, charactersById);
+  const presentIds = presentCharIds(w, placeId, charactersById);
   if (!presentIds.includes(target.charId)) presentIds.push(target.charId);
   // Background cast for promote-suggestion detection — the character being
   // regenerated is always the speaker here regardless of their stored
   // active flag (a background character's old message can still be
   // regenerated), so they're never counted as background themselves.
-  const activeIds = activeCharIds(placeId, charactersById);
+  const activeIds = activeCharIds(w, placeId, charactersById);
   const backgroundIds = presentIds.filter((id) => id !== target.charId && !activeIds.includes(id));
 
-  const { personas, activePersonaId } = loadPersonas();
+  const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
   const userLabel = activePersona ? activePersona.name : 'Visitor';
 
@@ -2147,9 +2244,9 @@ app.post('/api/places/:placeId/regenerate', async (req, res) => {
   // generating the replacement, otherwise this very generation's memory
   // retrieval would surface a "memory" quoting the exact reply about to be
   // discarded.
-  const memoryIds = findMemoriesWitnessing(db, entryId);
+  const memoryIds = findMemoriesWitnessing(w.db, entryId);
   await detachEntryFromMemories({
-    db, embedFn: embed, memoryIds, entryId,
+    db: w.db, embedFn: embed, memoryIds, entryId,
     log: log.slice(0, idx).concat(log.slice(idx + 1)),
     userLabel, formatEntry: formatLogEntry,
   }).catch((err) => logger.error('memory', `regen pre-detach failed: ${err.message}`));
@@ -2168,7 +2265,7 @@ app.post('/api/places/:placeId/regenerate', async (req, res) => {
     : null;
 
   const result = await generateCharacterTurn({
-    cfg, place, speakerId: target.charId, presentIds, charactersById,
+    w, cfg, place, speakerId: target.charId, presentIds, charactersById,
     log: log.slice(0, idx), onEvent: send, backgroundIds,
   });
   if (result.error) {
@@ -2178,11 +2275,11 @@ app.post('/api/places/:placeId/regenerate', async (req, res) => {
 
   result.entries.forEach((e) => { if (!e.id) e.id = crypto.randomUUID(); });
   log.splice(idx, 1, ...result.entries);
-  saveChatLog(CHAT_DIR, placeId, log);
+  saveChatLog(w.chatDir, placeId, log);
   logger.info('chat', `regenerated message ${entryId} @ ${place.name}`);
 
   await attachEntriesToMemories({
-    db, embedFn: embed, memoryIds,
+    db: w.db, embedFn: embed, memoryIds,
     newEntryIds: result.entries.map((e) => e.id),
     log, userLabel, formatEntry: formatLogEntry,
   }).catch((err) => logger.error('memory', `regen memory sync failed: ${err.message}`));
@@ -2201,14 +2298,15 @@ app.post('/api/places/:placeId/regenerate', async (req, res) => {
 // recollection matches what the history now says.
 
 app.put('/api/places/:placeId/messages/:entryId', async (req, res) => {
+  const w = req.world;
   const { placeId, entryId } = req.params;
   const { text } = req.body || {};
   if (typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'text is required.' });
   }
-  if (!loadPlaces().some((p) => p.id === placeId)) return res.status(404).json({ error: 'Place not found.' });
+  if (!loadPlaces(w).some((p) => p.id === placeId)) return res.status(404).json({ error: 'Place not found.' });
 
-  const log = loadChatLog(CHAT_DIR, placeId);
+  const log = loadChatLog(w.chatDir, placeId);
   const entry = log.find((e) => e.id === entryId);
   if (!entry) return res.status(404).json({ error: 'Message not found.' });
   if (entry.type !== 'char' && entry.type !== 'user' && entry.type !== 'narrator') {
@@ -2216,13 +2314,13 @@ app.put('/api/places/:placeId/messages/:entryId', async (req, res) => {
   }
 
   entry.text = text.trim();
-  saveChatLog(CHAT_DIR, placeId, log);
+  saveChatLog(w.chatDir, placeId, log);
   logger.info('chat', `edited message ${entryId} @ ${placeId}`);
 
-  const { personas, activePersonaId } = loadPersonas();
+  const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
   await syncMemoriesForEntry({
-    db, embedFn: embed, entryId, newEntryIds: null,
+    db: w.db, embedFn: embed, entryId, newEntryIds: null,
     log, userLabel: activePersona ? activePersona.name : 'Visitor',
     formatEntry: formatLogEntry,
   }).catch((err) => logger.error('memory', `edit memory sync failed: ${err.message}`));
@@ -2231,21 +2329,22 @@ app.put('/api/places/:placeId/messages/:entryId', async (req, res) => {
 });
 
 app.delete('/api/places/:placeId/messages/:entryId', async (req, res) => {
+  const w = req.world;
   const { placeId, entryId } = req.params;
-  if (!loadPlaces().some((p) => p.id === placeId)) return res.status(404).json({ error: 'Place not found.' });
+  if (!loadPlaces(w).some((p) => p.id === placeId)) return res.status(404).json({ error: 'Place not found.' });
 
-  const log = loadChatLog(CHAT_DIR, placeId);
+  const log = loadChatLog(w.chatDir, placeId);
   const idx = log.findIndex((e) => e.id === entryId);
   if (idx === -1) return res.status(404).json({ error: 'Message not found.' });
 
   log.splice(idx, 1);
-  saveChatLog(CHAT_DIR, placeId, log);
+  saveChatLog(w.chatDir, placeId, log);
   logger.info('chat', `deleted message ${entryId} @ ${placeId}`);
 
-  const { personas, activePersonaId } = loadPersonas();
+  const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
   await syncMemoriesForEntry({
-    db, embedFn: embed, entryId, newEntryIds: [],
+    db: w.db, embedFn: embed, entryId, newEntryIds: [],
     log, userLabel: activePersona ? activePersona.name : 'Visitor',
     formatEntry: formatLogEntry,
   }).catch((err) => logger.error('memory', `delete memory sync failed: ${err.message}`));
@@ -2269,4 +2368,4 @@ if (isMainModule) {
   });
 }
 
-export { app, db };
+export { app, registry };

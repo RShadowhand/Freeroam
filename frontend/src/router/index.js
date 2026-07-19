@@ -11,6 +11,11 @@ const routes = [
   { path: '/world/places', name: 'world-places', component: () => import('../views/PlacesView.vue'), meta: { top: '/world' } },
   { path: '/world/cast', name: 'world-cast', component: () => import('../views/CastView.vue'), meta: { top: '/world' } },
   { path: '/world/persona', name: 'world-persona', component: () => import('../views/PersonaView.vue'), meta: { top: '/world' } },
+  // A distinct top-level prefix from '/world' on purpose — '/world/*' is
+  // the in-fiction content editors (places/cast/persona), while this is
+  // the save-slot switcher; sharing a prefix would be confusing on both
+  // sides of that distinction.
+  { path: '/worlds', name: 'worlds', component: () => import('../views/WorldsView.vue'), meta: { top: '/worlds' } },
   { path: '/settings', redirect: '/settings/connection' },
   { path: '/settings/connection', name: 'settings-connection', component: () => import('../views/SettingsView.vue'), meta: { top: '/settings' } },
   { path: '/settings/prompts', name: 'settings-prompts', component: () => import('../views/PromptsView.vue'), meta: { top: '/settings' } },
