@@ -5,6 +5,7 @@ import {
   relationshipFactText,
   upsertRelationship,
   retrieveRelevantRelationships,
+  queryCharacterRelationships,
 } from '../lib/relationshipStore.js';
 import { openDb } from '../lib/db.js';
 import { logger } from '../lib/log.js';
@@ -154,5 +155,83 @@ describe('retrieveRelevantRelationships', () => {
     assert.equal(rows.length, 1);
     const row = db.prepare('SELECT embedding FROM relationships WHERE character_id = ? AND target_id = ?').get('ezra', 'mireille');
     assert.ok(row.embedding); // backfilled in place
+  }));
+});
+
+describe('queryCharacterRelationships', () => {
+  test('returns nothing for an empty query', () => withDb(async (db) => {
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'a', labels: ['guild contact'] });
+    assert.deepEqual(await queryCharacterRelationships({ db, embedFn, speakerId: 'ezra', query: '' }), []);
+    assert.deepEqual(await queryCharacterRelationships({ db, embedFn, speakerId: 'ezra', query: '   ' }), []);
+  }));
+
+  test('returns nothing for a speaker with no relationships', () => withDb(async (db) => {
+    assert.deepEqual(await queryCharacterRelationships({ db, embedFn, speakerId: 'ezra', query: 'anything' }), []);
+  }));
+
+  test('ranks EVERY relationship, not just the topK winners, with a score for each', () => withDb(async (db) => {
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'a', labels: ['guild contact'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'b', labels: ['guild rival'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'd', labels: ['neighbor'] }); // matches nothing
+
+    const rows = await queryCharacterRelationships({ db, embedFn, speakerId: 'ezra', query: 'tell me about the guild', topK: 1 });
+    assert.equal(rows.length, 3); // every candidate, including the ones that wouldn't win
+    rows.forEach((r) => assert.equal(typeof r.score, 'number'));
+    // Sorted by score, descending.
+    for (let i = 1; i < rows.length; i++) assert.ok(rows[i - 1].score >= rows[i].score);
+  }));
+
+  test('flags which rows the real retrieveRelevantRelationships call would have picked, and why', () => withDb(async (db) => {
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'user', labels: ['mentor'] }); // core: user
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'mireille', labels: ['mother'] }); // core: family
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'a', labels: ['guild contact'] }); // semantic winner
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'd', labels: ['neighbor'] }); // not selected
+
+    const rows = await queryCharacterRelationships({ db, embedFn, speakerId: 'ezra', query: 'guild business', topK: 1 });
+    const byId = Object.fromEntries(rows.map((r) => [r.otherId, r]));
+
+    assert.equal(byId.user.selected, true);
+    assert.equal(byId.user.selectionReason, 'core');
+    assert.equal(byId.mireille.selected, true);
+    assert.equal(byId.mireille.selectionReason, 'core');
+    assert.equal(byId.a.selected, true);
+    assert.equal(byId.a.selectionReason, 'semantic');
+    assert.equal(byId.d.selected, false);
+    assert.equal(byId.d.selectionReason, null);
+
+    // Cross-check against the real selection function for the same inputs.
+    const selected = await retrieveRelevantRelationships({ db, embedFn, speakerId: 'ezra', query: 'guild business', topK: 1 });
+    const selectedIds = new Set(selected.map((r) => r.otherId));
+    rows.forEach((r) => assert.equal(r.selected, selectedIds.has(r.otherId)));
+  }));
+
+  test('reports a label-score / character-score split, and finds a person by description like the real path does', () => withDb(async (db) => {
+    const charactersById = {
+      wren: { id: 'wren', name: 'Wren', description: 'Blue eyes, sharp grin.' },
+      dara: { id: 'dara', name: 'Dara', description: 'Brown eyes, soft-spoken.' },
+    };
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'wren', labels: ['friend'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'dara', labels: ['friend'] });
+
+    const rows = await queryCharacterRelationships({
+      db, embedFn, speakerId: 'ezra', charactersById, query: 'that friend of yours with the blue eyes',
+    });
+    const byId = Object.fromEntries(rows.map((r) => [r.otherId, r]));
+    assert.equal(typeof byId.wren.labelScore, 'number');
+    assert.equal(typeof byId.wren.characterScore, 'number');
+    assert.ok(byId.wren.characterScore > byId.dara.characterScore); // blue eyes match Wren, not Dara
+    assert.equal(byId.wren.otherName, 'Wren');
+    // Same identical label vector for both -> label scores tie; only the
+    // identity cross-check should separate them, matching real retrieval.
+    assert.equal(byId.wren.labelScore, byId.dara.labelScore);
+  }));
+
+  test('otherName resolves to "User" for the user target and falls back to the id for an unknown character', () => withDb(async (db) => {
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'user', labels: ['mentor'] });
+    await upsertRelationship({ db, embedFn, characterId: 'ezra', targetId: 'ghost-id', labels: ['acquaintance'] });
+    const rows = await queryCharacterRelationships({ db, embedFn, speakerId: 'ezra', query: 'anything', charactersById: {} });
+    const byId = Object.fromEntries(rows.map((r) => [r.otherId, r]));
+    assert.equal(byId.user.otherName, 'User');
+    assert.equal(byId['ghost-id'].otherName, 'ghost-id');
   }));
 });

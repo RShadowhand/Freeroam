@@ -4,7 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { openDb, encodeEmbedding, decodeEmbedding } from '../lib/db.js';
+import {
+  openDb, encodeEmbedding, decodeEmbedding,
+  upsertMemoryVectors, removeMemoryVectorParticipant, deleteMemoryVectors,
+  deleteMemoryVectorsForCharacter, queryMemoryVectorIndex,
+} from '../lib/db.js';
 import { logger } from '../lib/log.js';
 
 logger.setLevel('error'); // keep test output clean
@@ -132,5 +136,165 @@ describe('openDb — memories schema migration', () => {
       db.close();
       fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
     }
+  });
+});
+
+// Hand-builds a database already in the current shared-row shape (memories
+// + memory_participants) but predating memory_vectors — the state every
+// real db was in immediately before this feature shipped. openDb()'s own
+// :memory: use elsewhere always creates memory_vectors fresh alongside an
+// empty memories table, so this is the only place the backfill path (an
+// existing db with real rows, no index yet) gets exercised.
+function seedSharedRowSchemaNoVectors(dbPath, rounds) {
+  const raw = new Database(dbPath);
+  raw.exec(`
+    CREATE TABLE memories (
+      id TEXT PRIMARY KEY, persona_key TEXT NOT NULL, text TEXT NOT NULL,
+      embedding BLOB NOT NULL, place_id TEXT, day INTEGER, time_of_day TEXT, timestamp TEXT NOT NULL
+    );
+    CREATE TABLE memory_participants (
+      memory_id TEXT NOT NULL, character_id TEXT NOT NULL, PRIMARY KEY (memory_id, character_id)
+    );
+    CREATE TABLE memory_entries (memory_id TEXT NOT NULL, entry_id TEXT NOT NULL);
+    CREATE TABLE relationships (character_id TEXT NOT NULL, target_id TEXT NOT NULL, labels TEXT NOT NULL DEFAULT '[]', embedding BLOB, PRIMARY KEY (character_id, target_id));
+    CREATE TABLE character_embeddings (character_id TEXT PRIMARY KEY, embedding BLOB NOT NULL);
+  `);
+  const insertMem = raw.prepare(`
+    INSERT INTO memories (id, persona_key, text, embedding, place_id, day, time_of_day, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertParticipant = raw.prepare('INSERT INTO memory_participants (memory_id, character_id) VALUES (?, ?)');
+  rounds.forEach((round) => {
+    insertMem.run(
+      round.id, round.personaKey || 'none', round.text, encodeEmbedding(round.embedding),
+      round.placeId || null, round.day ?? null, round.timeOfDay ?? null, round.timestamp
+    );
+    round.characterIds.forEach((cid) => insertParticipant.run(round.id, cid));
+  });
+  raw.close();
+}
+
+describe('openDb — memory_vectors backfill', () => {
+  test('an existing shared-row db with no memory_vectors table gets one built from memories + memory_participants', () => {
+    const dbPath = tempDbPath();
+    seedSharedRowSchemaNoVectors(dbPath, [
+      { id: 'mem-1', characterIds: ['ezra', 'mireille'], text: 'A shared memory.', embedding: [1, 0, 0], timestamp: '2026-01-01T00:00:00.000Z' },
+      { id: 'mem-2', characterIds: ['ezra'], text: 'A solo memory.', embedding: [0, 1, 0], timestamp: '2026-01-02T00:00:00.000Z' },
+    ]);
+
+    const db = openDb(dbPath);
+    try {
+      const table = db.prepare("SELECT name FROM sqlite_master WHERE name = 'memory_vectors'").get();
+      assert.ok(table, 'memory_vectors table should exist after backfill');
+
+      const ezraHits = queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0]), 5).map((r) => r.memory_id).sort();
+      assert.deepEqual(ezraHits, ['mem-1', 'mem-2']);
+
+      const mireilleHits = queryMemoryVectorIndex(db, 'mireille', encodeEmbedding([1, 0, 0]), 5).map((r) => r.memory_id);
+      assert.deepEqual(mireilleHits, ['mem-1']); // not a participant in mem-2
+
+      // Nearest match wins: querying with [1,0,0] against ezra's two memories
+      // ([1,0,0] and [0,1,0]) should rank mem-1 first (distance ~0).
+      const ranked = queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0]), 5);
+      assert.equal(ranked[0].memory_id, 'mem-1');
+      assert.ok(ranked[0].distance < ranked[1].distance);
+    } finally {
+      db.close();
+      fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test('re-opening an already-indexed db does not duplicate rows', () => {
+    const dbPath = tempDbPath();
+    seedSharedRowSchemaNoVectors(dbPath, [
+      { id: 'mem-1', characterIds: ['ezra'], text: 'Once.', embedding: [1, 0, 0], timestamp: '2026-01-01T00:00:00.000Z' },
+    ]);
+
+    let db = openDb(dbPath);
+    db.close();
+    db = openDb(dbPath); // second open — must not re-backfill or duplicate
+    try {
+      const hits = queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0]), 10);
+      assert.equal(hits.length, 1);
+    } finally {
+      db.close();
+      fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test('a brand-new db has no memory_vectors table until the first write', () => {
+    const dbPath = tempDbPath();
+    const db = openDb(dbPath);
+    try {
+      const table = db.prepare("SELECT name FROM sqlite_master WHERE name = 'memory_vectors'").get();
+      assert.equal(table, undefined);
+      assert.deepEqual(queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0]), 5), []);
+    } finally {
+      db.close();
+      fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+});
+
+describe('memory_vectors write/delete helpers', () => {
+  function freshDb() {
+    return openDb(':memory:');
+  }
+
+  test('upsertMemoryVectors creates the table lazily and inserts one row per participant', () => {
+    const db = freshDb();
+    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], encodeEmbedding([1, 0, 0]));
+    const ezra = queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0]), 5);
+    const mireille = queryMemoryVectorIndex(db, 'mireille', encodeEmbedding([1, 0, 0]), 5);
+    assert.equal(ezra.length, 1);
+    assert.equal(mireille.length, 1);
+    db.close();
+  });
+
+  test('upsertMemoryVectors replaces prior rows for the same memory (delete + reinsert)', () => {
+    const db = freshDb();
+    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], encodeEmbedding([1, 0, 0]));
+    upsertMemoryVectors(db, 'mem-1', ['ezra'], encodeEmbedding([0, 1, 0])); // mireille dropped, vector changed
+    assert.equal(queryMemoryVectorIndex(db, 'mireille', encodeEmbedding([1, 0, 0]), 5).length, 0);
+    const ezra = queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([0, 1, 0]), 5);
+    assert.equal(ezra.length, 1);
+    assert.ok(ezra[0].distance < 0.001);
+  });
+
+  test('removeMemoryVectorParticipant removes just one participant, leaving others intact', () => {
+    const db = freshDb();
+    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], encodeEmbedding([1, 0, 0]));
+    removeMemoryVectorParticipant(db, 'mem-1', 'ezra');
+    assert.equal(queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0]), 5).length, 0);
+    assert.equal(queryMemoryVectorIndex(db, 'mireille', encodeEmbedding([1, 0, 0]), 5).length, 1);
+  });
+
+  test('deleteMemoryVectors removes every participant row for a memory', () => {
+    const db = freshDb();
+    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], encodeEmbedding([1, 0, 0]));
+    deleteMemoryVectors(db, 'mem-1');
+    assert.equal(queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0]), 5).length, 0);
+    assert.equal(queryMemoryVectorIndex(db, 'mireille', encodeEmbedding([1, 0, 0]), 5).length, 0);
+  });
+
+  test('deleteMemoryVectorsForCharacter removes a character across every memory, leaving other participants', () => {
+    const db = freshDb();
+    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], encodeEmbedding([1, 0, 0]));
+    upsertMemoryVectors(db, 'mem-2', ['ezra'], encodeEmbedding([0, 1, 0]));
+    deleteMemoryVectorsForCharacter(db, 'ezra');
+    assert.equal(queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0]), 5).length, 0);
+    assert.equal(queryMemoryVectorIndex(db, 'mireille', encodeEmbedding([1, 0, 0]), 5).length, 1);
+  });
+
+  test('upsertMemoryVectors recreates the table when the embedding dimension changes, without leaving stale rows', () => {
+    const db = freshDb();
+    upsertMemoryVectors(db, 'mem-1', ['ezra'], encodeEmbedding([1, 0, 0])); // 3-dim
+    upsertMemoryVectors(db, 'mem-2', ['mireille'], encodeEmbedding([1, 0, 0, 0])); // 4-dim -> table rebuilt
+    // mem-1's 3-dim row was in the dropped table and was never reinserted —
+    // simulating what rebuildAllMemoryEmbeddings does row-by-row.
+    assert.equal(queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0, 0]), 5).length, 0);
+    const mireille = queryMemoryVectorIndex(db, 'mireille', encodeEmbedding([1, 0, 0, 0]), 5);
+    assert.equal(mireille.length, 1);
+    assert.equal(mireille[0].memory_id, 'mem-2');
   });
 });

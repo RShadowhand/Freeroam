@@ -1260,6 +1260,51 @@ describe('Relationships', () => {
     const { relationships } = await (await fetch(`${baseUrl}/api/relationships`)).json();
     assert.equal(relationships.some((r) => r.characterId === a.id || r.targetId === a.id), false);
   });
+
+  test('POST /api/relationships/:characterId/query ranks every relationship, scored, no LLM call', async () => {
+    const [a, b] = await twoCharacters();
+    await putRel(a.id, b.id, ['guild contact']);
+    await putRel(a.id, 'user', ['mentor']); // core, always selected
+
+    const res = await postJson(`/api/relationships/${a.id}/query`, { query: 'tell me about the guild' });
+    assert.equal(res.status, 200);
+    const { results } = await res.json();
+    assert.equal(results.length, 2); // both rows ranked, not just the winner
+    const guildResult = results.find((r) => r.otherId === b.id);
+    assert.ok(guildResult);
+    assert.equal(typeof guildResult.score, 'number');
+    assert.equal(guildResult.otherName, b.name);
+    const userResult = results.find((r) => r.otherId === 'user');
+    assert.equal(userResult.selected, true);
+    assert.equal(userResult.selectionReason, 'core');
+  });
+
+  test('POST .../query rejects a missing/empty query', async () => {
+    const [a] = await twoCharacters();
+    assert.equal((await postJson(`/api/relationships/${a.id}/query`, {})).status, 400);
+    assert.equal((await postJson(`/api/relationships/${a.id}/query`, { query: '   ' })).status, 400);
+  });
+
+  test('POST .../query returns [] for a character with no relationships, not an error', async () => {
+    const [a] = await twoCharacters();
+    const res = await postJson(`/api/relationships/${a.id}/query`, { query: 'anything' });
+    assert.equal(res.status, 200);
+    assert.deepEqual((await res.json()).results, []);
+  });
+
+  test('POST .../query finds a person by description, via identity embeddings — "friend with blue eyes"', async () => {
+    const wren = (await (await postJson('/api/characters', { name: 'Wren', description: 'Blue eyes, sharp grin.' })).json()).character;
+    const dara = (await (await postJson('/api/characters', { name: 'Dara', description: 'Brown eyes, soft-spoken.' })).json()).character;
+    const [a] = await twoCharacters();
+    await putRel(a.id, wren.id, ['friend']);
+    await putRel(a.id, dara.id, ['friend']);
+
+    const res = await postJson(`/api/relationships/${a.id}/query`, { query: 'that friend of yours with the blue eyes' });
+    const { results } = await res.json();
+    const wrenResult = results.find((r) => r.otherId === wren.id);
+    const daraResult = results.find((r) => r.otherId === dara.id);
+    assert.ok(wrenResult.score > daraResult.score);
+  });
 });
 
 describe('Settings: endpoint config fields', () => {

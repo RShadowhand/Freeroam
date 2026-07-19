@@ -32,6 +32,7 @@ import {
 import {
   upsertRelationship,
   retrieveRelevantRelationships,
+  queryCharacterRelationships,
   rebuildAllRelationshipEmbeddings,
   FAMILY_HINTS,
 } from './lib/relationshipStore.js';
@@ -1431,6 +1432,35 @@ app.put('/api/relationships/:characterId/:targetId', async (req, res) => {
   const result = await upsertRelationship({ db: w.db, embedFn: embed, characterId, targetId, labels });
   if (result.removed) return res.json({ ok: true, removed: true });
   res.json({ ok: true, labels: result.labels });
+});
+
+// Debugging aid: ranks EVERY one of a character's relationships (forward
+// and reverse) against a free-text description — "your friend with the
+// blue eyes" — using the same two-signal (label + other-party identity)
+// scoring retrieveRelevantRelationships uses for real generation, so a
+// human can see the score breakdown and why a relationship would or
+// wouldn't surface. No LLM call, just the local embedding model.
+app.post('/api/relationships/:characterId/query', async (req, res) => {
+  const w = req.world;
+  const { query, limit } = req.body || {};
+  if (typeof query !== 'string' || !query.trim()) {
+    return res.status(400).json({ error: 'query is required.' });
+  }
+  const charactersById = {};
+  loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+  try {
+    const results = await queryCharacterRelationships({
+      db: w.db,
+      embedFn: embed,
+      speakerId: req.params.characterId,
+      query,
+      charactersById,
+      limit: Number.isInteger(limit) && limit > 0 ? Math.min(limit, 200) : 50,
+    });
+    res.json({ results });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
 });
 
 // --- Chat -----------------------------------------------------------------

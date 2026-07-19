@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue';
 import { useWorldStore, RELATIONSHIP_LABELS } from '../../stores/world';
-import { setRelationshipLabels } from '../../api/relationships';
+import { setRelationshipLabels, queryRelationships } from '../../api/relationships';
 
 // Relationships live inside the character modal — only the character being
 // edited is ever "the source", so instead of listing every other character
@@ -13,7 +13,41 @@ const world = useWorldStore();
 const pendingTargetId = ref(null);
 const customInputs = ref({}); // targetId -> in-progress custom label text
 
-watch(() => props.characterId, () => { pendingTargetId.value = null; });
+watch(() => props.characterId, () => { pendingTargetId.value = null; resetDebug(); });
+
+// --- Debug: test a relationship query ------------------------------------
+// Ranks every one of this character's relationships (forward and reverse)
+// against a free-text description — e.g. "your friend with the blue eyes"
+// — using the same label + identity-embedding scoring real generation
+// uses, so you can see the score breakdown for a candidate that didn't
+// surface, not just the winners. No LLM call, just the local embedder.
+const debugQuery = ref('');
+const debugResults = ref([]);
+const debugBusy = ref(false);
+const debugRan = ref(false);
+const debugError = ref('');
+
+function resetDebug() {
+  debugQuery.value = '';
+  debugResults.value = [];
+  debugRan.value = false;
+  debugError.value = '';
+}
+
+async function runDebugQuery() {
+  const query = debugQuery.value.trim();
+  if (!query) return;
+  debugBusy.value = true;
+  debugError.value = '';
+  try {
+    const { ok, data } = await queryRelationships(props.characterId, { query });
+    if (!ok) { debugError.value = data.error || 'Query failed.'; return; }
+    debugResults.value = data.results || [];
+    debugRan.value = true;
+  } finally {
+    debugBusy.value = false;
+  }
+}
 
 const allTargets = computed(() => {
   const persona = world.activePersona;
@@ -80,6 +114,30 @@ function onAddTarget(e) {
   <div>
     <h2 style="font-size:1rem;margin:18px 0 10px;border-top:1px solid var(--border);padding-top:16px;">Relationships</h2>
     <p class="hint">Multiple labels are fine at once (e.g. "ex-wife, friend") — pick from the standard list or type your own.</p>
+
+    <div class="memory-debug">
+      <h3 class="memory-debug-title">Debug: test a relationship query</h3>
+      <p class="hint">Ranks every one of this character's relationships against a description, so you can see the label vs. person score split — not just what would actually be recalled.</p>
+      <div class="row">
+        <input
+          type="text" v-model="debugQuery" placeholder="e.g. that friend of yours with the blue eyes"
+          @keyup.enter="runDebugQuery"
+        >
+        <button class="btn small" :disabled="debugBusy || !debugQuery.trim()" @click="runDebugQuery">Test</button>
+      </div>
+      <div class="form-status" v-if="debugError">{{ debugError }}</div>
+      <div class="empty-note" v-if="debugRan && !debugResults.length">This character has no relationships to search.</div>
+      <div class="memory-row" v-for="r in debugResults" :key="`${r.direction}:${r.otherId}`">
+        <div class="memory-meta">
+          <span class="badge" :class="r.selected ? 'badge-recalled' : 'badge-dim'">{{ r.selected ? `✓ ${r.selectionReason}` : 'not recalled' }}</span>
+          <span class="badge">score {{ r.score.toFixed(3) }}</span>
+          <span class="badge" v-if="r.characterScore !== null">label {{ r.labelScore.toFixed(2) }} / person {{ r.characterScore.toFixed(2) }}</span>
+          <span class="badge">{{ r.direction === 'forward' ? `${world.charName(characterId) || 'they'} → ${r.otherName}` : `${r.otherName} → ${world.charName(characterId) || 'they'}` }}</span>
+        </div>
+        <div class="memory-text">{{ r.otherName }}: {{ r.labels.join(', ') || '(no labels)' }}</div>
+      </div>
+    </div>
+
     <div class="empty-note" v-if="!relatedIds.length">No relationships set yet — pick someone below to add one.</div>
     <div class="rel-row" v-for="tid in relatedIds" :key="tid">
       <div class="rel-target">{{ namesById[tid] || 'Unknown' }}</div>

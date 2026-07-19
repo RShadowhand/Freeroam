@@ -103,8 +103,9 @@ describe('rankBySimilarity / topKSimilar', () => {
 });
 
 describe('timePrefix', () => {
-  test('renders day and time of day', () => {
-    assert.equal(timePrefix(3, 'evening'), '(Day 3, evening)\n');
+  test('renders day (with weekday) and time of day', () => {
+    // Day 1 is a Monday (see context.js weekdayFor) — Day 3 is a Wednesday.
+    assert.equal(timePrefix(3, 'evening'), '(Day 3 (Wednesday), evening)\n');
   });
   test('empty when neither is set', () => {
     assert.equal(timePrefix(null, null), '');
@@ -135,7 +136,7 @@ describe('recordTurn + retrieveMemories (SQLite)', () => {
     assert.deepEqual(ezraMems[0].participants, ['mireille']); // self excluded, matching the old shape
     assert.equal(ezraMems[0].day, 2);
     assert.equal(ezraMems[0].timeOfDay, 'evening');
-    assert.ok(ezraMems[0].text.startsWith('(Day 2, evening)'));
+    assert.ok(ezraMems[0].text.startsWith('(Day 2 (Tuesday), evening)'));
 
     // Both characters see the SAME row (same id), and each entry links to
     // it exactly once — not once per character.
@@ -517,7 +518,7 @@ describe('syncMemoriesForEntry (edit / delete / regenerate)', () => {
       const [mem] = listCharacterMemories(db, cid);
       assert.ok(mem.text.includes('burned the records'));
       assert.ok(!mem.text.includes('Every arrival, logged'));
-      assert.ok(mem.text.startsWith('(Day 1, morning)')); // time prefix preserved
+      assert.ok(mem.text.startsWith('(Day 1 (Monday), morning)')); // time prefix preserved
     }
   }));
 

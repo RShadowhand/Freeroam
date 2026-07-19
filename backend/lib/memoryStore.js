@@ -1,5 +1,10 @@
 import crypto from 'crypto';
-import { encodeEmbedding, decodeEmbedding } from './db.js';
+import {
+  encodeEmbedding,
+  upsertMemoryVectors, removeMemoryVectorParticipant, deleteMemoryVectors,
+  deleteMemoryVectorsForCharacter, queryMemoryVectorIndex,
+} from './db.js';
+import { weekdayFor } from './context.js';
 import { logger } from './log.js';
 
 // Per-(character, persona) semantic memory, SQLite-backed (see db.js). A
@@ -46,10 +51,17 @@ function personaKeyFor(personaId) {
 }
 
 // Memory text carries the in-world date so recall is time-anchored; the
-// same values live in columns for querying.
+// same values live in columns for querying. The weekday is folded into the
+// embedded text (not just the day number) so a query like "how did your
+// exam on Monday go?" has something to actually match against — day counts
+// alone mean nothing to a semantic search, but "Monday" is a real word.
+// Matches the "Day X (Weekday)" phrasing already used in context.js/
+// narrator.js for the same day -> weekday derivation (see weekdayFor).
 export function timePrefix(day, timeOfDay) {
   if (!day && !timeOfDay) return '';
-  return `(Day ${day || '?'}, ${timeOfDay || 'sometime'})\n`;
+  const weekday = weekdayFor(day);
+  const dayLabel = day ? `Day ${day}${weekday ? ` (${weekday})` : ''}` : 'Day ?';
+  return `(${dayLabel}, ${timeOfDay || 'sometime'})\n`;
 }
 
 // `participants` is relative to `characterId` — everyone else who shared
@@ -95,6 +107,7 @@ export async function recordTurn({ db, embedFn, characterIds, personaId, text, p
     insertMem.run(id, personaKey, fullText, embedding, placeId || null, day, timeOfDay, timestamp);
     characterIds.forEach((characterId) => insertParticipant.run(id, characterId));
     entryIds.forEach((entryId) => insertLink.run(id, entryId));
+    upsertMemoryVectors(db, id, characterIds, embedding);
   });
   write();
 
@@ -131,6 +144,7 @@ export async function recordTurn({ db, embedFn, characterIds, personaId, text, p
 export async function retrieveMemories({ db, embedFn, characterIds, query, topKPerCharacter = 3, recentPerCharacter = 2, excludeEntryIds = [], minScore = 0 }) {
   if (!query || !query.trim() || !Array.isArray(characterIds) || !characterIds.length) return [];
   const queryEmbedding = await embedFn(query);
+  const queryBuffer = encodeEmbedding(queryEmbedding);
 
   const excludedMemoryIds = new Set();
   if (excludeEntryIds.length) {
@@ -140,29 +154,38 @@ export async function retrieveMemories({ db, embedFn, characterIds, query, topKP
       .forEach((r) => excludedMemoryIds.add(r.memory_id));
   }
 
-  const selectAll = db.prepare(`
-    SELECT m.id, m.text, m.embedding, m.timestamp
+  const getMemory = db.prepare('SELECT text, timestamp FROM memories WHERE id = ?');
+  const selectRecent = db.prepare(`
+    SELECT m.id, m.text, m.timestamp
     FROM memories m
     JOIN memory_participants mp ON mp.memory_id = m.id
     WHERE mp.character_id = ?
+    ORDER BY m.timestamp DESC
   `);
 
   const selected = new Map(); // text -> { text, timestamp, score }
   characterIds.forEach((characterId) => {
-    const rows = selectAll.all(characterId)
-      .filter((r) => !excludedMemoryIds.has(r.id))
-      .map((r) => ({ id: r.id, text: r.text, timestamp: r.timestamp, embedding: decodeEmbedding(r.embedding) }));
-
-    const ranked = rankBySimilarity(queryEmbedding, rows);
-    ranked.filter((r) => r.score >= minScore).slice(0, topKPerCharacter).forEach(({ entry, score }) => {
-      selected.set(entry.text, { text: entry.text, timestamp: entry.timestamp, score });
+    // Indexed KNN, nearest first — over-fetch by the number of excluded
+    // memories so that filtering them out afterward can never leave fewer
+    // than topKPerCharacter real candidates when enough exist (see db.js
+    // queryMemoryVectorIndex: results come back in distance order, so the
+    // top topKPerCharacter surviving ones after this filter are exactly
+    // what a full-scan-then-filter would have picked).
+    const knn = queryMemoryVectorIndex(db, characterId, queryBuffer, topKPerCharacter + excludedMemoryIds.size)
+      .filter((r) => !excludedMemoryIds.has(r.memory_id));
+    knn.filter((r) => (1 - r.distance) >= minScore).slice(0, topKPerCharacter).forEach((r) => {
+      const row = getMemory.get(r.memory_id);
+      if (row) selected.set(row.text, { text: row.text, timestamp: row.timestamp, score: 1 - r.distance });
     });
+
     if (recentPerCharacter > 0) {
-      [...rows].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-        .slice(0, recentPerCharacter)
-        .forEach((entry) => {
-          if (!selected.has(entry.text)) selected.set(entry.text, { text: entry.text, timestamp: entry.timestamp, score: null });
-        });
+      let seen = 0;
+      for (const row of selectRecent.iterate(characterId)) {
+        if (excludedMemoryIds.has(row.id)) continue;
+        if (seen >= recentPerCharacter) break;
+        seen += 1;
+        if (!selected.has(row.text)) selected.set(row.text, { text: row.text, timestamp: row.timestamp, score: null });
+      }
     }
   });
 
@@ -193,6 +216,7 @@ export async function retrieveMemories({ db, embedFn, characterIds, query, topKP
 export async function queryCharacterMemories({ db, embedFn, characterId, query, topK = 3, recentCount = 2, minScore = 0, limit = 50 }) {
   if (!query || !query.trim()) return [];
   const queryEmbedding = await embedFn(query);
+  const queryBuffer = encodeEmbedding(queryEmbedding);
 
   const rows = db.prepare(`
     SELECT m.* FROM memories m
@@ -201,8 +225,14 @@ export async function queryCharacterMemories({ db, embedFn, characterId, query, 
   `).all(characterId);
   if (!rows.length) return [];
 
-  const decoded = rows.map((r) => ({ ...r, embedding: decodeEmbedding(r.embedding) }));
-  const ranked = rankBySimilarity(queryEmbedding, decoded);
+  const rowById = new Map(rows.map((r) => [r.id, r]));
+  // Exhaustive ranking via the same index retrieveMemories uses (k = every
+  // one of this character's memories) — this is a diagnostic tool whose
+  // whole point is showing near-misses too, not just the winners, so it
+  // needs the full ranked list, not just topK. Low-frequency/manual, so the
+  // "fetch everyone" cost doesn't matter the way it would on the hot path.
+  const knn = queryMemoryVectorIndex(db, characterId, queryBuffer, rows.length);
+  const ranked = knn.map((r) => ({ entry: rowById.get(r.memory_id), score: 1 - r.distance })).filter((r) => r.entry);
 
   const recentIds = new Set(
     [...rows].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, recentCount).map((r) => r.id)
@@ -254,6 +284,7 @@ export async function addCharacterMemory({ db, embedFn, characterId, personaId, 
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, personaKeyFor(personaId), fullText, embedding, placeId || null, day, timeOfDay, new Date().toISOString());
     db.prepare('INSERT INTO memory_participants (memory_id, character_id) VALUES (?, ?)').run(id, characterId);
+    upsertMemoryVectors(db, id, [characterId], embedding);
   })();
   logger.info('memory', `added manual memory ${id} for ${characterId}`);
   return rowToMemory(db, db.prepare('SELECT * FROM memories WHERE id = ?').get(id), characterId);
@@ -263,8 +294,13 @@ export async function updateCharacterMemory({ db, embedFn, characterId, entryId,
   if (!text || !text.trim()) return null;
   const owns = db.prepare('SELECT 1 FROM memory_participants WHERE memory_id = ? AND character_id = ?').get(entryId, characterId);
   if (!owns) return null;
-  db.prepare('UPDATE memories SET text = ?, embedding = ?, timestamp = ? WHERE id = ?')
-    .run(text.trim(), encodeEmbedding(await embedFn(text.trim())), new Date().toISOString(), entryId);
+  const embedding = encodeEmbedding(await embedFn(text.trim()));
+  const participantIds = db.prepare('SELECT character_id FROM memory_participants WHERE memory_id = ?').all(entryId).map((r) => r.character_id);
+  db.transaction(() => {
+    db.prepare('UPDATE memories SET text = ?, embedding = ?, timestamp = ? WHERE id = ?')
+      .run(text.trim(), embedding, new Date().toISOString(), entryId);
+    upsertMemoryVectors(db, entryId, participantIds, embedding);
+  })();
   logger.info('memory', `updated memory ${entryId} (re-embedded)`);
   return rowToMemory(db, db.prepare('SELECT * FROM memories WHERE id = ?').get(entryId), characterId);
 }
@@ -273,11 +309,20 @@ export async function updateCharacterMemory({ db, embedFn, characterId, entryId,
 // used when the embedding model changes, since old vectors live in a
 // different vector space and aren't comparable to freshly embedded queries.
 // Deliberately never called automatically; see /api/settings/rebuild-embeddings.
+// Also rebuilds memory_vectors for every row — if the new model has a
+// different dimension, the first upsertMemoryVectors call drops and
+// recreates the vec0 table to match (see ensureMemoryVectorsTable in
+// db.js), so every subsequent row in this same loop lands in the
+// correctly-shaped table.
 export async function rebuildAllMemoryEmbeddings({ db, embedFn }) {
   const rows = db.prepare('SELECT id, text FROM memories').all();
   const update = db.prepare('UPDATE memories SET embedding = ? WHERE id = ?');
+  const getParticipants = db.prepare('SELECT character_id FROM memory_participants WHERE memory_id = ?');
   for (const row of rows) {
-    update.run(encodeEmbedding(await embedFn(row.text)), row.id);
+    const embedding = encodeEmbedding(await embedFn(row.text));
+    update.run(embedding, row.id);
+    const participantIds = getParticipants.all(row.id).map((p) => p.character_id);
+    upsertMemoryVectors(db, row.id, participantIds, embedding);
   }
   return rows.length;
 }
@@ -289,11 +334,13 @@ export async function rebuildAllMemoryEmbeddings({ db, embedFn }) {
 export function deleteCharacterMemory(db, characterId, entryId) {
   const result = db.prepare('DELETE FROM memory_participants WHERE memory_id = ? AND character_id = ?').run(entryId, characterId);
   if (result.changes === 0) return false;
+  removeMemoryVectorParticipant(db, entryId, characterId);
 
   const { n: remaining } = db.prepare('SELECT COUNT(*) AS n FROM memory_participants WHERE memory_id = ?').get(entryId);
   if (remaining === 0) {
     db.prepare('DELETE FROM memories WHERE id = ?').run(entryId);
     db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(entryId);
+    deleteMemoryVectors(db, entryId);
   }
   logger.info('memory', `deleted memory ${entryId} for ${characterId}${remaining === 0 ? ' (last participant — row removed)' : ''}`);
   return true;
@@ -307,11 +354,13 @@ export function deleteAllCharacterMemories(db, characterId) {
   let removedRows = 0;
   const wipe = db.transaction(() => {
     db.prepare('DELETE FROM memory_participants WHERE character_id = ?').run(characterId);
+    deleteMemoryVectorsForCharacter(db, characterId);
     memoryIds.forEach((mid) => {
       const { n: remaining } = db.prepare('SELECT COUNT(*) AS n FROM memory_participants WHERE memory_id = ?').get(mid);
       if (remaining === 0) {
         db.prepare('DELETE FROM memories WHERE id = ?').run(mid);
         db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(mid);
+        deleteMemoryVectors(db, mid);
         removedRows += 1;
       }
     });
@@ -336,6 +385,7 @@ async function rebuildMemories({ db, embedFn, memoryIds, log, userLabel, formatE
       db.prepare('DELETE FROM memories WHERE id = ?').run(mid);
       db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(mid);
       db.prepare('DELETE FROM memory_participants WHERE memory_id = ?').run(mid);
+      deleteMemoryVectors(db, mid);
       logger.info('memory', `sync: memory ${mid} emptied by chat edits — deleted`);
       continue;
     }
@@ -343,8 +393,11 @@ async function rebuildMemories({ db, embedFn, memoryIds, log, userLabel, formatE
     const row = db.prepare('SELECT day, time_of_day FROM memories WHERE id = ?').get(mid);
     if (!row) continue;
     const text = timePrefix(row.day, row.time_of_day) + entries.map((e) => formatEntry(e, userLabel)).join('\n');
+    const embedding = encodeEmbedding(await embedFn(text));
+    const participantIds = db.prepare('SELECT character_id FROM memory_participants WHERE memory_id = ?').all(mid).map((r) => r.character_id);
     db.prepare('UPDATE memories SET text = ?, embedding = ? WHERE id = ?')
-      .run(text, encodeEmbedding(await embedFn(text)), mid);
+      .run(text, embedding, mid);
+    upsertMemoryVectors(db, mid, participantIds, embedding);
     rebuilt += 1;
   }
   return rebuilt;
@@ -422,6 +475,7 @@ export function pruneReplylessMemories(db, memoryIds, log) {
       db.prepare('DELETE FROM memories WHERE id = ?').run(mid);
       db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(mid);
       db.prepare('DELETE FROM memory_participants WHERE memory_id = ?').run(mid);
+      deleteMemoryVectors(db, mid);
       pruned += 1;
     }
   }
