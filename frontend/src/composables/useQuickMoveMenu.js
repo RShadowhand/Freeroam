@@ -66,9 +66,21 @@ export function useQuickMoveMenu() {
     else chat.goWithCharacterTo(charId, placeId);
   }
 
+  // Toggles the speaker between active (takes a turn each round) and
+  // background (still present, still remembers, doesn't reply) — reachable
+  // right from a message they just sent, since that's the natural moment to
+  // decide "okay, that's enough from them for now."
+  function toggleParticipation() {
+    const charId = openForCharId.value;
+    const next = !world.isActive(charId);
+    close();
+    chat.setCharacterActive(charId, next);
+  }
+
   return {
     openForMessageId, openForCharId, style,
-    open, close, toggle, choose, setMenuEl, onScroll,
+    open, close, toggle, choose, toggleParticipation, setMenuEl, onScroll,
     otherPlaces: () => world.places.filter((p) => p.id !== chat.currentPlace),
+    isCharActive: () => world.isActive(openForCharId.value),
   };
 }

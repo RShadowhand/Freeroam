@@ -33,7 +33,7 @@ function onQuickMoveClick(e) {
         <button
           v-if="message.id && message.charId" class="quick-move-trigger"
           :class="{ active: quickMove.openForMessageId.value === message.id }"
-          title="Send elsewhere, or go with them" @click="onQuickMoveClick"
+          title="Step back, send elsewhere, or go with them" @click="onQuickMoveClick"
         >⋯</button>
       </div>
       <div class="msg-body">

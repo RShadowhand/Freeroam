@@ -276,6 +276,13 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 .chip .dot{width:8px;height:8px;}
 .chip .mini-avatar{width:18px;height:18px;border-radius:var(--avatar-radius);object-fit:cover;}
 .chip.empty{color:var(--dim);font-style:italic;border-style:dashed;padding:4px 10px;}
+.chip.inactive{opacity:0.55;}
+.chip-active-toggle{
+  background:none; border:none; color:var(--dim); cursor:pointer;
+  font-size:0.6rem; padding:0 2px; line-height:1;
+}
+.chip-active-toggle.active{ color:var(--accent); }
+.chip-active-toggle:hover{ color:var(--parchment); }
 .chip-send-select{
   width:auto; padding:0 2px; font-size:0.68rem; border:none; background:none;
   color:var(--dim); cursor:pointer; max-width:22px;
@@ -339,6 +346,17 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   letter-spacing:0.04em; text-transform:uppercase; margin:6px 0;
 }
 .msg.error{ align-self:center; color:var(--rose); font-size:0.78rem; text-align:center; }
+.msg.narrator{
+  align-self:center; max-width:92%; position:relative;
+  border-top:1px solid var(--border); border-bottom:1px solid var(--border);
+  padding:9px 4px; margin:4px 0;
+}
+.narrator-text{
+  color:var(--dim); font-style:italic; font-size:0.86rem; line-height:1.55;
+  white-space:pre-wrap; padding-right:44px;
+}
+.msg.narrator .msg-edit-btn, .msg.narrator .msg-delete-btn{ position:absolute; top:6px; right:2px; }
+.msg.narrator .msg-delete-btn{ right:24px; }
 .bubble{ padding:9px 13px; border-radius:12px; font-size:0.92rem; line-height:1.42; white-space:pre-wrap; }
 .bubble em{ color:var(--fmt-italic-color); font-style:italic; }
 .bubble strong{ color:var(--fmt-bold-color); font-weight:600; }

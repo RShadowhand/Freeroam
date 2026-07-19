@@ -46,6 +46,16 @@ export const useChatStore = defineStore('chat', {
       return { ok, data };
     },
 
+    // Promotes/demotes a present character — active participants take a
+    // turn each round, inactive ones stay in the room (still aware of what's
+    // said, still remembered) but don't generate a reply until promoted again.
+    async setCharacterActive(charId, active) {
+      const world = useWorldStore();
+      const { ok, data } = await placeCharacter(charId, { active });
+      if (ok) world.placements = data.placements;
+      return { ok, data };
+    },
+
     // Sends a character elsewhere AND follows them there — the user's own
     // view switches to that place too, unlike a plain moveCharacter "send to".
     async goWithCharacterTo(charId, placeId) {

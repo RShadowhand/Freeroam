@@ -13,7 +13,7 @@ function del() {
 </script>
 
 <template>
-  <template v-if="message.id && (message.type === 'user' || message.type === 'char')">
+  <template v-if="message.id && (message.type === 'user' || message.type === 'char' || message.type === 'narrator')">
     <button class="msg-edit-btn" title="Edit" @click="chat.editingMessageId = message.id">✎</button>
     <button class="msg-delete-btn" title="Delete" @click="del">🗑</button>
   </template>

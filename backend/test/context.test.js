@@ -263,6 +263,10 @@ describe('formatLogEntry', () => {
   test('formats character entries with their own name, ignoring userLabel', () => {
     assert.equal(formatLogEntry({ type: 'char', name: 'Ezra Vane', text: 'Ah.' }, 'Kael'), 'Ezra Vane: Ah.');
   });
+
+  test('formats narrator entries unprefixed — scene prose, not a person speaking', () => {
+    assert.equal(formatLogEntry({ type: 'narrator', text: 'A bell tolls somewhere distant.' }, 'Kael'), 'A bell tolls somewhere distant.');
+  });
 });
 
 describe('buildHistoryTranscript', () => {
@@ -311,6 +315,12 @@ describe('buildHistoryTranscript', () => {
     const budget = estimateTokens(twoLines) + 2;
     const transcript = buildHistoryTranscript(log, { userLabel: 'Kael', tokenBudget: budget });
     assert.equal(transcript, twoLines);
+  });
+
+  test('includes narrator entries, unprefixed, alongside the rest', () => {
+    const withNarrator = [...log, { type: 'narrator', text: 'A bell tolls somewhere distant.' }];
+    const transcript = buildHistoryTranscript(withNarrator, { userLabel: 'Kael' });
+    assert.ok(transcript.endsWith('The archivist, obviously.\nA bell tolls somewhere distant.'));
   });
 });
 
@@ -365,6 +375,14 @@ describe('buildHistoryMessages', () => {
       { role: 'user', content: 'Kael: Who are you both?' },
       { role: 'assistant', content: 'The archivist, obviously.' },
     ]);
+  });
+
+  test('narrator entries fold into "user" content, unprefixed, for every speaker', () => {
+    const withNarrator = [...log, { type: 'narrator', text: 'A bell tolls somewhere distant.' }];
+    const messages = buildHistoryMessages(withNarrator, { userLabel: 'Kael', speakerId: 'ezra' });
+    const last = messages[messages.length - 1];
+    assert.equal(last.role, 'user');
+    assert.ok(last.content.includes('A bell tolls somewhere distant.'));
   });
 });
 

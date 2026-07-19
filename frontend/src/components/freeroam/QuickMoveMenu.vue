@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, ref } from 'vue';
 import { useQuickMoveMenu } from '../../composables/useQuickMoveMenu';
 
-const { openForMessageId, style, choose, setMenuEl, onScroll } = useQuickMoveMenu();
+const { openForMessageId, style, choose, toggleParticipation, isCharActive, setMenuEl, onScroll } = useQuickMoveMenu();
 const menuRef = ref(null);
 
 function onDocClick(e) {
@@ -31,6 +31,10 @@ const places = () => useQuickMoveMenu().otherPlaces();
       :style="{ ...style, display: openForMessageId ? 'flex' : 'none' }"
     >
       <template v-if="openForMessageId">
+        <div class="quick-move-group-label">Participation</div>
+        <button class="quick-move-option" @click="toggleParticipation">
+          {{ isCharActive() ? 'Step back from conversation' : 'Bring into conversation' }}
+        </button>
         <div class="quick-move-group-label">Send to</div>
         <button
           v-for="p in places()" :key="'send:'+p.id" class="quick-move-option"

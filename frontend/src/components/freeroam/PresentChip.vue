@@ -11,6 +11,7 @@ const world = useWorldStore();
 const chat = useChatStore();
 
 const character = computed(() => world.charactersById[props.charId]);
+const active = computed(() => world.isActive(props.charId));
 
 // Options for sending this present character to a different place, grouped
 // by area, excluding wherever they already are. "Scheduled now"/"Scheduled
@@ -36,12 +37,20 @@ function onSend(e) {
 function remove() {
   chat.moveCharacter(props.charId, null);
 }
+function toggleActive() {
+  chat.setCharacterActive(props.charId, !active.value);
+}
 </script>
 
 <template>
-  <span class="chip" v-if="character">
+  <span class="chip" :class="{ inactive: !active }" v-if="character">
     <Avatar :char-id="charId" :size="18" />
     {{ character.name }}
+    <button
+      class="chip-active-toggle" :class="{ active }"
+      :title="active ? 'In the conversation — tap to step back' : 'Not in the conversation — tap to bring in'"
+      @click="toggleActive"
+    >{{ active ? '●' : '○' }}</button>
     <select class="chip-send-select" title="Send elsewhere" @change="onSend">
       <option value="" disabled selected>↪</option>
       <option v-if="scheduledNowPlace" :value="scheduledNowPlace.id">

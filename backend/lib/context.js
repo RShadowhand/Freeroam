@@ -89,6 +89,7 @@ export function sliceSinceLastArrival(log) {
 export function formatLogEntry(entry, userLabel) {
   if (entry.type === 'system') return `(${entry.text})`;
   if (entry.type === 'user') return `${userLabel}: ${entry.text}`;
+  if (entry.type === 'narrator') return entry.text; // unprefixed — reads as scene prose, not a person speaking
   return `${entry.name}: ${entry.text}`;
 }
 
@@ -101,7 +102,7 @@ export function formatLogEntry(entry, userLabel) {
 // transcript is worse than a slightly-over-budget one.
 export function buildHistoryTranscript(log, { userLabel = 'Visitor', tokenBudget = Infinity } = {}) {
   const relevant = sliceSinceLastArrival(log)
-    .filter(m => m.type === 'user' || m.type === 'char' || m.type === 'system');
+    .filter(m => m.type === 'user' || m.type === 'char' || m.type === 'system' || m.type === 'narrator');
 
   const kept = [];
   let used = 0;
@@ -125,6 +126,7 @@ export function buildHistoryTranscript(log, { userLabel = 'Visitor', tokenBudget
 function messageForEntry(entry, { userLabel, speakerId }) {
   if (entry.type === 'system') return { role: 'user', content: `(${entry.text})` };
   if (entry.type === 'user') return { role: 'user', content: `${userLabel}: ${entry.text}` };
+  if (entry.type === 'narrator') return { role: 'user', content: entry.text };
   if (entry.charId === speakerId) return { role: 'assistant', content: entry.text };
   return { role: 'user', content: `${entry.name}: ${entry.text}` };
 }
@@ -139,7 +141,7 @@ function messageForEntry(entry, { userLabel, speakerId }) {
 // mishandle) consecutive same-role turns.
 export function buildHistoryMessages(log, { userLabel = 'Visitor', speakerId = null, tokenBudget = Infinity } = {}) {
   const relevant = sliceSinceLastArrival(log)
-    .filter(m => m.type === 'user' || m.type === 'char' || m.type === 'system');
+    .filter(m => m.type === 'user' || m.type === 'char' || m.type === 'system' || m.type === 'narrator');
 
   const kept = [];
   let used = 0;

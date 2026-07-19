@@ -714,6 +714,134 @@ describe('POST /api/places/:placeId/retry (validation paths — no real OpenRout
   });
 });
 
+describe('Active participants (promote/demote)', () => {
+  async function makePlace(name) {
+    const res = await postJson('/api/places', { name, type: 'communal' });
+    return (await res.json()).place;
+  }
+
+  async function placeCharacter(name, placeId) {
+    const { character } = await (await postJson('/api/characters', { name, description: 'Present.' })).json();
+    await fetch(`${baseUrl}/api/characters/${character.id}/place`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ placeId }),
+    });
+    return character;
+  }
+
+  async function setActive(charId, active) {
+    return fetch(`${baseUrl}/api/characters/${charId}/place`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active }),
+    });
+  }
+
+  async function isActive(charId) {
+    const { placements } = await (await fetch(`${baseUrl}/api/world`)).json();
+    return placements[charId]?.active !== false;
+  }
+
+  test('a freshly-placed character is active by default', async () => {
+    const place = await makePlace('Default Active Hall');
+    const char = await placeCharacter('Newcomer', place.id);
+    assert.equal(await isActive(char.id), true);
+  });
+
+  test('demoting sets active: false; promoting sets it back', async () => {
+    const place = await makePlace('Toggle Hall');
+    const char = await placeCharacter('Togglable', place.id);
+
+    let res = await setActive(char.id, false);
+    assert.equal(res.status, 200);
+    assert.equal(await isActive(char.id), false);
+
+    res = await setActive(char.id, true);
+    assert.equal(res.status, 200);
+    assert.equal(await isActive(char.id), true);
+  });
+
+  test('setting active alone (no placeId in the body) requires an existing placement', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Unplaced', description: 'Nowhere.' })).json();
+    const res = await setActive(character.id, false);
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /placeId is required/i);
+  });
+
+  test('re-placing (moving) a demoted character resets them to active', async () => {
+    const placeA = await makePlace('Origin Hall');
+    const placeB = await makePlace('Destination Hall');
+    const char = await placeCharacter('Wanderer', placeA.id);
+    await setActive(char.id, false);
+    assert.equal(await isActive(char.id), false);
+
+    await fetch(`${baseUrl}/api/characters/${char.id}/place`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ placeId: placeB.id }),
+    });
+    assert.equal(await isActive(char.id), true);
+  });
+
+  test('changing only greetingIndex does not disturb the active flag', async () => {
+    const place = await makePlace('Greeting Index Hall');
+    const char = await placeCharacter('Greetable', place.id);
+    await setActive(char.id, false);
+
+    await fetch(`${baseUrl}/api/characters/${char.id}/place`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ greetingIndex: null }),
+    });
+    assert.equal(await isActive(char.id), false);
+  });
+
+  test('say with everyone present but nobody active: no API-key error, a "no one reacts" note, and the round is still recorded into bystanders\' memory', async () => {
+    const place = await makePlace('Quiet Crowd Hall');
+    const bystander = await placeCharacter('Bystander', place.id);
+    await setActive(bystander.id, false);
+    await postJson(`/api/places/${place.id}/enter`, {});
+
+    const { log, error } = await (await postJson(`/api/places/${place.id}/say`, { text: 'Anyone want to chat?' })).json();
+    assert.equal(error, undefined); // the silent-round path never calls runReactionRound, so no API-key error
+    assert.equal(log[log.length - 2].type, 'user');
+    assert.match(log[log.length - 1].text, /no one reacts/i);
+    assert.equal(log[log.length - 1].type, 'system');
+
+    // Memory recording is fire-and-forget — poll briefly for it to land.
+    let memories = [];
+    for (let i = 0; i < 40; i++) {
+      memories = (await (await fetch(`${baseUrl}/api/memory/${bystander.id}`)).json()).memories;
+      if (memories.length) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    assert.equal(memories.length, 1);
+    assert.ok(memories[0].text.includes('Anyone want to chat?'));
+  });
+
+  test('say with a mix of active and inactive characters still attempts generation (surfaces the usual "no API key" error)', async () => {
+    const place = await makePlace('Mixed Crowd Hall');
+    await placeCharacter('Speaker', place.id);
+    const quiet = await placeCharacter('Quiet One', place.id);
+    await setActive(quiet.id, false);
+    await postJson(`/api/places/${place.id}/enter`, {});
+
+    const { error } = await (await postJson(`/api/places/${place.id}/say`, { text: 'Hello?' })).json();
+    assert.match(error, /API key/i); // at least one active participant -> normal generation path, not the silent one
+  });
+
+  test('retry with everyone present but nobody active behaves the same as say — silent round, no error', async () => {
+    const place = await makePlace('Quiet Crowd Retry Hall');
+    const bystander = await placeCharacter('Retry Bystander', place.id);
+    await setActive(bystander.id, false);
+    await postJson(`/api/places/${place.id}/enter`, {});
+    await postJson(`/api/places/${place.id}/say`, { text: 'Hmm.' });
+    // The above already resolves via the silent path (no dangling user
+    // message), so drive retry from a manually-seeded dangling user line.
+    const chatPath = path.join(tmpRoot, 'data', 'chats', `${place.id}.json`);
+    const log = JSON.parse(fs.readFileSync(chatPath, 'utf-8'));
+    log.push({ id: 'usr-retry-1', type: 'user', text: 'Still there?' });
+    fs.writeFileSync(chatPath, JSON.stringify(log));
+
+    const { error, log: afterRetry } = await (await postJson(`/api/places/${place.id}/retry`, {})).json();
+    assert.equal(error, undefined);
+    assert.match(afterRetry[afterRetry.length - 1].text, /no one reacts/i);
+  });
+});
+
 describe('POST /api/places/:placeId/regenerate (validation paths — no real OpenRouter call)', () => {
   async function makeOccupiedPlaceWithChat() {
     const { place } = await (await postJson('/api/places', { name: 'Regen Hall ' + Math.random(), type: 'communal' })).json();
@@ -1107,6 +1235,24 @@ describe('Settings: endpoint config fields', () => {
     assert.equal(cfg.memoryMinScore, 0.5);
     await postJson('/api/settings', { memoryMinScore: 0.35 });
   });
+
+  test('narratorEnabled defaults to true and round-trips', async () => {
+    const initial = await (await fetch(`${baseUrl}/api/settings`)).json();
+    assert.equal(initial.narratorEnabled, true);
+
+    const off = await (await postJson('/api/settings', { narratorEnabled: false })).json();
+    assert.equal(off.narratorEnabled, false);
+
+    const on = await (await postJson('/api/settings', { narratorEnabled: true })).json();
+    assert.equal(on.narratorEnabled, true);
+  });
+
+  test('a non-boolean narratorEnabled is ignored, leaving the previous value in place', async () => {
+    await postJson('/api/settings', { narratorEnabled: false });
+    const cfg = await (await postJson('/api/settings', { narratorEnabled: 'yes' })).json();
+    assert.equal(cfg.narratorEnabled, false);
+    await postJson('/api/settings', { narratorEnabled: true });
+  });
 });
 
 describe('Message edit & delete', () => {
@@ -1119,6 +1265,7 @@ describe('Message edit & delete', () => {
       { id: 'sys-1', type: 'system', text: `You arrive at ${place.name}.` },
       { id: 'usr-1', type: 'user', text: 'Original user line.' },
       { id: 'msg-1', type: 'char', charId: character.id, name: character.name, text: 'Original reply.' },
+      { id: 'narr-1', type: 'narrator', text: 'A bell tolls somewhere distant.' },
     ]));
     return { place, character };
   }
@@ -1156,8 +1303,18 @@ describe('Message edit & delete', () => {
     assert.equal(res.status, 200);
     const { log } = await res.json();
     assert.equal(log.some((e) => e.id === 'msg-1'), false);
-    assert.equal(log.length, 2);
+    assert.equal(log.length, 3);
     assert.equal((await del()).status, 404);
+  });
+
+  test('narrator messages can be edited like character/user messages', async () => {
+    const { place } = await placeWithChat();
+    const res = await fetch(`${baseUrl}/api/places/${place.id}/messages/narr-1`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'A cart rattles past instead.' }),
+    });
+    assert.equal(res.status, 200);
+    const { log } = await res.json();
+    assert.equal(log.find((e) => e.id === 'narr-1').text, 'A cart rattles past instead.');
   });
 
   test('editing a message rebuilds the linked memories of every witness', async () => {

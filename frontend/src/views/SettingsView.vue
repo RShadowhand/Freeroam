@@ -6,6 +6,7 @@ import EndpointCard from '../components/settings/EndpointCard.vue';
 import MemoryCard from '../components/settings/MemoryCard.vue';
 import EmbeddingsCard from '../components/settings/EmbeddingsCard.vue';
 import SuggestedActionsCard from '../components/settings/SuggestedActionsCard.vue';
+import NarratorCard from '../components/settings/NarratorCard.vue';
 import ModelCard from '../components/settings/ModelCard.vue';
 import DraftPersonaPromptCard from '../components/settings/DraftPersonaPromptCard.vue';
 import TestConnectionCard from '../components/settings/TestConnectionCard.vue';
@@ -27,6 +28,7 @@ onMounted(async () => {
     <MemoryCard />
     <EmbeddingsCard />
     <SuggestedActionsCard />
+    <NarratorCard />
     <ModelCard />
     <DraftPersonaPromptCard />
     <TestConnectionCard />

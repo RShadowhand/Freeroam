@@ -28,6 +28,7 @@ export const useSettingsStore = defineStore('settings', {
     draftPersonaPromptIsCustom: false,
     embeddingModel: '',
     embeddingsStale: false, // true when stored memory/relationship vectors were built with a different model
+    narratorEnabled: true,
   }),
   getters: {
     // Providers are an OpenRouter-only concept — a custom OpenAI-spec
@@ -50,6 +51,7 @@ export const useSettingsStore = defineStore('settings', {
       this.draftPersonaPromptIsCustom = !!data.draftPersonaPromptIsCustom;
       this.embeddingModel = data.embeddingModel || '';
       this.embeddingsStale = !!data.embeddingsStale;
+      this.narratorEnabled = data.narratorEnabled !== false;
       await this.loadAvailableProviders();
     },
     async loadModels() {
@@ -120,6 +122,10 @@ export const useSettingsStore = defineStore('settings', {
     },
     async resetDraftPersonaPrompt() {
       await this.setDraftPersonaPrompt('');
+    },
+    async setNarratorEnabled(enabled) {
+      this.narratorEnabled = enabled;
+      await saveSettings({ narratorEnabled: enabled });
     },
     async rebuildEmbeddings() {
       const { ok, data } = await rebuildEmbeddingsRequest();

@@ -42,6 +42,11 @@ export const useWorldStore = defineStore('world', {
       .filter(([, p]) => p && p.placeId === placeId)
       .map(([cid]) => cid)
       .filter((cid) => state.charactersById[cid]),
+    // Active is the default — a placement with no `active` field (every
+    // placement made before this feature existed, or a freshly-placed
+    // character) counts as active. Mirrors backend/server.js's
+    // activeCharIds().
+    isActive: (state) => (charId) => state.placements[charId]?.active !== false,
   },
   actions: {
     async loadWorldState() {

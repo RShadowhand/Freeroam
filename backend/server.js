@@ -38,6 +38,12 @@ import {
   deleteCharacterEmbedding,
   rebuildAllCharacterEmbeddings,
 } from './lib/characterEmbeddings.js';
+import {
+  presentCharIds as presentCharIdsFor,
+  activeCharIds as activeCharIdsFor,
+} from './lib/presence.js';
+import { shouldNarrate, buildNarratorMessages, isNarratorSilent } from './lib/narrator.js';
+import { characterSnippet } from './lib/characterEmbeddings.js';
 import { detectSuggestedActions } from './lib/suggestedActions.js';
 import { embed, MODEL_ID as EMBEDDING_MODEL_ID } from './lib/embeddings.js';
 import {
@@ -119,6 +125,7 @@ const DEFAULT_CONFIG = {
   memoryMinScore: 0.35,                 // cosine-similarity floor for memory recall (see retrieveMemories)
   suggestedActionsMode: 'regex',        // regex | hybrid | ml — see lib/suggestedActions.js
   draftPersonaPrompt: '',              // '' = use DEFAULT_DRAFT_PERSONA_PROMPT; see /api/characters/draft
+  narratorEnabled: true,                // ambient world-voice for empty/solo/background scenes — see lib/narrator.js
 };
 
 // The model in use before embeddingModelVersion existed — configs saved
@@ -384,6 +391,7 @@ function publicConfig(cfg) {
     draftPersonaPromptIsCustom: !!(cfg.draftPersonaPrompt || '').trim(),
     embeddingModel: EMBEDDING_MODEL_ID,
     embeddingsStale: (cfg.embeddingModelVersion || LEGACY_EMBEDDING_MODEL_ID) !== EMBEDDING_MODEL_ID,
+    narratorEnabled: cfg.narratorEnabled !== false,
   };
 }
 
@@ -393,11 +401,12 @@ app.get('/api/settings', (req, res) => {
 
 app.post('/api/settings', (req, res) => {
   const cfg = loadConfig();
-  const { apiKey, model, apiBase, streaming, reasoning, providers, memoryMinScore, suggestedActionsMode, draftPersonaPrompt } = req.body || {};
+  const { apiKey, model, apiBase, streaming, reasoning, providers, memoryMinScore, suggestedActionsMode, draftPersonaPrompt, narratorEnabled } = req.body || {};
   if (typeof apiKey === 'string' && apiKey.trim()) cfg.apiKey = apiKey.trim();
   if (typeof model === 'string' && model.trim()) cfg.model = model.trim();
   if (typeof apiBase === 'string') cfg.apiBase = apiBase.trim().replace(/\/+$/, '') || DEFAULT_API_BASE;
   if (typeof streaming === 'boolean') cfg.streaming = streaming;
+  if (typeof narratorEnabled === 'boolean') cfg.narratorEnabled = narratorEnabled;
   if (['off', 'low', 'medium', 'high'].includes(reasoning)) cfg.reasoning = reasoning;
   if (Array.isArray(providers)) {
     cfg.providers = [...new Set(providers.filter((p) => typeof p === 'string' && p.trim()).map((p) => p.trim()))];
@@ -1005,11 +1014,15 @@ app.get('/api/world', (req, res) => {
   res.json({ places: loadPlaces(), placements: world.placements, time: world.time, setting: world.setting });
 });
 
-// Place (or unplace, with placeId: null) a character, and/or set which
-// greeting they open with. Fields not included in the body are left as-is.
+// Place (or unplace, with placeId: null) a character, set which greeting
+// they open with, and/or set whether they're an active participant (see
+// activeCharIds above) — active defaults to true and resets to true
+// whenever a character is (re)placed, so moving someone to a new place
+// never leaves them silently stuck inactive there. Fields not included in
+// the body are left as-is.
 app.post('/api/characters/:id/place', (req, res) => {
   const { id } = req.params;
-  const { placeId, greetingIndex } = req.body || {};
+  const { placeId, greetingIndex, active } = req.body || {};
 
   const characters = loadCharacters();
   const character = characters.find((c) => c.id === id);
@@ -1029,6 +1042,7 @@ app.post('/api/characters/:id/place', (req, res) => {
   if (placeId !== undefined) {
     if (!placeIds.includes(placeId)) return res.status(400).json({ error: `Unknown place id: ${placeId}` });
     existing.placeId = placeId;
+    existing.active = true;
   }
 
   if (greetingIndex !== undefined) {
@@ -1038,6 +1052,8 @@ app.post('/api/characters/:id/place', (req, res) => {
     }
     existing.greetingIndex = greetingIndex;
   }
+
+  if (typeof active === 'boolean') existing.active = active;
 
   if (existing.placeId === undefined) {
     return res.status(400).json({ error: 'placeId is required the first time a character is placed.' });
@@ -1464,11 +1480,16 @@ app.post('/api/chat', async (req, res) => {
 // whatever log these routes return.
 
 function presentCharIds(placeId, charactersById) {
-  const world = loadWorld();
-  return Object.entries(world.placements)
-    .filter(([, p]) => p && p.placeId === placeId)
-    .map(([cid]) => cid)
-    .filter((cid) => charactersById[cid]);
+  return presentCharIdsFor(loadWorld().placements, charactersById, placeId);
+}
+
+// The subset of presentCharIds who actually take a turn each round. Active
+// is the default (missing `active` on a placement == active) so existing
+// saves and every current call site keep behaving exactly as before until
+// someone is explicitly demoted — this is what makes a crowd's replies
+// trimmable rather than everyone always talking.
+function activeCharIds(placeId, charactersById) {
+  return activeCharIdsFor(loadWorld().placements, charactersById, placeId);
 }
 
 // What the speaking character knows about the people relevant to `query`
@@ -1687,7 +1708,7 @@ async function generateCharacterTurn({ cfg, place, speakerId, presentIds, charac
 // with the in-world time and linked to the chat entries that formed it (so
 // later edits/deletes/regens can rebuild exactly these memories).
 function recordRound({ placeId, presentIds, turnEntries, userLabel, activePersonaId, time }) {
-  const relevant = turnEntries.filter((e) => e.type === 'system' || e.type === 'user' || e.type === 'char');
+  const relevant = turnEntries.filter((e) => e.type === 'system' || e.type === 'user' || e.type === 'char' || e.type === 'narrator');
   const turnText = relevant.map((e) => formatLogEntry(e, userLabel)).join('\n');
   if (!turnText.trim()) return;
   recordTurn({
@@ -1701,6 +1722,90 @@ function recordRound({ placeId, presentIds, turnEntries, userLabel, activePerson
     day: time?.day ?? null,
     timeOfDay: time?.timeOfDay ?? null,
   }).catch((err) => logger.error('memory', `round recording failed: ${err.message}`));
+}
+
+// Attempts one narrator turn — ambient world-voice, never streamed (it's
+// short and supplementary, not worth the SSE plumbing). Always best-effort:
+// a missing key, a failed request, or the model choosing NARRATOR_SILENCE
+// all just mean "no narration this round" (null) rather than an error, so
+// callers never let a narrator hiccup block or fail an otherwise-fine round.
+async function attemptNarratorTurn({ cfg, place, presentIds, backgroundIds, charactersById, log }) {
+  if (!cfg.apiKey) return null;
+  try {
+    const { personas, activePersonaId } = loadPersonas();
+    const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+    const userLabel = activePersona ? activePersona.name : 'Visitor';
+    const world = loadWorld();
+
+    const backgroundChars = backgroundIds
+      .map((cid) => charactersById[cid])
+      .filter(Boolean)
+      .map((c) => ({ name: c.name, snippet: characterSnippet(c) }));
+
+    const messages = buildNarratorMessages({
+      place: {
+        name: place.name, area: place.area, desc: place.desc, type: place.type,
+        ownerName: place.ownerId && charactersById[place.ownerId] ? charactersById[place.ownerId].name : null,
+      },
+      worldSetting: world.setting,
+      time: world.time,
+      backgroundChars,
+      transcript: buildHistoryTranscript(log, { userLabel, tokenBudget: 1200 }),
+    });
+
+    const { text } = await callOpenRouter(cfg, messages, 150, `Narrator @ ${place.name}`);
+    if (isNarratorSilent(text)) return null;
+    return { type: 'narrator', text: text.trim() };
+  } catch (err) {
+    logger.warn('chat', `narrator turn failed, skipping: ${err.message}`);
+    return null;
+  }
+}
+
+// Nobody's present at all: tries a narrator line describing the empty
+// scene before falling back to the flat echo note. No characters means
+// nothing to record into memory either way.
+async function narrateEmptyPlaceOrEcho({ placeId, place }) {
+  const cfg = loadConfig();
+  let note = null;
+  if (cfg.narratorEnabled !== false) {
+    const log = loadChatLog(CHAT_DIR, placeId);
+    if (shouldNarrate({ placeType: place.type, presentCount: 0, backgroundCount: 0, log })) {
+      note = await attemptNarratorTurn({ cfg, place, presentIds: [], backgroundIds: [], charactersById: {}, log });
+    }
+  }
+  if (!note) note = { type: 'system', text: 'Your words echo. No one is here to answer.' };
+  appendChatEntries(CHAT_DIR, placeId, [note]);
+}
+
+// Present characters can all be inactive at once (everyone's in the room
+// but nobody's an active participant right now) — no turns get generated,
+// but the room still "hears" what was said. Tries a narrator line first
+// (describing the scene/background cast is exactly this situation's use
+// case); falls back to a flat note if the narrator is off, unavailable, or
+// has nothing to add. Either way the round is recorded into every present
+// character's memory, same as a normal round would, minus any replies.
+async function recordSilentRound({ placeId, place, presentIds, charactersById, turnEntries }) {
+  const cfg = loadConfig();
+  let note = null;
+  if (cfg.narratorEnabled !== false) {
+    const log = loadChatLog(CHAT_DIR, placeId);
+    if (shouldNarrate({ placeType: place.type, presentCount: presentIds.length, backgroundCount: presentIds.length, log })) {
+      note = await attemptNarratorTurn({ cfg, place, presentIds, backgroundIds: presentIds, charactersById, log });
+    }
+  }
+  if (!note) note = { type: 'system', text: 'No one reacts.' };
+
+  appendChatEntries(CHAT_DIR, placeId, [note]);
+  const { personas, activePersonaId } = loadPersonas();
+  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+  recordRound({
+    placeId, presentIds,
+    turnEntries: [...turnEntries, note],
+    userLabel: activePersona ? activePersona.name : 'Visitor',
+    activePersonaId,
+    time: loadWorld().time,
+  });
 }
 
 // A full reaction round: every reacting character takes their own turn, in
@@ -1749,6 +1854,24 @@ async function runReactionRound({ placeId, place, reactIds, presentIds, characte
     appendChatEntries(CHAT_DIR, placeId, entries);
     roundEntries.push(...entries);
     if (onEvent) onEvent({ type: 'turn', entries });
+  }
+
+  // Ambient narrator addendum, after the active cast has spoken — describes
+  // whoever's present but not part of the conversation, or (throttled)
+  // adds scene texture even when everyone present is active. Skipped
+  // entirely if a character turn already failed above: don't compound a
+  // generation problem with another likely-to-fail call.
+  if (!error && cfg.narratorEnabled !== false) {
+    const log = loadChatLog(CHAT_DIR, placeId);
+    const backgroundIds = presentIds.filter((id) => !reactIds.includes(id));
+    if (shouldNarrate({ placeType: place.type, presentCount: presentIds.length, backgroundCount: backgroundIds.length, log })) {
+      const narration = await attemptNarratorTurn({ cfg, place, presentIds, backgroundIds, charactersById, log });
+      if (narration) {
+        appendChatEntries(CHAT_DIR, placeId, [narration]);
+        roundEntries.push(narration);
+        if (onEvent) onEvent({ type: 'turn', entries: [narration] });
+      }
+    }
   }
 
   if (roundEntries.length) {
@@ -1846,6 +1969,7 @@ app.post('/api/places/:placeId/say', async (req, res) => {
   const charactersById = {};
   loadCharacters().forEach((c) => { charactersById[c.id] = c; });
   const charIds = presentCharIds(placeId, charactersById);
+  const activeIds = activeCharIds(placeId, charactersById);
 
   const turnEntries = [];
   if (announceArrival && loadChatLog(CHAT_DIR, placeId).length > 0) {
@@ -1853,10 +1977,15 @@ app.post('/api/places/:placeId/say', async (req, res) => {
   }
   turnEntries.push({ type: 'user', text: text.trim() });
   appendChatEntries(CHAT_DIR, placeId, turnEntries);
-  logger.info('chat', `say @ ${place.name}: ${charIds.length} character(s) present`);
+  logger.info('chat', `say @ ${place.name}: ${charIds.length} character(s) present, ${activeIds.length} active`);
 
   if (!charIds.length) {
-    appendChatEntries(CHAT_DIR, placeId, [{ type: 'system', text: 'Your words echo. No one is here to answer.' }]);
+    await narrateEmptyPlaceOrEcho({ placeId, place });
+    return res.json({ log: loadChatLog(CHAT_DIR, placeId) });
+  }
+
+  if (!activeIds.length) {
+    await recordSilentRound({ placeId, place, presentIds: charIds, charactersById, turnEntries });
     return res.json({ log: loadChatLog(CHAT_DIR, placeId) });
   }
 
@@ -1872,7 +2001,7 @@ app.post('/api/places/:placeId/say', async (req, res) => {
     send({ type: 'ack', log: loadChatLog(CHAT_DIR, placeId) });
 
     const result = await runReactionRound({
-      placeId, place, reactIds: charIds, presentIds: charIds, charactersById,
+      placeId, place, reactIds: activeIds, presentIds: charIds, charactersById,
       turnEntriesSoFar: turnEntries, onEvent: send,
     });
     send({ type: 'done', log: loadChatLog(CHAT_DIR, placeId), ...(result.error ? { error: result.error } : {}) });
@@ -1880,7 +2009,7 @@ app.post('/api/places/:placeId/say', async (req, res) => {
   }
 
   const result = await runReactionRound({
-    placeId, place, reactIds: charIds, presentIds: charIds, charactersById, turnEntriesSoFar: turnEntries,
+    placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar: turnEntries,
   });
   res.json({ log: loadChatLog(CHAT_DIR, placeId), ...(result.error ? { error: result.error } : {}) });
 });
@@ -1909,7 +2038,8 @@ app.post('/api/places/:placeId/retry', async (req, res) => {
   const charactersById = {};
   loadCharacters().forEach((c) => { charactersById[c.id] = c; });
   const charIds = presentCharIds(placeId, charactersById);
-  logger.info('chat', `retry @ ${place.name}: ${charIds.length} character(s) present`);
+  const activeIds = activeCharIds(placeId, charactersById);
+  logger.info('chat', `retry @ ${place.name}: ${charIds.length} character(s) present, ${activeIds.length} active`);
 
   // Retry reuses this same trigger message across attempts rather than
   // deleting it — if an earlier attempt's replies were all deleted, that
@@ -1922,11 +2052,17 @@ app.post('/api/places/:placeId/retry', async (req, res) => {
   }
 
   if (!charIds.length) {
-    appendChatEntries(CHAT_DIR, placeId, [{ type: 'system', text: 'Your words echo. No one is here to answer.' }]);
+    await narrateEmptyPlaceOrEcho({ placeId, place });
     return res.json({ log: loadChatLog(CHAT_DIR, placeId) });
   }
 
   const turnEntriesSoFar = [log[lastUserIdx]];
+
+  if (!activeIds.length) {
+    await recordSilentRound({ placeId, place, presentIds: charIds, charactersById, turnEntries: turnEntriesSoFar });
+    return res.json({ log: loadChatLog(CHAT_DIR, placeId) });
+  }
+
   const cfg = loadConfig();
   if (cfg.streaming && cfg.apiKey) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -1937,14 +2073,14 @@ app.post('/api/places/:placeId/retry', async (req, res) => {
     send({ type: 'ack', log });
 
     const result = await runReactionRound({
-      placeId, place, reactIds: charIds, presentIds: charIds, charactersById, turnEntriesSoFar, onEvent: send,
+      placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar, onEvent: send,
     });
     send({ type: 'done', log: loadChatLog(CHAT_DIR, placeId), ...(result.error ? { error: result.error } : {}) });
     return res.end();
   }
 
   const result = await runReactionRound({
-    placeId, place, reactIds: charIds, presentIds: charIds, charactersById, turnEntriesSoFar,
+    placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar,
   });
   res.json({ log: loadChatLog(CHAT_DIR, placeId), ...(result.error ? { error: result.error } : {}) });
 });
@@ -2062,8 +2198,8 @@ app.put('/api/places/:placeId/messages/:entryId', async (req, res) => {
   const log = loadChatLog(CHAT_DIR, placeId);
   const entry = log.find((e) => e.id === entryId);
   if (!entry) return res.status(404).json({ error: 'Message not found.' });
-  if (entry.type !== 'char' && entry.type !== 'user') {
-    return res.status(400).json({ error: 'Only character and user messages can be edited.' });
+  if (entry.type !== 'char' && entry.type !== 'user' && entry.type !== 'narrator') {
+    return res.status(400).json({ error: 'Only character, user, and narrator messages can be edited.' });
   }
 
   entry.text = text.trim();
