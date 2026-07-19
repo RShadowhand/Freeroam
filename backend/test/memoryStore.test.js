@@ -5,6 +5,8 @@ import {
   rankBySimilarity,
   topKSimilar,
   timePrefix,
+  chunkText,
+  MAX_CHUNKS_PER_MEMORY,
   recordTurn,
   retrieveMemories,
   queryCharacterMemories,
@@ -235,6 +237,111 @@ describe('recordTurn + retrieveMemories (SQLite)', () => {
     await retrieveMemories({ db, embedFn: countingEmbed, characterIds: ['ezra'], query: '' });
     await retrieveMemories({ db, embedFn: countingEmbed, characterIds: [], query: 'hi' });
     assert.equal(embedCalls, 0);
+  }));
+});
+
+describe('chunkText', () => {
+  test('empty or blank text produces no chunks', () => {
+    assert.deepEqual(chunkText(''), []);
+    assert.deepEqual(chunkText('   '), []);
+    assert.deepEqual(chunkText(null), []);
+  });
+
+  test('short text stays as a single chunk, unchanged', () => {
+    assert.deepEqual(chunkText('Loves cats.'), ['Loves cats.']);
+  });
+
+  test('a handful of short sentences merges back into one chunk (no over-splitting)', () => {
+    const chunks = chunkText('One sentence here. Another sentence here. A third one.');
+    assert.equal(chunks.length, 1);
+  });
+
+  test('long multi-sentence text splits into more than one chunk, none far over the target size', () => {
+    const sentence = 'This is a moderately long sentence about nothing in particular that repeats itself. ';
+    const longText = sentence.repeat(10); // ~870 chars
+    const chunks = chunkText(longText);
+    assert.ok(chunks.length > 1, `expected multiple chunks, got ${chunks.length}`);
+    chunks.forEach((c) => assert.ok(c.length <= 450, `chunk too long: ${c.length} chars`));
+  });
+
+  test('never exceeds MAX_CHUNKS_PER_MEMORY — overflow merges into the last chunk', () => {
+    const sentence = 'Short sentence marker here. ';
+    const veryLongText = sentence.repeat(50); // far more sentences than MAX_CHUNKS_PER_MEMORY chunks could hold 1:1
+    const chunks = chunkText(veryLongText);
+    assert.ok(chunks.length <= MAX_CHUNKS_PER_MEMORY);
+  });
+
+  test('splits on newlines (paragraph/entry boundaries) as well as sentences, without losing content', () => {
+    const chunks = chunkText('Line one.\nLine two.\nLine three.');
+    const joined = chunks.join(' ');
+    assert.ok(joined.includes('Line one') && joined.includes('Line two') && joined.includes('Line three'));
+  });
+});
+
+// A pooling-style fake embedder — unlike the keyword-presence fakeEmbed
+// above (which just checks "does this text contain the word anywhere,"
+// immune to dilution by construction), this normalizes by total word
+// count, the way real sentence-embedding models pool over their input.
+// A keyword mentioned once in a short chunk scores far higher than the
+// same keyword mentioned once in a long, topically-mixed block — this is
+// what actually reproduces the dilution bug chunking fixes (see
+// timePrefix's neighboring comments and chunkText above).
+function poolingEmbed(text) {
+  const words = text.toLowerCase().split(/\W+/).filter(Boolean);
+  const vocab = ['cats', 'weather', 'records'];
+  const total = words.length || 1;
+  return vocab.map((w) => words.filter((x) => x === w).length / total);
+}
+const poolingEmbedFn = async (t) => poolingEmbed(t);
+
+describe('chunk-level embeddings fix dilution', () => {
+  // A short, specific mention buried in a long, unrelated block — the
+  // exact shape of the reported bug: a real memory row combining several
+  // characters' full turns, where one short phrase gets averaged away by
+  // hundreds of other words.
+  const catsSentence = 'She got a huge cats art project from her teacher.';
+  const filler = 'Records show the weather was mild and dry for the entire week straight through, with detailed weather and records notes filed daily by the records office. ';
+  const fullText = `${catsSentence} ${filler.repeat(6)}`;
+
+  test('recordTurn splits a long round into multiple memory_vectors chunk rows', () => withDb(async (db) => {
+    await recordTurn({ db, embedFn: poolingEmbedFn, characterIds: ['ezra'], text: fullText, entryIds: ['e1'] });
+    const vecRows = db.prepare('SELECT COUNT(*) AS n FROM memory_vectors WHERE character_id = ?').get('ezra').n;
+    assert.ok(vecRows > 1, `expected multiple chunk rows, got ${vecRows}`);
+  }));
+
+  test('a query for the buried phrase is recalled — the whole-text embedding alone would have been too diluted', () => withDb(async (db) => {
+    await recordTurn({ db, embedFn: poolingEmbedFn, characterIds: ['ezra'], text: fullText, entryIds: ['e1'] });
+
+    // Sanity check the bug actually reproduces at the whole-text level:
+    // "cats" is heavily diluted by ~150 words of filler.
+    const wholeTextCatsScore = poolingEmbed(fullText)[0];
+    assert.ok(wholeTextCatsScore < 0.02, `expected heavy dilution, got ${wholeTextCatsScore}`);
+
+    const results = await retrieveMemories({
+      db, embedFn: poolingEmbedFn, characterIds: ['ezra'], query: 'cats',
+      topKPerCharacter: 1, recentPerCharacter: 0, minScore: 0.05,
+    });
+    assert.equal(results.length, 1);
+    assert.ok(results[0].includes('cats art project'));
+  }));
+
+  test('a memory with several chunks appears once in results, scored by its single best-matching chunk — no duplicates', () => withDb(async (db) => {
+    await recordTurn({ db, embedFn: poolingEmbedFn, characterIds: ['ezra'], text: fullText, entryIds: ['e1'] });
+    const results = await retrieveMemories({
+      db, embedFn: poolingEmbedFn, characterIds: ['ezra'], query: 'cats',
+      topKPerCharacter: 5, recentPerCharacter: 0, minScore: 0.001,
+    });
+    assert.equal(results.length, 1); // one memory, not one hit per matching chunk
+  }));
+
+  test('queryCharacterMemories also recalls the buried phrase and reports a real score', () => withDb(async (db) => {
+    await recordTurn({ db, embedFn: poolingEmbedFn, characterIds: ['ezra'], text: fullText, entryIds: ['e1'] });
+    const results = await queryCharacterMemories({
+      db, embedFn: poolingEmbedFn, characterId: 'ezra', query: 'cats', topK: 1, recentCount: 0, minScore: 0.05,
+    });
+    assert.equal(results.length, 1); // one distinct memory, not one row per chunk
+    assert.ok(results[0].score > 0.05);
+    assert.equal(results[0].selected, true);
   }));
 });
 

@@ -243,7 +243,7 @@ describe('memory_vectors write/delete helpers', () => {
 
   test('upsertMemoryVectors creates the table lazily and inserts one row per participant', () => {
     const db = freshDb();
-    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], encodeEmbedding([1, 0, 0]));
+    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], [encodeEmbedding([1, 0, 0])]);
     const ezra = queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0]), 5);
     const mireille = queryMemoryVectorIndex(db, 'mireille', encodeEmbedding([1, 0, 0]), 5);
     assert.equal(ezra.length, 1);
@@ -253,8 +253,8 @@ describe('memory_vectors write/delete helpers', () => {
 
   test('upsertMemoryVectors replaces prior rows for the same memory (delete + reinsert)', () => {
     const db = freshDb();
-    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], encodeEmbedding([1, 0, 0]));
-    upsertMemoryVectors(db, 'mem-1', ['ezra'], encodeEmbedding([0, 1, 0])); // mireille dropped, vector changed
+    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], [encodeEmbedding([1, 0, 0])]);
+    upsertMemoryVectors(db, 'mem-1', ['ezra'], [encodeEmbedding([0, 1, 0])]); // mireille dropped, vector changed
     assert.equal(queryMemoryVectorIndex(db, 'mireille', encodeEmbedding([1, 0, 0]), 5).length, 0);
     const ezra = queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([0, 1, 0]), 5);
     assert.equal(ezra.length, 1);
@@ -263,7 +263,7 @@ describe('memory_vectors write/delete helpers', () => {
 
   test('removeMemoryVectorParticipant removes just one participant, leaving others intact', () => {
     const db = freshDb();
-    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], encodeEmbedding([1, 0, 0]));
+    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], [encodeEmbedding([1, 0, 0])]);
     removeMemoryVectorParticipant(db, 'mem-1', 'ezra');
     assert.equal(queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0]), 5).length, 0);
     assert.equal(queryMemoryVectorIndex(db, 'mireille', encodeEmbedding([1, 0, 0]), 5).length, 1);
@@ -271,7 +271,7 @@ describe('memory_vectors write/delete helpers', () => {
 
   test('deleteMemoryVectors removes every participant row for a memory', () => {
     const db = freshDb();
-    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], encodeEmbedding([1, 0, 0]));
+    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], [encodeEmbedding([1, 0, 0])]);
     deleteMemoryVectors(db, 'mem-1');
     assert.equal(queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0]), 5).length, 0);
     assert.equal(queryMemoryVectorIndex(db, 'mireille', encodeEmbedding([1, 0, 0]), 5).length, 0);
@@ -279,8 +279,8 @@ describe('memory_vectors write/delete helpers', () => {
 
   test('deleteMemoryVectorsForCharacter removes a character across every memory, leaving other participants', () => {
     const db = freshDb();
-    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], encodeEmbedding([1, 0, 0]));
-    upsertMemoryVectors(db, 'mem-2', ['ezra'], encodeEmbedding([0, 1, 0]));
+    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], [encodeEmbedding([1, 0, 0])]);
+    upsertMemoryVectors(db, 'mem-2', ['ezra'], [encodeEmbedding([0, 1, 0])]);
     deleteMemoryVectorsForCharacter(db, 'ezra');
     assert.equal(queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0]), 5).length, 0);
     assert.equal(queryMemoryVectorIndex(db, 'mireille', encodeEmbedding([1, 0, 0]), 5).length, 1);
@@ -288,13 +288,29 @@ describe('memory_vectors write/delete helpers', () => {
 
   test('upsertMemoryVectors recreates the table when the embedding dimension changes, without leaving stale rows', () => {
     const db = freshDb();
-    upsertMemoryVectors(db, 'mem-1', ['ezra'], encodeEmbedding([1, 0, 0])); // 3-dim
-    upsertMemoryVectors(db, 'mem-2', ['mireille'], encodeEmbedding([1, 0, 0, 0])); // 4-dim -> table rebuilt
+    upsertMemoryVectors(db, 'mem-1', ['ezra'], [encodeEmbedding([1, 0, 0])]); // 3-dim
+    upsertMemoryVectors(db, 'mem-2', ['mireille'], [encodeEmbedding([1, 0, 0, 0])]); // 4-dim -> table rebuilt
     // mem-1's 3-dim row was in the dropped table and was never reinserted —
     // simulating what rebuildAllMemoryEmbeddings does row-by-row.
     assert.equal(queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([1, 0, 0, 0]), 5).length, 0);
     const mireille = queryMemoryVectorIndex(db, 'mireille', encodeEmbedding([1, 0, 0, 0]), 5);
     assert.equal(mireille.length, 1);
     assert.equal(mireille[0].memory_id, 'mem-2');
+  });
+
+  test('upsertMemoryVectors accepts multiple chunk embeddings per memory — one row per (participant, chunk)', () => {
+    const db = freshDb();
+    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], [
+      encodeEmbedding([1, 0, 0]),
+      encodeEmbedding([0, 1, 0]),
+      encodeEmbedding([0, 0, 1]),
+    ]);
+    // Each participant gets one row per chunk: 3 chunks x 2 participants.
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_vectors').get().n, 6);
+    // Each of the 3 axis-aligned chunk vectors is findable via its own exact match.
+    assert.equal(queryMemoryVectorIndex(db, 'ezra', encodeEmbedding([0, 1, 0]), 1)[0].memory_id, 'mem-1');
+    // A later upsert (delete + reinsert) fully replaces the chunk set, not just appends.
+    upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], [encodeEmbedding([1, 1, 1])]);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_vectors').get().n, 2);
   });
 });

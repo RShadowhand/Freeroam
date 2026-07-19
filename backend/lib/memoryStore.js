@@ -64,6 +64,94 @@ export function timePrefix(day, timeOfDay) {
   return `(${dayLabel}, ${timeOfDay || 'sometime'})\n`;
 }
 
+// --- Chunking & embeddings ---------------------------------------------
+// recordTurn joins every present character's full reply into one text
+// block (a "round"). Embedding that whole block as a single vector dilutes
+// any short, specific phrase across everything else in it — a sentence
+// embedding model pools over the whole input, so a 1000-character passage
+// covering several unrelated topics ends up as a vector that faintly
+// resembles all of them and strongly resembles none. A query for one exact
+// short phrase can then rank well below memories that just happen to
+// repeat a common word many times. Splitting into smaller chunks before
+// embedding — each chunk scored independently, see queryMemoryVectorIndex
+// — keeps a short salient phrase from getting averaged away.
+const CHUNK_TARGET_CHARS = 400; // small enough that pooling stays focused on roughly one topic
+// Hard cap on chunks per memory — not just a soft target: retrieveMemories
+// and queryCharacterMemories size their KNN fetch (k) off this constant to
+// guarantee they see enough raw rows to find the true top-K *distinct*
+// memories even when a few memories monopolize the nearest chunks (see the
+// dedupe-by-memory logic there). Keep any change to this value in sync
+// with that math.
+export const MAX_CHUNKS_PER_MEMORY = 6;
+
+// Splits text into sentence-ish pieces (first on blank lines/paragraph
+// breaks, then on sentence terminators within each), then greedily merges
+// them back up to CHUNK_TARGET_CHARS so short sentences don't each become
+// their own tiny, noisy chunk. Imperfect sentence detection is fine here —
+// it's a heuristic for keeping chunks topically focused, not a linguistic
+// requirement, and merge-back smooths over most mis-splits anyway.
+export function chunkText(text) {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return [];
+  const sentences = trimmed
+    .split(/\n+/)
+    .flatMap((line) => line.split(/(?<=[.!?])\s+/))
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!sentences.length) return [];
+
+  const chunks = [];
+  let buf = '';
+  for (const sentence of sentences) {
+    if (!buf) { buf = sentence; continue; }
+    if (buf.length + 1 + sentence.length <= CHUNK_TARGET_CHARS) {
+      buf += ' ' + sentence;
+    } else {
+      chunks.push(buf);
+      buf = sentence;
+    }
+  }
+  if (buf) chunks.push(buf);
+
+  if (chunks.length <= MAX_CHUNKS_PER_MEMORY) return chunks;
+  const head = chunks.slice(0, MAX_CHUNKS_PER_MEMORY - 1);
+  const tail = chunks.slice(MAX_CHUNKS_PER_MEMORY - 1).join(' ');
+  return [...head, tail];
+}
+
+// Computes everything a memory write needs: a single whole-text embedding
+// (for the memories.embedding column — still useful as a coarse
+// representative vector, and as the seed for backfilling older databases)
+// plus one embedding per chunk (for memory_vectors). When there's only one
+// chunk — the common case for short memories — it IS the whole text, so
+// its embedding is reused instead of embedding the same string twice.
+async function computeMemoryEmbeddings(embedFn, fullText) {
+  const chunks = chunkText(fullText);
+  const effectiveChunks = chunks.length ? chunks : [fullText];
+  const chunkBuffers = [];
+  for (const chunk of effectiveChunks) chunkBuffers.push(encodeEmbedding(await embedFn(chunk)));
+  const wholeTextBuffer = effectiveChunks.length === 1 ? chunkBuffers[0] : encodeEmbedding(await embedFn(fullText));
+  return { wholeTextBuffer, chunkBuffers };
+}
+
+// Fetches this character's memory_vectors nearest to queryBuffer and
+// collapses multiple chunk-hits for the same memory down to its single
+// best (smallest-distance) hit — a long memory can occupy several chunk
+// rows (see chunkText), and each should only ever count once when ranking
+// memories against each other, scored by whichever of its chunks matched
+// best. `fetchK` must be large enough to guarantee seeing every chunk of
+// the memories that matter — callers size it off MAX_CHUNKS_PER_MEMORY.
+function bestChunkPerMemory(db, characterId, queryBuffer, fetchK, excludedMemoryIds = null) {
+  const raw = queryMemoryVectorIndex(db, characterId, queryBuffer, fetchK);
+  const bestByMemory = new Map();
+  for (const r of raw) {
+    if (excludedMemoryIds && excludedMemoryIds.has(r.memory_id)) continue;
+    const prev = bestByMemory.get(r.memory_id);
+    if (!prev || r.distance < prev.distance) bestByMemory.set(r.memory_id, r);
+  }
+  return [...bestByMemory.values()].sort((a, b) => a.distance - b.distance);
+}
+
 // `participants` is relative to `characterId` — everyone else who shared
 // this memory, matching the shape callers already expect (self excluded).
 function rowToMemory(db, row, characterId) {
@@ -85,13 +173,15 @@ function rowToMemory(db, row, characterId) {
 // --- Recording --------------------------------------------------------
 
 // Records one turn's text as a single memory row, shared by every present
-// character via memory_participants — one embedding computation, one
-// memories row, regardless of how many characters witnessed it.
+// character via memory_participants — one memories row regardless of how
+// many characters witnessed it (the text gets split into chunks for
+// embedding, see computeMemoryEmbeddings, but that's an indexing detail —
+// there's still exactly one editable/deletable memory here).
 // `entryIds` links the memory to the chat entries that formed it.
 export async function recordTurn({ db, embedFn, characterIds, personaId, text, placeId, entryIds = [], day = null, timeOfDay = null }) {
   if (!text || !text.trim() || !Array.isArray(characterIds) || !characterIds.length) return { count: 0 };
   const fullText = timePrefix(day, timeOfDay) + text;
-  const embedding = encodeEmbedding(await embedFn(fullText));
+  const { wholeTextBuffer, chunkBuffers } = await computeMemoryEmbeddings(embedFn, fullText);
   const timestamp = new Date().toISOString();
   const personaKey = personaKeyFor(personaId);
   const id = crypto.randomUUID();
@@ -104,14 +194,14 @@ export async function recordTurn({ db, embedFn, characterIds, personaId, text, p
   const insertLink = db.prepare('INSERT OR IGNORE INTO memory_entries (memory_id, entry_id) VALUES (?, ?)');
 
   const write = db.transaction(() => {
-    insertMem.run(id, personaKey, fullText, embedding, placeId || null, day, timeOfDay, timestamp);
+    insertMem.run(id, personaKey, fullText, wholeTextBuffer, placeId || null, day, timeOfDay, timestamp);
     characterIds.forEach((characterId) => insertParticipant.run(id, characterId));
     entryIds.forEach((entryId) => insertLink.run(id, entryId));
-    upsertMemoryVectors(db, id, characterIds, embedding);
+    upsertMemoryVectors(db, id, characterIds, chunkBuffers);
   });
   write();
 
-  logger.info('memory', `recorded turn for [${characterIds.join(', ')}] persona=${personaKey} place=${placeId || '-'} (${fullText.length} chars, ${entryIds.length} linked entries, 1 row)`);
+  logger.info('memory', `recorded turn for [${characterIds.join(', ')}] persona=${personaKey} place=${placeId || '-'} (${fullText.length} chars, ${chunkBuffers.length} chunk(s), ${entryIds.length} linked entries, 1 row)`);
   return { count: characterIds.length };
 }
 
@@ -166,13 +256,20 @@ export async function retrieveMemories({ db, embedFn, characterIds, query, topKP
   const selected = new Map(); // text -> { text, timestamp, score }
   characterIds.forEach((characterId) => {
     // Indexed KNN, nearest first — over-fetch by the number of excluded
-    // memories so that filtering them out afterward can never leave fewer
-    // than topKPerCharacter real candidates when enough exist (see db.js
-    // queryMemoryVectorIndex: results come back in distance order, so the
-    // top topKPerCharacter surviving ones after this filter are exactly
-    // what a full-scan-then-filter would have picked).
-    const knn = queryMemoryVectorIndex(db, characterId, queryBuffer, topKPerCharacter + excludedMemoryIds.size)
-      .filter((r) => !excludedMemoryIds.has(r.memory_id));
+    // memories, times MAX_CHUNKS_PER_MEMORY (a memory can occupy several
+    // chunk rows — see chunkText/bestChunkPerMemory — so guaranteeing
+    // topKPerCharacter *distinct* memories after dedup needs that many raw
+    // rows in the worst case where a few memories monopolize the nearest
+    // chunks), so that filtering excluded/duplicate rows out afterward can
+    // never leave fewer than topKPerCharacter real candidates when enough
+    // exist (results come back in distance order, so the top
+    // topKPerCharacter surviving ones after this filter are exactly what a
+    // full-scan-then-filter would have picked).
+    const knn = bestChunkPerMemory(
+      db, characterId, queryBuffer,
+      (topKPerCharacter + excludedMemoryIds.size) * MAX_CHUNKS_PER_MEMORY,
+      excludedMemoryIds
+    );
     knn.filter((r) => (1 - r.distance) >= minScore).slice(0, topKPerCharacter).forEach((r) => {
       const row = getMemory.get(r.memory_id);
       if (row) selected.set(row.text, { text: row.text, timestamp: row.timestamp, score: 1 - r.distance });
@@ -227,11 +324,13 @@ export async function queryCharacterMemories({ db, embedFn, characterId, query, 
 
   const rowById = new Map(rows.map((r) => [r.id, r]));
   // Exhaustive ranking via the same index retrieveMemories uses (k = every
-  // one of this character's memories) — this is a diagnostic tool whose
+  // chunk row this character could possibly have — rows.length memories ×
+  // MAX_CHUNKS_PER_MEMORY chunks each, an exact upper bound — so every
+  // memory is guaranteed to be seen) — this is a diagnostic tool whose
   // whole point is showing near-misses too, not just the winners, so it
   // needs the full ranked list, not just topK. Low-frequency/manual, so the
   // "fetch everyone" cost doesn't matter the way it would on the hot path.
-  const knn = queryMemoryVectorIndex(db, characterId, queryBuffer, rows.length);
+  const knn = bestChunkPerMemory(db, characterId, queryBuffer, rows.length * MAX_CHUNKS_PER_MEMORY);
   const ranked = knn.map((r) => ({ entry: rowById.get(r.memory_id), score: 1 - r.distance })).filter((r) => r.entry);
 
   const recentIds = new Set(
@@ -277,14 +376,14 @@ export async function addCharacterMemory({ db, embedFn, characterId, personaId, 
   if (!text || !text.trim()) return null;
   const id = crypto.randomUUID();
   const fullText = timePrefix(day, timeOfDay) + text.trim();
-  const embedding = encodeEmbedding(await embedFn(fullText));
+  const { wholeTextBuffer, chunkBuffers } = await computeMemoryEmbeddings(embedFn, fullText);
   db.transaction(() => {
     db.prepare(`
       INSERT INTO memories (id, persona_key, text, embedding, place_id, day, time_of_day, timestamp)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, personaKeyFor(personaId), fullText, embedding, placeId || null, day, timeOfDay, new Date().toISOString());
+    `).run(id, personaKeyFor(personaId), fullText, wholeTextBuffer, placeId || null, day, timeOfDay, new Date().toISOString());
     db.prepare('INSERT INTO memory_participants (memory_id, character_id) VALUES (?, ?)').run(id, characterId);
-    upsertMemoryVectors(db, id, [characterId], embedding);
+    upsertMemoryVectors(db, id, [characterId], chunkBuffers);
   })();
   logger.info('memory', `added manual memory ${id} for ${characterId}`);
   return rowToMemory(db, db.prepare('SELECT * FROM memories WHERE id = ?').get(id), characterId);
@@ -294,12 +393,12 @@ export async function updateCharacterMemory({ db, embedFn, characterId, entryId,
   if (!text || !text.trim()) return null;
   const owns = db.prepare('SELECT 1 FROM memory_participants WHERE memory_id = ? AND character_id = ?').get(entryId, characterId);
   if (!owns) return null;
-  const embedding = encodeEmbedding(await embedFn(text.trim()));
+  const { wholeTextBuffer, chunkBuffers } = await computeMemoryEmbeddings(embedFn, text.trim());
   const participantIds = db.prepare('SELECT character_id FROM memory_participants WHERE memory_id = ?').all(entryId).map((r) => r.character_id);
   db.transaction(() => {
     db.prepare('UPDATE memories SET text = ?, embedding = ?, timestamp = ? WHERE id = ?')
-      .run(text.trim(), embedding, new Date().toISOString(), entryId);
-    upsertMemoryVectors(db, entryId, participantIds, embedding);
+      .run(text.trim(), wholeTextBuffer, new Date().toISOString(), entryId);
+    upsertMemoryVectors(db, entryId, participantIds, chunkBuffers);
   })();
   logger.info('memory', `updated memory ${entryId} (re-embedded)`);
   return rowToMemory(db, db.prepare('SELECT * FROM memories WHERE id = ?').get(entryId), characterId);
@@ -309,8 +408,10 @@ export async function updateCharacterMemory({ db, embedFn, characterId, entryId,
 // used when the embedding model changes, since old vectors live in a
 // different vector space and aren't comparable to freshly embedded queries.
 // Deliberately never called automatically; see /api/settings/rebuild-embeddings.
-// Also rebuilds memory_vectors for every row — if the new model has a
-// different dimension, the first upsertMemoryVectors call drops and
+// Also rebuilds memory_vectors for every row, re-chunking as it goes — this
+// is the only path that upgrades memories written before chunked embedding
+// existed to the finer-grained chunks (see chunkText). If the new model has
+// a different dimension, the first upsertMemoryVectors call drops and
 // recreates the vec0 table to match (see ensureMemoryVectorsTable in
 // db.js), so every subsequent row in this same loop lands in the
 // correctly-shaped table.
@@ -319,10 +420,10 @@ export async function rebuildAllMemoryEmbeddings({ db, embedFn }) {
   const update = db.prepare('UPDATE memories SET embedding = ? WHERE id = ?');
   const getParticipants = db.prepare('SELECT character_id FROM memory_participants WHERE memory_id = ?');
   for (const row of rows) {
-    const embedding = encodeEmbedding(await embedFn(row.text));
-    update.run(embedding, row.id);
+    const { wholeTextBuffer, chunkBuffers } = await computeMemoryEmbeddings(embedFn, row.text);
+    update.run(wholeTextBuffer, row.id);
     const participantIds = getParticipants.all(row.id).map((p) => p.character_id);
-    upsertMemoryVectors(db, row.id, participantIds, embedding);
+    upsertMemoryVectors(db, row.id, participantIds, chunkBuffers);
   }
   return rows.length;
 }
@@ -393,11 +494,11 @@ async function rebuildMemories({ db, embedFn, memoryIds, log, userLabel, formatE
     const row = db.prepare('SELECT day, time_of_day FROM memories WHERE id = ?').get(mid);
     if (!row) continue;
     const text = timePrefix(row.day, row.time_of_day) + entries.map((e) => formatEntry(e, userLabel)).join('\n');
-    const embedding = encodeEmbedding(await embedFn(text));
+    const { wholeTextBuffer, chunkBuffers } = await computeMemoryEmbeddings(embedFn, text);
     const participantIds = db.prepare('SELECT character_id FROM memory_participants WHERE memory_id = ?').all(mid).map((r) => r.character_id);
     db.prepare('UPDATE memories SET text = ?, embedding = ? WHERE id = ?')
-      .run(text, embedding, mid);
-    upsertMemoryVectors(db, mid, participantIds, embedding);
+      .run(text, wholeTextBuffer, mid);
+    upsertMemoryVectors(db, mid, participantIds, chunkBuffers);
     rebuilt += 1;
   }
   return rebuilt;
