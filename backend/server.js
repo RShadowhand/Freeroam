@@ -1661,18 +1661,25 @@ async function buildTurnRequest({ place, speakerId, presentIds, charactersById, 
 // callOpenRouter/streamOpenRouter reported — buildGenerationStats (lib/
 // context.js) handles either being partially or fully null when the
 // endpoint doesn't report token counts.
-async function turnEntriesFrom(text, reasoning, request, usage, timing, place, charactersById, suggestedActionsMode) {
+async function turnEntriesFrom(text, reasoning, request, usage, timing, place, charactersById, suggestedActionsMode, backgroundIds = []) {
   const entries = parseCharacterTurn((text || '').trim(), request.speaker, request.present);
   if (!entries.length || entries[0].type !== 'char') return entries;
   if (reasoning) entries[0].reasoning = reasoning;
   const stats = buildGenerationStats(usage, timing);
   if (stats) entries[0].stats = stats;
+  const backgroundCharacters = backgroundIds
+    .map((cid) => charactersById[cid])
+    .filter(Boolean)
+    .map((c) => ({ id: c.id, name: c.name }));
   const suggestions = await detectSuggestedActions(entries[0].text, {
     places: loadPlaces(),
     characters: Object.values(charactersById || {}),
     currentPlaceId: place?.id ?? null,
     mode: suggestedActionsMode,
     personaName: request.userLabel,
+    backgroundCharacters,
+    speakerId: request.speaker.id,
+    speakerName: request.speaker.name,
   });
   if (suggestions.length) entries[0].suggestions = suggestions;
   return entries;
@@ -1686,7 +1693,7 @@ async function turnEntriesFrom(text, reasoning, request, usage, timing, place, c
 // non-streaming completion call. Mirrors runReactionRound's per-character
 // branch (used by /say) so /regenerate gets the same live text+reasoning
 // streaming instead of only ever waiting for the full reply.
-async function generateCharacterTurn({ cfg, place, speakerId, presentIds, charactersById, log, onEvent = null }) {
+async function generateCharacterTurn({ cfg, place, speakerId, presentIds, charactersById, log, onEvent = null, backgroundIds = [] }) {
   const request = await buildTurnRequest({ place, speakerId, presentIds, charactersById, log });
   if (onEvent) onEvent({ type: 'speaker', charId: speakerId, name: request.speaker.name });
   try {
@@ -1698,7 +1705,7 @@ async function generateCharacterTurn({ cfg, place, speakerId, presentIds, charac
       ({ text, reasoning, usage, timing } = await callOpenRouter(cfg, request.messages, request.maxReplyTokens,
         `${request.speaker.name} @ ${place.name}`));
     }
-    return { entries: await turnEntriesFrom(text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode) };
+    return { entries: await turnEntriesFrom(text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode, backgroundIds) };
   } catch (err) {
     return { error: err.message };
   }
@@ -1826,6 +1833,7 @@ async function runReactionRound({ placeId, place, reactIds, presentIds, characte
   let userLabel = 'Visitor';
   let activePersonaId = null;
   let time = null;
+  const backgroundIds = presentIds.filter((id) => !reactIds.includes(id));
 
   for (const speakerId of reactIds) {
     const log = loadChatLog(CHAT_DIR, placeId);
@@ -1850,7 +1858,7 @@ async function runReactionRound({ placeId, place, reactIds, presentIds, characte
       break;
     }
 
-    const entries = await turnEntriesFrom(text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode);
+    const entries = await turnEntriesFrom(text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode, backgroundIds);
     appendChatEntries(CHAT_DIR, placeId, entries);
     roundEntries.push(...entries);
     if (onEvent) onEvent({ type: 'turn', entries });
@@ -1863,7 +1871,6 @@ async function runReactionRound({ placeId, place, reactIds, presentIds, characte
   // generation problem with another likely-to-fail call.
   if (!error && cfg.narratorEnabled !== false) {
     const log = loadChatLog(CHAT_DIR, placeId);
-    const backgroundIds = presentIds.filter((id) => !reactIds.includes(id));
     if (shouldNarrate({ placeType: place.type, presentCount: presentIds.length, backgroundCount: backgroundIds.length, log })) {
       const narration = await attemptNarratorTurn({ cfg, place, presentIds, backgroundIds, charactersById, log });
       if (narration) {
@@ -2123,6 +2130,12 @@ app.post('/api/places/:placeId/regenerate', async (req, res) => {
   // included even if they've since been moved elsewhere.
   const presentIds = presentCharIds(placeId, charactersById);
   if (!presentIds.includes(target.charId)) presentIds.push(target.charId);
+  // Background cast for promote-suggestion detection — the character being
+  // regenerated is always the speaker here regardless of their stored
+  // active flag (a background character's old message can still be
+  // regenerated), so they're never counted as background themselves.
+  const activeIds = activeCharIds(placeId, charactersById);
+  const backgroundIds = presentIds.filter((id) => id !== target.charId && !activeIds.includes(id));
 
   const { personas, activePersonaId } = loadPersonas();
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
@@ -2156,7 +2169,7 @@ app.post('/api/places/:placeId/regenerate', async (req, res) => {
 
   const result = await generateCharacterTurn({
     cfg, place, speakerId: target.charId, presentIds, charactersById,
-    log: log.slice(0, idx), onEvent: send,
+    log: log.slice(0, idx), onEvent: send, backgroundIds,
   });
   if (result.error) {
     if (send) { send({ type: 'done', log, error: result.error }); return res.end(); }

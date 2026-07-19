@@ -210,3 +210,125 @@ describe('detectSuggestedActions — hybrid mode', () => {
     assert.equal(hits[0].placeId, 'p1');
   });
 });
+
+// promote/demote — separate from destination/new-character detection
+// (participationSuggestions), so a single message can carry both kinds at
+// once and neither counts against the other's 3-suggestion cap.
+const backgroundCharacters = [{ id: 'c3', name: 'Wren' }];
+
+describe('detectSuggestedActions — promote/demote (regex)', () => {
+  test('beckoning a background character by name suggests promoting them', async () => {
+    const hits = await detectSuggestedActions('Hey Wren, come on over and join us!', { places, characters, backgroundCharacters });
+    assert.deepEqual(hits, [{ type: 'promote', charId: 'c3', name: 'Wren' }]);
+  });
+
+  test('a beckon phrase with no matching background character suggests nothing', async () => {
+    const hits = await detectSuggestedActions('Come on over and join us!', { places, characters, backgroundCharacters: [] });
+    assert.deepEqual(hits, []);
+  });
+
+  test('a background character named without a beckon phrase suggests nothing', async () => {
+    const hits = await detectSuggestedActions('Wren is doing paperwork by the window.', { places, characters, backgroundCharacters });
+    assert.deepEqual(hits, []);
+  });
+
+  test('the speaker stepping back from the conversation suggests demoting them', async () => {
+    const hits = await detectSuggestedActions('Sorry, duty calls — I\'ll be right back.', {
+      places, characters, speakerId: 'c1', speakerName: 'Ezra',
+    });
+    assert.deepEqual(hits, [{ type: 'demote', charId: 'c1', name: 'Ezra' }]);
+  });
+
+  test('a step-back phrase with no speakerId suggests nothing (nothing to demote)', async () => {
+    const hits = await detectSuggestedActions('Sorry, duty calls — I\'ll be right back.', { places, characters });
+    assert.deepEqual(hits, []);
+  });
+
+  test('no step-back phrasing means no demote suggestion', async () => {
+    const hits = await detectSuggestedActions('It\'s good to see you again.', { places, characters, speakerId: 'c1', speakerName: 'Ezra' });
+    assert.deepEqual(hits, []);
+  });
+
+  test('promote and demote can both fire on the same message, alongside destination/new-character hits', async () => {
+    const hits = await detectSuggestedActions(
+      'Let\'s go to the Market Square — Wren, come join us! I have to step out for a moment though.',
+      { places, characters, backgroundCharacters, speakerId: 'c1', speakerName: 'Ezra' },
+    );
+    assert.equal(hits.length, 3);
+    assert.deepEqual(hits.find((h) => h.type === 'destination'), { type: 'destination', known: true, placeId: 'p1', placeName: 'Market Square' });
+    assert.deepEqual(hits.find((h) => h.type === 'promote'), { type: 'promote', charId: 'c3', name: 'Wren' });
+    assert.deepEqual(hits.find((h) => h.type === 'demote'), { type: 'demote', charId: 'c1', name: 'Ezra' });
+  });
+});
+
+describe('detectSuggestedActions — promote/demote (ml)', () => {
+  test('a confident "beckon" intent plus a matching background name suggests promoting them', async () => {
+    // Name matching is literal (same as regex mode) even in ml mode — the
+    // classifier only earns its keep on the intent side (recognizing a
+    // beckon regardless of exact phrasing), not on discovering *who*.
+    const hits = await detectSuggestedActions('She waves Wren over to the table.', {
+      places, characters, mode: 'ml', backgroundCharacters,
+      extractEntitiesFn: fakeExtractEntities([]),
+      classifyIntentFn: fakeClassifyIntent(['invites or calls someone over to join the conversation', 'none of the above']),
+    });
+    assert.deepEqual(hits, [{ type: 'promote', charId: 'c3', name: 'Wren' }]);
+  });
+
+  test('a "beckon" intent with no matching background character suggests nothing', async () => {
+    const hits = await detectSuggestedActions('She waves someone over to the table.', {
+      places, characters, mode: 'ml', backgroundCharacters: [],
+      extractEntitiesFn: fakeExtractEntities([]),
+      classifyIntentFn: fakeClassifyIntent(['invites or calls someone over to join the conversation', 'none of the above']),
+    });
+    assert.deepEqual(hits, []);
+  });
+
+  test('a low-confidence/negative beckon intent suggests nothing', async () => {
+    const hits = await detectSuggestedActions('Wren waves from the window.', {
+      places, characters, mode: 'ml', backgroundCharacters,
+      extractEntitiesFn: fakeExtractEntities([]),
+      classifyIntentFn: fakeClassifyIntent(['none of the above', 'invites or calls someone over to join the conversation']),
+    });
+    assert.deepEqual(hits, []);
+  });
+
+  test('a confident "step back" intent suggests demoting the speaker', async () => {
+    const hits = await detectSuggestedActions('She trails off, glancing toward the door.', {
+      places, characters, mode: 'ml', speakerId: 'c1', speakerName: 'Ezra',
+      extractEntitiesFn: fakeExtractEntities([]),
+      classifyIntentFn: fakeClassifyIntent(['the speaker excuses themselves or steps back from the conversation', 'none of the above']),
+    });
+    assert.deepEqual(hits, [{ type: 'demote', charId: 'c1', name: 'Ezra' }]);
+  });
+
+  test('degrades to no participation suggestions if the classifier throws', async () => {
+    const hits = await detectSuggestedActions('Wren, come join us — I should get going too.', {
+      places, characters, mode: 'ml', backgroundCharacters, speakerId: 'c1', speakerName: 'Ezra',
+      extractEntitiesFn: fakeExtractEntities([]),
+      classifyIntentFn: async () => { throw new Error('model not loaded'); },
+    });
+    assert.deepEqual(hits, []);
+  });
+});
+
+describe('detectSuggestedActions — promote/demote (hybrid)', () => {
+  test('regex catches the beckon; the ml fake is never consulted', async () => {
+    let mlCalled = false;
+    const hits = await detectSuggestedActions('Wren, come join us!', {
+      places, characters, mode: 'hybrid', backgroundCharacters,
+      extractEntitiesFn: fakeExtractEntities([]),
+      classifyIntentFn: async (text, labels) => { mlCalled = true; return fakeClassifyIntent(['none of the above'])(text, labels); },
+    });
+    assert.deepEqual(hits, [{ type: 'promote', charId: 'c3', name: 'Wren' }]);
+    assert.equal(mlCalled, false);
+  });
+
+  test('falls back to ml when regex phrasing misses a beckon', async () => {
+    const hits = await detectSuggestedActions('She waves Wren over to the table.', {
+      places, characters, mode: 'hybrid', backgroundCharacters,
+      extractEntitiesFn: fakeExtractEntities([]),
+      classifyIntentFn: fakeClassifyIntent(['invites or calls someone over to join the conversation', 'none of the above']),
+    });
+    assert.deepEqual(hits, [{ type: 'promote', charId: 'c3', name: 'Wren' }]);
+  });
+});

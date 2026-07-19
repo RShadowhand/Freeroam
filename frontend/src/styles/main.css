@@ -862,6 +862,25 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   font-size:0.62rem; padding:2px 4px; opacity:0.6;
 }
 .suggest-dismiss:hover{ opacity:1; color:var(--rose); }
+.suggest-chip.suggest-more{ font-weight:600; color:var(--accent); border-color:var(--accent); }
+
+/* ---- Suggestion overflow modal ---- */
+.suggest-group{ display:flex; flex-direction:column; gap:6px; }
+.suggest-group-label{
+  font-family:'IBM Plex Mono',monospace; font-size:0.62rem; letter-spacing:0.05em;
+  text-transform:uppercase; color:var(--dim);
+}
+.suggest-group-items{ display:flex; flex-wrap:wrap; gap:6px; }
+/* A centered dialog works fine on desktop, but on a small screen a sheet
+   sliding up from the bottom is easier to reach one-handed and reads more
+   like "options for this message" than a modal takeover — matches the
+   quick-move popover's mobile-first reasoning without needing that same
+   position:fixed/getBoundingClientRect machinery here, since this modal
+   isn't anchored to a specific trigger element. */
+@media (max-width:600px){
+  .suggest-overlay{ align-items:flex-end; padding:0; }
+  .suggest-modal{ width:100%; max-width:100%; border-radius:16px 16px 0 0; max-height:70vh; }
+}
 
 /* ---- Error banner ---- */
 .error-banner{

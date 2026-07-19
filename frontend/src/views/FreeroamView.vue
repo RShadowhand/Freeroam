@@ -6,6 +6,7 @@ import MapPanel from '../components/freeroam/MapPanel.vue';
 import ChatPanel from '../components/freeroam/ChatPanel.vue';
 import QuickMoveMenu from '../components/freeroam/QuickMoveMenu.vue';
 import NpcModal from '../components/freeroam/NpcModal.vue';
+import SuggestionOverflowModal from '../components/freeroam/SuggestionOverflowModal.vue';
 import FreeroamBanner from '../components/freeroam/FreeroamBanner.vue';
 
 const world = useWorldStore();
@@ -43,4 +44,5 @@ watch(() => chat.currentPlace, () => { mapOpen.value = false; });
     <div class="loading-note" v-if="!ready">Finding your way around…</div>
   </section>
   <NpcModal />
+  <SuggestionOverflowModal />
 </template>

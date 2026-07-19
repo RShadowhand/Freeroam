@@ -22,8 +22,19 @@ const INVITE_DEST_RE = /\b(?:[Ll]et'?s\s+(?:go|head|walk)(?:\s+on)?|[Cc]ome\s+(?
 
 const NEW_CHAR_RE = /\b(?:named|called)\s+([A-Z][A-Za-z'\-]+)\b/g;
 
+// Beckon/step-back are intent signals, not new entities, so unlike
+// destination/new-character detection they never introduce anyone new —
+// they only fire when the text plausibly concerns someone already known to
+// be present-but-background (beckon) or the speaker themselves (step-back).
+// Case-insensitive throughout, unlike INVITE_DEST_RE/NEW_CHAR_RE above,
+// since there's no proper-noun capture riding on the capitalization here.
+const BECKON_RE = /\b(?:come (?:here|over|on over|join us|closer)|join (?:us|me)|come (?:sit|hang) with us|why don'?t you join|pull up a (?:chair|seat))\b/i;
+const STEP_BACK_RE = /\b(?:excuses? (?:myself|themselves|herself|himself)|steps? away|walks? off|have to (?:go|take this|run|step out)|needs? (?:a moment|a minute)|be right back|catch (?:up|you) later|duty calls|gotta (?:go|run))\b/i;
+
 const INTENT_INVITE = 'invites the user to go to another place';
 const INTENT_INTRODUCE = 'introduces a new character by name';
+const INTENT_BECKON = 'invites or calls someone over to join the conversation';
+const INTENT_STEP_BACK = 'the speaker excuses themselves or steps back from the conversation';
 const INTENT_NONE = 'none of the above';
 const INTENT_THRESHOLD = 0.55; // zero-shot scores are calibrated loosely — this was picked by feel, not a benchmark
 
@@ -52,6 +63,78 @@ function isExcludedCharacterName(name, { knownNames, personaName }) {
   if (personaName && lower === personaName.trim().toLowerCase()) return true;
   if (FAMILY_ADDRESS_TERMS.has(lower)) return true;
   return false;
+}
+
+// Whole-word match on a character's first name — same "first name is
+// enough" convention used for present-character name resolution in
+// lib/context.js's parseReplyLines. Good enough for confirming an already-
+// known background character is who a beckon phrase is about; this isn't
+// entity discovery, so it doesn't need NER's full-name aggregation.
+function nameAppearsIn(text, name) {
+  const first = (name || '').trim().split(/\s+/)[0];
+  if (!first) return false;
+  const re = new RegExp(`\\b${first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+  return re.test(text);
+}
+
+function regexPromoteSuggestion(text, { backgroundCharacters }) {
+  if (!backgroundCharacters.length || !BECKON_RE.test(text)) return null;
+  const match = backgroundCharacters.find((c) => nameAppearsIn(text, c.name));
+  return match ? { type: 'promote', charId: match.id, name: match.name } : null;
+}
+
+function regexDemoteSuggestion(text, { speakerId, speakerName }) {
+  if (!speakerId || !STEP_BACK_RE.test(text)) return null;
+  return { type: 'demote', charId: speakerId, name: speakerName };
+}
+
+async function mlPromoteSuggestion(text, { backgroundCharacters, classifyIntentFn }) {
+  if (!backgroundCharacters.length) return null;
+  let intent = [];
+  try {
+    intent = await classifyIntentFn(text, [INTENT_BECKON, INTENT_NONE]);
+  } catch {
+    return null; // model unavailable/failed — no ML suggestion, not an error
+  }
+  if (!(intent[0] && intent[0].label === INTENT_BECKON && intent[0].score >= INTENT_THRESHOLD)) return null;
+  const match = backgroundCharacters.find((c) => nameAppearsIn(text, c.name));
+  return match ? { type: 'promote', charId: match.id, name: match.name } : null;
+}
+
+async function mlDemoteSuggestion(text, { speakerId, speakerName, classifyIntentFn }) {
+  if (!speakerId) return null;
+  let intent = [];
+  try {
+    intent = await classifyIntentFn(text, [INTENT_STEP_BACK, INTENT_NONE]);
+  } catch {
+    return null;
+  }
+  if (!(intent[0] && intent[0].label === INTENT_STEP_BACK && intent[0].score >= INTENT_THRESHOLD)) return null;
+  return { type: 'demote', charId: speakerId, name: speakerName };
+}
+
+// Promote/demote are checked independently of destination/new-character
+// detection and its 3-suggestion cap — there's at most one of each
+// (there's only one speaker to demote, and a beckon phrase names at most
+// one background character), so there's no dedup/overflow logic to share
+// with mergeSuggestions. 'hybrid' tries the regex heuristic first (cheap,
+// instant) and only falls back to the ML classifier when regex finds
+// nothing, mirroring "regex hits take priority" without needing an actual
+// merge step.
+async function participationSuggestions(text, ctx, mode) {
+  const out = [];
+
+  const promote = mode === 'ml'
+    ? await mlPromoteSuggestion(text, ctx)
+    : regexPromoteSuggestion(text, ctx) || (mode === 'hybrid' ? await mlPromoteSuggestion(text, ctx) : null);
+  if (promote) out.push(promote);
+
+  const demote = mode === 'ml'
+    ? await mlDemoteSuggestion(text, ctx)
+    : regexDemoteSuggestion(text, ctx) || (mode === 'hybrid' ? await mlDemoteSuggestion(text, ctx) : null);
+  if (demote) out.push(demote);
+
+  return out;
 }
 
 function matchPlace(phrase, places) {
@@ -162,21 +245,27 @@ function mergeSuggestions(primary, secondary) {
   return out;
 }
 
-// Returns up to 3 suggestion objects:
+// Returns up to 5 suggestion objects:
 //   { type: 'destination', known: true,  placeId, placeName } — matched an existing place
 //   { type: 'destination', known: false, placeName }          — no existing place matched
 //   { type: 'new-character', name }                           — a name not already in the cast
+//   { type: 'promote', charId, name }                         — a background character is being beckoned over
+//   { type: 'demote', charId, name }                          — the speaker is stepping back from the conversation
 // extractEntitiesFn/classifyIntentFn default to the real local-model calls
 // in lib/nlp.js but can be swapped out — mainly so tests can exercise 'ml'/
 // 'hybrid' mode without pulling down real models. personaName is the active
 // persona's display name — excluded from new-character detection since
-// that's the user, not someone to add.
+// that's the user, not someone to add. backgroundCharacters is the present-
+// but-inactive cast at this place (see backend/lib/presence.js), needed to
+// resolve who a beckon phrase could plausibly be about; speakerId/speakerName
+// identify whose turn this is, since a step-back suggestion is reflexive.
 export async function detectSuggestedActions(text, {
   places = [], characters = [], currentPlaceId = null, mode = 'regex', personaName = null,
+  backgroundCharacters = [], speakerId = null, speakerName = null,
   extractEntitiesFn = defaultExtractEntities, classifyIntentFn = defaultClassifyIntent,
 } = {}) {
   if (!text) return [];
-  const ctx = { places, characters, currentPlaceId, personaName };
+  const ctx = { places, characters, currentPlaceId, personaName, backgroundCharacters, speakerId, speakerName, classifyIntentFn };
 
   let suggestions;
   if (mode === 'ml') {
@@ -190,6 +279,8 @@ export async function detectSuggestedActions(text, {
   } else {
     suggestions = regexSuggestions(text, ctx);
   }
+
+  suggestions = [...suggestions, ...(await participationSuggestions(text, ctx, mode))];
 
   logger.info('suggest', `${mode}: ${suggestions.length} suggestion(s)`);
   logger.debug('suggest', 'detection detail', { mode, text: text.slice(0, 120), suggestions });
