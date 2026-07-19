@@ -15,7 +15,9 @@ import {
 import {
   recordTurn,
   retrieveMemories,
+  queryCharacterMemories,
   listCharacterMemories,
+  countCharacterMemories,
   addCharacterMemory,
   updateCharacterMemory,
   deleteCharacterMemory,
@@ -1295,8 +1297,20 @@ app.post('/api/memory/retrieve', async (req, res) => {
 // automatic record/retrieve path above. Registered after the literal
 // /record and /retrieve routes so those aren't shadowed by :characterId.
 
+// Newest-first, paginated (?limit=&offset=, default 50/0, capped at 200) —
+// a long-running roleplay can pile up hundreds of memories per character,
+// so the management UI never pulls the whole set (embeddings included) in
+// one response. `total` lets the client know whether there's more to page.
 app.get('/api/memory/:characterId', (req, res) => {
-  res.json({ memories: listCharacterMemories(req.world.db, req.params.characterId) });
+  const w = req.world;
+  const rawLimit = parseInt(req.query.limit, 10);
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 200) : 50;
+  const rawOffset = parseInt(req.query.offset, 10);
+  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+
+  const memories = listCharacterMemories(w.db, req.params.characterId, { limit, offset });
+  const total = countCharacterMemories(w.db, req.params.characterId);
+  res.json({ memories, total, limit, offset });
 });
 
 app.post('/api/memory/:characterId', async (req, res) => {
@@ -1347,6 +1361,38 @@ app.delete('/api/memory/:characterId/:entryId', (req, res) => {
   const ok = deleteCharacterMemory(req.world.db, req.params.characterId, req.params.entryId);
   if (!ok) return res.status(404).json({ error: 'Memory not found.' });
   res.json({ ok: true });
+});
+
+// Debugging aid: ranks EVERY one of a character's memories against a query
+// (not just the winners retrieveMemories would hand to generation) so a
+// human can see near-misses and understand why something was or wasn't
+// recalled. Mirrors the real selection knobs (topK=3, recency=2 — the same
+// unoverridden defaults buildTurnRequest uses) and defaults minScore to
+// the user's actual configured Settings > Memory threshold, so "would this
+// be recalled in a real turn" is a faithful answer — with an optional
+// override to test "what if the threshold were different" without
+// actually changing settings.
+app.post('/api/memory/:characterId/query', async (req, res) => {
+  const w = req.world;
+  const { query, minScore, limit } = req.body || {};
+  if (typeof query !== 'string' || !query.trim()) {
+    return res.status(400).json({ error: 'query is required.' });
+  }
+  const cfg = loadConfig();
+  const effectiveMinScore = typeof minScore === 'number' && Number.isFinite(minScore) ? minScore : cfg.memoryMinScore;
+  try {
+    const results = await queryCharacterMemories({
+      db: w.db,
+      embedFn: embed,
+      characterId: req.params.characterId,
+      query,
+      minScore: effectiveMinScore,
+      limit: Number.isInteger(limit) && limit > 0 ? Math.min(limit, 200) : 50,
+    });
+    res.json({ results, minScoreUsed: effectiveMinScore });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
 });
 
 // --- Relationship routes -----------------------------------------------------

@@ -456,6 +456,14 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 }
 .memory-text{ font-size:0.86rem; line-height:1.45; white-space:pre-wrap; }
 .edit-memory-text{ min-height:70px; font-size:0.86rem; }
+.memory-debug{
+  border:1px dashed var(--border); border-radius:8px; padding:12px 14px;
+  margin:14px 0 18px;
+}
+.memory-debug-title{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:0.95rem; margin:0 0 4px; }
+.badge-recalled{ border-color:var(--accent); color:var(--accent); }
+.badge-dim{ color:var(--dim); }
+.memory-pagination{ display:flex; align-items:center; gap:10px; margin-top:10px; }
 
 /* ---- Places view ---- */
 .form-card{

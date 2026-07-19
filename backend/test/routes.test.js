@@ -1006,6 +1006,79 @@ describe('Memory management: GET/POST /api/memory/:characterId, PUT/DELETE /api/
     const retrieveRes = await postJson('/api/memory/retrieve', { query: 'Hi.', characterIds: [character.id] });
     assert.equal(retrieveRes.status, 200);
   });
+
+  test('GET is paginated: default limit/offset, total count, walking through pages with no gaps', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Paginated Pat', description: '.' })).json();
+    for (let i = 0; i < 7; i++) {
+      await postJson(`/api/memory/${character.id}`, { text: `Memory ${i}.` });
+    }
+
+    const defaultRes = await (await fetch(`${baseUrl}/api/memory/${character.id}`)).json();
+    assert.equal(defaultRes.memories.length, 7); // fewer than the default limit — all come back
+    assert.equal(defaultRes.total, 7);
+    assert.equal(defaultRes.limit, 50);
+    assert.equal(defaultRes.offset, 0);
+
+    const page1 = await (await fetch(`${baseUrl}/api/memory/${character.id}?limit=3&offset=0`)).json();
+    const page2 = await (await fetch(`${baseUrl}/api/memory/${character.id}?limit=3&offset=3`)).json();
+    const page3 = await (await fetch(`${baseUrl}/api/memory/${character.id}?limit=3&offset=6`)).json();
+    assert.equal(page1.memories.length, 3);
+    assert.equal(page2.memories.length, 3);
+    assert.equal(page3.memories.length, 1);
+    assert.equal(page1.total, 7); // total reflects the whole set, not the page
+    const allIds = [...page1.memories, ...page2.memories, ...page3.memories].map((m) => m.id);
+    assert.equal(new Set(allIds).size, 7);
+  });
+
+  test('GET clamps an out-of-range limit and ignores a garbage offset', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Clamp Tester', description: '.' })).json();
+    await postJson(`/api/memory/${character.id}`, { text: 'One memory.' });
+
+    const overLimit = await (await fetch(`${baseUrl}/api/memory/${character.id}?limit=99999`)).json();
+    assert.equal(overLimit.limit, 200); // capped, not 99999
+
+    const garbage = await (await fetch(`${baseUrl}/api/memory/${character.id}?limit=nonsense&offset=-5`)).json();
+    assert.equal(garbage.limit, 50); // falls back to the default
+    assert.equal(garbage.offset, 0);
+  });
+
+  test('POST /api/memory/:characterId/query ranks every memory and marks which the real algorithm would recall', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Debug Target', description: '.' })).json();
+    await postJson(`/api/memory/${character.id}`, { text: 'The visitor once asked about ancient maps.' });
+    await postJson(`/api/memory/${character.id}`, { text: 'Nothing to do with the topic at all.' });
+
+    const res = await postJson(`/api/memory/${character.id}/query`, { query: 'Tell me about the old maps.' });
+    assert.equal(res.status, 200);
+    const { results, minScoreUsed } = await res.json();
+    assert.equal(results.length, 2); // every memory is ranked, not just the recalled ones
+    assert.equal(typeof minScoreUsed, 'number'); // defaulted from Settings > Memory when not given explicitly
+    const mapsResult = results.find((r) => r.text.includes('maps'));
+    assert.ok(mapsResult);
+    assert.equal(typeof mapsResult.score, 'number');
+    assert.ok('selected' in mapsResult);
+  });
+
+  test('POST .../query accepts a minScore override, distinct from the configured default', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Threshold Tester', description: '.' })).json();
+    await postJson(`/api/memory/${character.id}`, { text: 'About the old maps.' });
+
+    const res = await postJson(`/api/memory/${character.id}/query`, { query: 'maps', minScore: 0.99 });
+    const { minScoreUsed } = await res.json();
+    assert.equal(minScoreUsed, 0.99);
+  });
+
+  test('POST .../query rejects a missing/empty query', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'No Query Given', description: '.' })).json();
+    assert.equal((await postJson(`/api/memory/${character.id}/query`, {})).status, 400);
+    assert.equal((await postJson(`/api/memory/${character.id}/query`, { query: '   ' })).status, 400);
+  });
+
+  test('POST .../query returns [] for a character with no memories, not an error', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Blank Slate Bo', description: '.' })).json();
+    const res = await postJson(`/api/memory/${character.id}/query`, { query: 'anything' });
+    assert.equal(res.status, 200);
+    assert.deepEqual((await res.json()).results, []);
+  });
 });
 
 describe('World time & setting', () => {

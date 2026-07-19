@@ -7,7 +7,9 @@ import {
   timePrefix,
   recordTurn,
   retrieveMemories,
+  queryCharacterMemories,
   listCharacterMemories,
+  countCharacterMemories,
   addCharacterMemory,
   updateCharacterMemory,
   deleteCharacterMemory,
@@ -110,7 +112,7 @@ describe('timePrefix', () => {
 });
 
 describe('recordTurn + retrieveMemories (SQLite)', () => {
-  test('recordTurn writes one row per present character, sharing one embedding call', () => withDb(async (db) => {
+  test('recordTurn writes ONE shared row for the whole round, not one per character', () => withDb(async (db) => {
     let embedCalls = 0;
     const countingEmbed = async (t) => { embedCalls += 1; return fakeEmbed(t); };
 
@@ -124,18 +126,24 @@ describe('recordTurn + retrieveMemories (SQLite)', () => {
       day: 2, timeOfDay: 'evening',
     });
 
-    assert.equal(result.count, 2);
+    assert.equal(result.count, 2); // count = characters covered, not rows written
     assert.equal(embedCalls, 1);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memories').get().n, 1); // exactly one physical row
+
     const ezraMems = listCharacterMemories(db, 'ezra');
     assert.equal(ezraMems.length, 1);
-    assert.deepEqual(ezraMems[0].participants, ['mireille']);
+    assert.deepEqual(ezraMems[0].participants, ['mireille']); // self excluded, matching the old shape
     assert.equal(ezraMems[0].day, 2);
     assert.equal(ezraMems[0].timeOfDay, 'evening');
     assert.ok(ezraMems[0].text.startsWith('(Day 2, evening)'));
 
-    // Entry linkage recorded for both characters' memories.
+    // Both characters see the SAME row (same id), and each entry links to
+    // it exactly once — not once per character.
+    const mireilleMems = listCharacterMemories(db, 'mireille');
+    assert.equal(mireilleMems[0].id, ezraMems[0].id);
+    assert.deepEqual(mireilleMems[0].participants, ['ezra']);
     const links = db.prepare('SELECT COUNT(*) AS n FROM memory_entries').get();
-    assert.equal(links.n, 4); // 2 memories × 2 entries
+    assert.equal(links.n, 2); // 1 memory × 2 entries, not 2×2
   }));
 
   test('recordTurn is a no-op for empty text or no characters', () => withDb(async (db) => {
@@ -325,11 +333,159 @@ describe('management: list / add / update / delete', () => {
     assert.deepEqual(listCharacterMemories(db, 'ezra'), []);
   }));
 
+  test('deleteCharacterMemory on a shared memory only removes this character\'s participation — others keep it', () => withDb(async (db) => {
+    await recordTurn({
+      db, embedFn, characterIds: ['ezra', 'soot'], personaId: 'kael',
+      text: 'Shared turn about cats.', entryIds: ['e1'],
+    });
+    const [ezraMem] = listCharacterMemories(db, 'ezra');
+
+    assert.equal(deleteCharacterMemory(db, 'ezra', ezraMem.id), true);
+    assert.deepEqual(listCharacterMemories(db, 'ezra'), []); // gone for ezra
+    const [sootMem] = listCharacterMemories(db, 'soot');
+    assert.ok(sootMem); // soot still remembers it — same row, one fewer participant
+    assert.deepEqual(sootMem.participants, []); // ezra no longer listed as a co-participant
+
+    // The underlying row is still very much alive (not orphaned/deleted).
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memories').get().n, 1);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_entries').get().n, 1);
+  }));
+
+  test('deleteCharacterMemory removes the row entirely once the last participant leaves', () => withDb(async (db) => {
+    await recordTurn({
+      db, embedFn, characterIds: ['ezra', 'soot'], personaId: 'kael',
+      text: 'Shared turn about cats.', entryIds: ['e1'],
+    });
+    const [ezraMem] = listCharacterMemories(db, 'ezra');
+    deleteCharacterMemory(db, 'ezra', ezraMem.id);
+    deleteCharacterMemory(db, 'soot', ezraMem.id); // the last one out
+
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memories').get().n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_entries').get().n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_participants').get().n, 0);
+  }));
+
+  test('deleteCharacterMemory returns false for a character who was never a participant', () => withDb(async (db) => {
+    const created = await addCharacterMemory({ db, embedFn, characterId: 'ezra', personaId: 'kael', text: 'Only mine.' });
+    assert.equal(deleteCharacterMemory(db, 'soot', created.id), false);
+    assert.equal(listCharacterMemories(db, 'ezra').length, 1); // untouched
+  }));
+
   test('deleteAllCharacterMemories wipes one character without touching others', () => withDb(async (db) => {
     await recordTurn({ db, embedFn, characterIds: ['ezra', 'soot'], personaId: 'kael', text: 'Shared turn about cats.' });
     deleteAllCharacterMemories(db, 'ezra');
     assert.equal(listCharacterMemories(db, 'ezra').length, 0);
     assert.equal(listCharacterMemories(db, 'soot').length, 1);
+    // The row survives — soot's still there to remember it.
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memories').get().n, 1);
+  }));
+
+  test('deleteAllCharacterMemories removes rows outright once nobody is left to witness them', () => withDb(async (db) => {
+    await addCharacterMemory({ db, embedFn, characterId: 'ezra', personaId: 'kael', text: 'Solo memory.' });
+    deleteAllCharacterMemories(db, 'ezra');
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memories').get().n, 0);
+  }));
+});
+
+describe('listCharacterMemories / countCharacterMemories pagination', () => {
+  async function seedMany(db, characterId, n) {
+    for (let i = 0; i < n; i++) {
+      await addCharacterMemory({ db, embedFn, characterId, personaId: 'kael', text: `Memory number ${i}.` });
+      await new Promise((r) => setTimeout(r, 1)); // distinct timestamps, so newest-first order is deterministic
+    }
+  }
+
+  test('defaults to newest-first, capped at 50, without needing explicit pagination args', () => withDb(async (db) => {
+    await seedMany(db, 'ezra', 5);
+    const memories = listCharacterMemories(db, 'ezra');
+    assert.equal(memories.length, 5);
+    assert.ok(memories[0].text.includes('number 4')); // newest first
+    assert.ok(memories[4].text.includes('number 0'));
+  }));
+
+  test('limit caps the page size; offset walks through subsequent pages without gaps or repeats', () => withDb(async (db) => {
+    await seedMany(db, 'ezra', 12);
+    const page1 = listCharacterMemories(db, 'ezra', { limit: 5, offset: 0 });
+    const page2 = listCharacterMemories(db, 'ezra', { limit: 5, offset: 5 });
+    const page3 = listCharacterMemories(db, 'ezra', { limit: 5, offset: 10 });
+
+    assert.equal(page1.length, 5);
+    assert.equal(page2.length, 5);
+    assert.equal(page3.length, 2); // only 2 left of 12
+    const allIds = [...page1, ...page2, ...page3].map((m) => m.id);
+    assert.equal(new Set(allIds).size, 12); // no duplicates, nothing skipped
+  }));
+
+  test('countCharacterMemories reflects the true total regardless of page size', () => withDb(async (db) => {
+    await seedMany(db, 'ezra', 7);
+    assert.equal(countCharacterMemories(db, 'ezra'), 7);
+    listCharacterMemories(db, 'ezra', { limit: 2 }); // paging doesn't affect the count
+    assert.equal(countCharacterMemories(db, 'ezra'), 7);
+  }));
+
+  test('a shared memory counts once per participant, not once per row', () => withDb(async (db) => {
+    await recordTurn({ db, embedFn, characterIds: ['ezra', 'soot'], text: 'One shared round.' });
+    assert.equal(countCharacterMemories(db, 'ezra'), 1);
+    assert.equal(countCharacterMemories(db, 'soot'), 1);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memories').get().n, 1); // still just one physical row
+  }));
+
+  test('countCharacterMemories is 0 for an unknown character', () => withDb((db) => {
+    assert.equal(countCharacterMemories(db, 'nobody'), 0);
+  }));
+});
+
+describe('queryCharacterMemories (debug tool)', () => {
+  test('ranks every memory by relevance, annotating which the real algorithm would select', () => withDb(async (db) => {
+    await addCharacterMemory({ db, embedFn, characterId: 'ezra', text: 'About the records in the archive.' });
+    await new Promise((r) => setTimeout(r, 5));
+    await addCharacterMemory({ db, embedFn, characterId: 'ezra', text: 'Nice weather today.' });
+
+    const results = await queryCharacterMemories({
+      db, embedFn, characterId: 'ezra', query: 'Tell me about the records.',
+      topK: 3, recentCount: 0, minScore: 0.5,
+    });
+
+    assert.equal(results.length, 2); // every memory is returned and ranked, not just the winners
+    const records = results.find((r) => r.text.includes('records'));
+    const weather = results.find((r) => r.text.includes('weather'));
+    assert.ok(records.score > weather.score); // ranked by relevance
+    assert.equal(records.selected, true);
+    assert.equal(records.selectionReason, 'semantic');
+    assert.equal(weather.selected, false); // below minScore, correctly shown as a non-match
+    assert.equal(weather.selectionReason, null);
+  }));
+
+  test('a memory can be selected for recency alone, correctly labeled', () => withDb(async (db) => {
+    await addCharacterMemory({ db, embedFn, characterId: 'ezra', text: 'Something totally unrelated.' });
+
+    const results = await queryCharacterMemories({
+      db, embedFn, characterId: 'ezra', query: 'records',
+      topK: 0, recentCount: 1, minScore: 0.9,
+    });
+    assert.equal(results[0].selected, true);
+    assert.equal(results[0].selectionReason, 'recent');
+  }));
+
+  test('a memory hitting both semantic and recency passes is labeled as both', () => withDb(async (db) => {
+    await addCharacterMemory({ db, embedFn, characterId: 'ezra', text: 'About the records.' });
+    const results = await queryCharacterMemories({
+      db, embedFn, characterId: 'ezra', query: 'records',
+      topK: 3, recentCount: 3, minScore: 0,
+    });
+    assert.equal(results[0].selectionReason, 'semantic + recent');
+  }));
+
+  test('returns [] for an empty query or a character with no memories', () => withDb(async (db) => {
+    await addCharacterMemory({ db, embedFn, characterId: 'ezra', text: 'Something.' });
+    assert.deepEqual(await queryCharacterMemories({ db, embedFn, characterId: 'ezra', query: '' }), []);
+    assert.deepEqual(await queryCharacterMemories({ db, embedFn, characterId: 'nobody', query: 'anything' }), []);
+  }));
+
+  test('limit caps how many ranked results come back', () => withDb(async (db) => {
+    for (let i = 0; i < 5; i++) await addCharacterMemory({ db, embedFn, characterId: 'ezra', text: `Memory ${i}.` });
+    const results = await queryCharacterMemories({ db, embedFn, characterId: 'ezra', query: 'memory', limit: 2 });
+    assert.equal(results.length, 2);
   }));
 });
 
@@ -355,7 +511,7 @@ describe('syncMemoriesForEntry (edit / delete / regenerate)', () => {
     const edited = log.map((e) => e.id === 'msg-1' ? { ...e, text: 'I burned the records years ago.' } : e);
 
     const rebuilt = await syncMemoriesForEntry({ db, embedFn, entryId: 'msg-1', newEntryIds: null, log: edited, userLabel: 'Kael', formatEntry });
-    assert.equal(rebuilt, 2); // ezra's AND soot's memories both updated
+    assert.equal(rebuilt, 1); // one shared row, witnessed by both — updating it updates both at once
 
     for (const cid of ['ezra', 'soot']) {
       const [mem] = listCharacterMemories(db, cid);
@@ -400,13 +556,37 @@ describe('syncMemoriesForEntry (edit / delete / regenerate)', () => {
       assert.ok(mem.text.includes('volumes went missing'));
       assert.ok(!mem.text.includes('Every arrival, logged'));
     }
-    // Junction now points at msg-2, not msg-1.
+    // Junction now points at msg-2, not msg-1 — one link, not one per character.
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_entries WHERE entry_id = ?').get('msg-1').n, 0);
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_entries WHERE entry_id = ?').get('msg-2').n, 2);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_entries WHERE entry_id = ?').get('msg-2').n, 1);
   }));
 
   test('no-op when the entry has no linked memories', () => withDb(async (db) => {
     assert.equal(await syncMemoriesForEntry({ db, embedFn, entryId: 'ghost', newEntryIds: [], log: [], userLabel: 'Kael', formatEntry }), 0);
+  }));
+
+  test('a rebuild preserves a linked narrator entry\'s contribution, not just system/user/char', () => withDb(async (db) => {
+    const withNarrator = [
+      { id: 'sys-1', type: 'system', text: 'You arrive at the archive.' },
+      { id: 'usr-1', type: 'user', text: 'Do you keep records?' },
+      { id: 'msg-1', type: 'char', charId: 'ezra', name: 'Ezra', text: 'Always.' },
+      { id: 'narr-1', type: 'narrator', text: 'A bell tolls somewhere distant.' },
+    ];
+    await recordTurn({
+      db, embedFn, characterIds: ['ezra'], personaId: 'kael',
+      text: withNarrator.map((e) => formatEntry(e, 'Kael')).join('\n'),
+      entryIds: withNarrator.map((e) => e.id),
+    });
+
+    // Editing an unrelated entry in the same round triggers rebuildMemories
+    // — the narrator's line must survive that rebuild, not get silently
+    // dropped for not being system/user/char.
+    const edited = withNarrator.map((e) => e.id === 'msg-1' ? { ...e, text: 'Always, without fail.' } : e);
+    await syncMemoriesForEntry({ db, embedFn, entryId: 'msg-1', newEntryIds: null, log: edited, userLabel: 'Kael', formatEntry });
+
+    const [mem] = listCharacterMemories(db, 'ezra');
+    assert.ok(mem.text.includes('bell tolls somewhere distant'));
+    assert.ok(mem.text.includes('without fail'));
   }));
 });
 
@@ -427,10 +607,10 @@ describe('detachEntryFromMemories / attachEntriesToMemories (regenerate\'s two-p
     });
   }
 
-  test('findMemoriesWitnessing finds every character\'s row linked to an entry; nothing for an unlinked one', () => withDb(async (db) => {
+  test('findMemoriesWitnessing finds the shared row linked to an entry; nothing for an unlinked one', () => withDb(async (db) => {
     await seed(db);
-    assert.equal(findMemoriesWitnessing(db, 'msg-1').length, 2); // ezra's row + soot's row
-    assert.equal(findMemoriesWitnessing(db, 'usr-1').length, 2); // same shared round rows
+    assert.equal(findMemoriesWitnessing(db, 'msg-1').length, 1); // one shared row, not one per character
+    assert.equal(findMemoriesWitnessing(db, 'usr-1').length, 1); // same shared round row
     assert.deepEqual(findMemoriesWitnessing(db, 'ghost'), []);
   }));
 
@@ -440,7 +620,7 @@ describe('detachEntryFromMemories / attachEntriesToMemories (regenerate\'s two-p
     const withoutTarget = log.filter((e) => e.id !== 'msg-1');
 
     const rebuilt = await detachEntryFromMemories({ db, embedFn, memoryIds, entryId: 'msg-1', log: withoutTarget, userLabel: 'Kael', formatEntry });
-    assert.equal(rebuilt, 2);
+    assert.equal(rebuilt, 1);
 
     for (const cid of ['ezra', 'soot']) {
       const [mem] = listCharacterMemories(db, cid);
@@ -472,7 +652,7 @@ describe('detachEntryFromMemories / attachEntriesToMemories (regenerate\'s two-p
       { id: 'msg-2', type: 'char', charId: 'ezra', name: 'Ezra', text: 'Naturally. Though some volumes went missing.' },
     ];
     const rebuilt = await attachEntriesToMemories({ db, embedFn, memoryIds, newEntryIds: ['msg-2'], log: regenerated, userLabel: 'Kael', formatEntry });
-    assert.equal(rebuilt, 2);
+    assert.equal(rebuilt, 1);
 
     for (const cid of ['ezra', 'soot']) {
       const [mem] = listCharacterMemories(db, cid);
@@ -480,7 +660,7 @@ describe('detachEntryFromMemories / attachEntriesToMemories (regenerate\'s two-p
       assert.ok(!mem.text.includes('Every arrival, logged'));
       assert.ok(mem.text.includes('Do you keep records?')); // the user's message survived both phases
     }
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_entries WHERE entry_id = ?').get('msg-2').n, 2);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_entries WHERE entry_id = ?').get('msg-2').n, 1);
   }));
 
   test('both helpers are no-ops when there is nothing to detach/attach', () => withDb(async (db) => {
@@ -509,13 +689,13 @@ describe('pruneReplylessMemories (/retry cleanup)', () => {
   test('deletes rows whose only surviving entry is the user\'s message', () => withDb(async (db) => {
     await seed(db);
     const memoryIds = findMemoriesWitnessing(db, 'usr-1');
-    assert.equal(memoryIds.length, 2); // ezra's row + soot's row
+    assert.equal(memoryIds.length, 1); // one shared row, not one per character
 
     // The character reply is gone from the log (deleted, as "remove every
     // character message" does) — only the user's message survives.
     const withoutReply = log.filter((e) => e.id !== 'msg-1');
     const pruned = pruneReplylessMemories(db, memoryIds, withoutReply);
-    assert.equal(pruned, 2);
+    assert.equal(pruned, 1);
     assert.deepEqual(listCharacterMemories(db, 'ezra'), []);
     assert.deepEqual(listCharacterMemories(db, 'soot'), []);
   }));

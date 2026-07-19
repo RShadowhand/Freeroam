@@ -2,7 +2,11 @@ import crypto from 'crypto';
 import { encodeEmbedding, decodeEmbedding } from './db.js';
 import { logger } from './log.js';
 
-// Per-(character, persona) semantic memory, SQLite-backed (see db.js).
+// Per-(character, persona) semantic memory, SQLite-backed (see db.js). A
+// round is recorded once — a single memories row, shared by every present
+// character via memory_participants — rather than duplicated per
+// character; retrieval/management join through that table, so from the
+// outside a character's memories still behave as if they were their own.
 // A character's memory of "the visitor" is kept separate per persona,
 // since the same character shouldn't conflate their relationship with two
 // different personas you might play. personaId of null/undefined is
@@ -48,7 +52,12 @@ export function timePrefix(day, timeOfDay) {
   return `(Day ${day || '?'}, ${timeOfDay || 'sometime'})\n`;
 }
 
-function rowToMemory(row) {
+// `participants` is relative to `characterId` — everyone else who shared
+// this memory, matching the shape callers already expect (self excluded).
+function rowToMemory(db, row, characterId) {
+  const participants = db.prepare('SELECT character_id FROM memory_participants WHERE memory_id = ? AND character_id != ?')
+    .all(row.id, characterId)
+    .map((r) => r.character_id);
   return {
     id: row.id,
     text: row.text,
@@ -56,15 +65,16 @@ function rowToMemory(row) {
     day: row.day,
     timeOfDay: row.time_of_day,
     timestamp: row.timestamp,
-    participants: JSON.parse(row.participants || '[]'),
+    participants,
     personaId: row.persona_key === 'none' ? null : row.persona_key,
   };
 }
 
 // --- Recording --------------------------------------------------------
 
-// Records one turn's text as a memory for every character present — one
-// row per (character, persona), all sharing a single embedding computation.
+// Records one turn's text as a single memory row, shared by every present
+// character via memory_participants — one embedding computation, one
+// memories row, regardless of how many characters witnessed it.
 // `entryIds` links the memory to the chat entries that formed it.
 export async function recordTurn({ db, embedFn, characterIds, personaId, text, placeId, entryIds = [], day = null, timeOfDay = null }) {
   if (!text || !text.trim() || !Array.isArray(characterIds) || !characterIds.length) return { count: 0 };
@@ -72,27 +82,23 @@ export async function recordTurn({ db, embedFn, characterIds, personaId, text, p
   const embedding = encodeEmbedding(await embedFn(fullText));
   const timestamp = new Date().toISOString();
   const personaKey = personaKeyFor(personaId);
+  const id = crypto.randomUUID();
 
   const insertMem = db.prepare(`
-    INSERT INTO memories (id, character_id, persona_key, text, embedding, place_id, day, time_of_day, timestamp, participants)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO memories (id, persona_key, text, embedding, place_id, day, time_of_day, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const insertLink = db.prepare('INSERT INTO memory_entries (memory_id, entry_id) VALUES (?, ?)');
+  const insertParticipant = db.prepare('INSERT OR IGNORE INTO memory_participants (memory_id, character_id) VALUES (?, ?)');
+  const insertLink = db.prepare('INSERT OR IGNORE INTO memory_entries (memory_id, entry_id) VALUES (?, ?)');
 
   const write = db.transaction(() => {
-    characterIds.forEach((characterId) => {
-      const id = crypto.randomUUID();
-      insertMem.run(
-        id, characterId, personaKey, fullText, embedding, placeId || null,
-        day, timeOfDay, timestamp,
-        JSON.stringify(characterIds.filter((c) => c !== characterId))
-      );
-      entryIds.forEach((entryId) => insertLink.run(id, entryId));
-    });
+    insertMem.run(id, personaKey, fullText, embedding, placeId || null, day, timeOfDay, timestamp);
+    characterIds.forEach((characterId) => insertParticipant.run(id, characterId));
+    entryIds.forEach((entryId) => insertLink.run(id, entryId));
   });
   write();
 
-  logger.info('memory', `recorded turn for [${characterIds.join(', ')}] persona=${personaKey} place=${placeId || '-'} (${fullText.length} chars, ${entryIds.length} linked entries)`);
+  logger.info('memory', `recorded turn for [${characterIds.join(', ')}] persona=${personaKey} place=${placeId || '-'} (${fullText.length} chars, ${entryIds.length} linked entries, 1 row)`);
   return { count: characterIds.length };
 }
 
@@ -134,7 +140,12 @@ export async function retrieveMemories({ db, embedFn, characterIds, query, topKP
       .forEach((r) => excludedMemoryIds.add(r.memory_id));
   }
 
-  const selectAll = db.prepare('SELECT id, text, embedding, timestamp FROM memories WHERE character_id = ?');
+  const selectAll = db.prepare(`
+    SELECT m.id, m.text, m.embedding, m.timestamp
+    FROM memories m
+    JOIN memory_participants mp ON mp.memory_id = m.id
+    WHERE mp.character_id = ?
+  `);
 
   const selected = new Map(); // text -> { text, timestamp, score }
   characterIds.forEach((characterId) => {
@@ -168,34 +179,94 @@ export async function retrieveMemories({ db, embedFn, characterIds, query, topKP
   return results.map((r) => r.text);
 }
 
+// --- Debugging -------------------------------------------------------
+// retrieveMemories() only ever hands generation the winning text strings
+// — by design, since that's all a prompt needs. For a human trying to
+// understand *why* a character did or didn't recall something, that's not
+// enough: you need to see where a near-miss actually landed. This ranks
+// every one of a character's memories against a query (same single-pass
+// cosine ranking retrieveMemories uses per character) and annotates each
+// with whether the real topK/recency/minScore selection would have picked
+// it, and which pass did it. Reads the character's whole memory set to
+// rank it — unavoidable for an honest ranking, same as retrieveMemories
+// already does per character today.
+export async function queryCharacterMemories({ db, embedFn, characterId, query, topK = 3, recentCount = 2, minScore = 0, limit = 50 }) {
+  if (!query || !query.trim()) return [];
+  const queryEmbedding = await embedFn(query);
+
+  const rows = db.prepare(`
+    SELECT m.* FROM memories m
+    JOIN memory_participants mp ON mp.memory_id = m.id
+    WHERE mp.character_id = ?
+  `).all(characterId);
+  if (!rows.length) return [];
+
+  const decoded = rows.map((r) => ({ ...r, embedding: decodeEmbedding(r.embedding) }));
+  const ranked = rankBySimilarity(queryEmbedding, decoded);
+
+  const recentIds = new Set(
+    [...rows].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, recentCount).map((r) => r.id)
+  );
+  const semanticIds = new Set(
+    ranked.filter((r) => r.score >= minScore).slice(0, topK).map((r) => r.entry.id)
+  );
+
+  return ranked.slice(0, limit).map(({ entry, score }) => {
+    const isSemantic = semanticIds.has(entry.id);
+    const isRecent = recentIds.has(entry.id);
+    return {
+      ...rowToMemory(db, entry, characterId),
+      score,
+      selected: isSemantic || isRecent,
+      selectionReason: isSemantic && isRecent ? 'semantic + recent' : isSemantic ? 'semantic' : isRecent ? 'recent' : null,
+    };
+  });
+}
+
 // --- Management (memories modal) ---------------------------------------
 
-export function listCharacterMemories(db, characterId) {
-  return db.prepare('SELECT * FROM memories WHERE character_id = ? ORDER BY timestamp DESC')
-    .all(characterId)
-    .map(rowToMemory);
+// Newest-first, paginated — a long-running roleplay can pile up hundreds
+// of memories per character, and the management UI has no business
+// pulling all of them (and their embeddings) into one response.
+export function listCharacterMemories(db, characterId, { limit = 50, offset = 0 } = {}) {
+  const rows = db.prepare(`
+    SELECT m.* FROM memories m
+    JOIN memory_participants mp ON mp.memory_id = m.id
+    WHERE mp.character_id = ?
+    ORDER BY m.timestamp DESC
+    LIMIT ? OFFSET ?
+  `).all(characterId, limit, offset);
+  return rows.map((row) => rowToMemory(db, row, characterId));
+}
+
+export function countCharacterMemories(db, characterId) {
+  return db.prepare('SELECT COUNT(*) AS n FROM memory_participants WHERE character_id = ?').get(characterId).n;
 }
 
 export async function addCharacterMemory({ db, embedFn, characterId, personaId, text, placeId, day = null, timeOfDay = null }) {
   if (!text || !text.trim()) return null;
   const id = crypto.randomUUID();
   const fullText = timePrefix(day, timeOfDay) + text.trim();
-  db.prepare(`
-    INSERT INTO memories (id, character_id, persona_key, text, embedding, place_id, day, time_of_day, timestamp, participants)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]')
-  `).run(id, characterId, personaKeyFor(personaId), fullText, encodeEmbedding(await embedFn(fullText)), placeId || null, day, timeOfDay, new Date().toISOString());
+  const embedding = encodeEmbedding(await embedFn(fullText));
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO memories (id, persona_key, text, embedding, place_id, day, time_of_day, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, personaKeyFor(personaId), fullText, embedding, placeId || null, day, timeOfDay, new Date().toISOString());
+    db.prepare('INSERT INTO memory_participants (memory_id, character_id) VALUES (?, ?)').run(id, characterId);
+  })();
   logger.info('memory', `added manual memory ${id} for ${characterId}`);
-  return rowToMemory(db.prepare('SELECT * FROM memories WHERE id = ?').get(id));
+  return rowToMemory(db, db.prepare('SELECT * FROM memories WHERE id = ?').get(id), characterId);
 }
 
 export async function updateCharacterMemory({ db, embedFn, characterId, entryId, text }) {
   if (!text || !text.trim()) return null;
-  const row = db.prepare('SELECT * FROM memories WHERE id = ? AND character_id = ?').get(entryId, characterId);
-  if (!row) return null;
+  const owns = db.prepare('SELECT 1 FROM memory_participants WHERE memory_id = ? AND character_id = ?').get(entryId, characterId);
+  if (!owns) return null;
   db.prepare('UPDATE memories SET text = ?, embedding = ?, timestamp = ? WHERE id = ?')
     .run(text.trim(), encodeEmbedding(await embedFn(text.trim())), new Date().toISOString(), entryId);
   logger.info('memory', `updated memory ${entryId} (re-embedded)`);
-  return rowToMemory(db.prepare('SELECT * FROM memories WHERE id = ?').get(entryId));
+  return rowToMemory(db, db.prepare('SELECT * FROM memories WHERE id = ?').get(entryId), characterId);
 }
 
 // Re-embeds every stored memory row with whatever embedFn is passed in —
@@ -211,42 +282,60 @@ export async function rebuildAllMemoryEmbeddings({ db, embedFn }) {
   return rows.length;
 }
 
+// Removes just this character's participation — a memory shared with
+// others stays intact for them. Only when the last participant leaves does
+// the row (and its entry links) actually disappear, since nobody's left to
+// recall it.
 export function deleteCharacterMemory(db, characterId, entryId) {
-  const result = db.prepare('DELETE FROM memories WHERE id = ? AND character_id = ?').run(entryId, characterId);
-  if (result.changes > 0) {
+  const result = db.prepare('DELETE FROM memory_participants WHERE memory_id = ? AND character_id = ?').run(entryId, characterId);
+  if (result.changes === 0) return false;
+
+  const { n: remaining } = db.prepare('SELECT COUNT(*) AS n FROM memory_participants WHERE memory_id = ?').get(entryId);
+  if (remaining === 0) {
+    db.prepare('DELETE FROM memories WHERE id = ?').run(entryId);
     db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(entryId);
-    logger.info('memory', `deleted memory ${entryId}`);
-    return true;
   }
-  return false;
+  logger.info('memory', `deleted memory ${entryId} for ${characterId}${remaining === 0 ? ' (last participant — row removed)' : ''}`);
+  return true;
 }
 
+// Removes a character from every memory they participated in — used when
+// the character itself is deleted. Rows other characters still share
+// survive; a row left with no participants is removed outright.
 export function deleteAllCharacterMemories(db, characterId) {
-  const ids = db.prepare('SELECT id FROM memories WHERE character_id = ?').all(characterId).map((r) => r.id);
+  const memoryIds = db.prepare('SELECT memory_id FROM memory_participants WHERE character_id = ?').all(characterId).map((r) => r.memory_id);
+  let removedRows = 0;
   const wipe = db.transaction(() => {
-    ids.forEach((id) => {
-      db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(id);
-      db.prepare('DELETE FROM memories WHERE id = ?').run(id);
+    db.prepare('DELETE FROM memory_participants WHERE character_id = ?').run(characterId);
+    memoryIds.forEach((mid) => {
+      const { n: remaining } = db.prepare('SELECT COUNT(*) AS n FROM memory_participants WHERE memory_id = ?').get(mid);
+      if (remaining === 0) {
+        db.prepare('DELETE FROM memories WHERE id = ?').run(mid);
+        db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(mid);
+        removedRows += 1;
+      }
     });
   });
   wipe();
-  if (ids.length) logger.info('memory', `deleted all ${ids.length} memories for ${characterId}`);
+  if (memoryIds.length) logger.info('memory', `removed ${characterId} from ${memoryIds.length} memories (${removedRows} row(s) fully removed)`);
 }
 
 // --- Chat-entry sync (edit / delete / regenerate) -----------------------
 
 // Regenerates each memory row's text from whichever of its linked entries
 // still exist in the current log (in log order), keeping its original
-// day/time prefix. A row left with no surviving entries is deleted outright.
+// day/time prefix. A row left with no surviving entries is deleted outright
+// (its participants and entry links go with it).
 async function rebuildMemories({ db, embedFn, memoryIds, log, userLabel, formatEntry }) {
   let rebuilt = 0;
   for (const mid of memoryIds) {
     const linkedIds = db.prepare('SELECT entry_id FROM memory_entries WHERE memory_id = ?').all(mid).map((r) => r.entry_id);
-    const entries = log.filter((e) => linkedIds.includes(e.id) && (e.type === 'system' || e.type === 'user' || e.type === 'char'));
+    const entries = log.filter((e) => linkedIds.includes(e.id) && (e.type === 'system' || e.type === 'user' || e.type === 'char' || e.type === 'narrator'));
 
     if (!entries.length) {
       db.prepare('DELETE FROM memories WHERE id = ?').run(mid);
       db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(mid);
+      db.prepare('DELETE FROM memory_participants WHERE memory_id = ?').run(mid);
       logger.info('memory', `sync: memory ${mid} emptied by chat edits — deleted`);
       continue;
     }
@@ -279,7 +368,7 @@ export async function syncMemoriesForEntry({ db, embedFn, entryId, newEntryIds =
 
   if (newEntryIds !== null) {
     const remove = db.prepare('DELETE FROM memory_entries WHERE memory_id = ? AND entry_id = ?');
-    const add = db.prepare('INSERT INTO memory_entries (memory_id, entry_id) VALUES (?, ?)');
+    const add = db.prepare('INSERT OR IGNORE INTO memory_entries (memory_id, entry_id) VALUES (?, ?)');
     const relink = db.transaction(() => {
       memoryIds.forEach((mid) => {
         remove.run(mid, entryId);
@@ -332,6 +421,7 @@ export function pruneReplylessMemories(db, memoryIds, log) {
     if (!hasCharReply) {
       db.prepare('DELETE FROM memories WHERE id = ?').run(mid);
       db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(mid);
+      db.prepare('DELETE FROM memory_participants WHERE memory_id = ?').run(mid);
       pruned += 1;
     }
   }
@@ -341,7 +431,7 @@ export function pruneReplylessMemories(db, memoryIds, log) {
 
 export async function attachEntriesToMemories({ db, embedFn, memoryIds, newEntryIds, log, userLabel, formatEntry }) {
   if (!memoryIds.length || !newEntryIds.length) return 0;
-  const add = db.prepare('INSERT INTO memory_entries (memory_id, entry_id) VALUES (?, ?)');
+  const add = db.prepare('INSERT OR IGNORE INTO memory_entries (memory_id, entry_id) VALUES (?, ?)');
   const attach = db.transaction(() => { memoryIds.forEach((mid) => newEntryIds.forEach((nid) => add.run(mid, nid))); });
   attach();
   const rebuilt = await rebuildMemories({ db, embedFn, memoryIds, log, userLabel, formatEntry });

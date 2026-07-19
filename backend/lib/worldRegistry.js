@@ -209,7 +209,7 @@ export function createWorldRegistry({ rootDir }) {
       // data) and character_embeddings (derived from descriptions, not
       // from what happened — both belong to "the world," not "the story").
       const destDb = openDb(destDbPath);
-      destDb.exec('DELETE FROM memory_entries; DELETE FROM memories;');
+      destDb.exec('DELETE FROM memory_participants; DELETE FROM memory_entries; DELETE FROM memories;');
       destDb.close();
     }
 
