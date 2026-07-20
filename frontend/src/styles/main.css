@@ -456,6 +456,49 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 .char-modal-identity{ display:flex; align-items:center; gap:14px; }
 .char-modal-identity .avatar, .char-modal-identity .avatar-fallback{ width:56px; height:56px; font-size:1.3rem; flex-shrink:0; }
 .char-modal-identity .field-row{ flex:1; }
+
+/* ---- Character edit modal: tabs ----
+   A tabbed modal (not one long scroll) needs the modal itself to stop
+   being the thing that scrolls — only the active tab's body does, while
+   the header/tabs and Save/Cancel/Remove footer stay pinned in view no
+   matter how long a tab's content runs (Memories especially, which can
+   grow to hundreds of entries). */
+.modal.tabbed{
+  max-height:82vh;
+  overflow:hidden;
+  gap:0;
+}
+.modal-head-row{ display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
+.modal-close{
+  background:none; border:none; color:var(--dim); cursor:pointer; font-size:1rem;
+  padding:4px; line-height:1; flex-shrink:0;
+}
+.modal-close:hover{ color:var(--parchment); }
+.modal-tabs{
+  display:flex; gap:0; border-bottom:1px solid var(--border);
+  margin:14px 0 0; flex-shrink:0;
+}
+.modal-tab{
+  font-family:'IBM Plex Mono',monospace; font-size:0.74rem; letter-spacing:0.04em;
+  background:none; border:none; color:var(--dim); cursor:pointer;
+  padding:9px 2px 11px; margin-right:22px; border-bottom:2px solid transparent;
+  display:flex; align-items:center; gap:6px; transition:color .15s ease, border-color .15s ease;
+}
+.modal-tab:hover{ color:var(--parchment); }
+.modal-tab.active{ color:var(--accent); border-bottom-color:var(--accent); }
+.modal-tab .count{
+  font-family:'IBM Plex Mono',monospace; font-size:0.62rem; background:var(--panel-raised);
+  border-radius:10px; padding:1px 6px; color:var(--dim);
+}
+.modal-tab-body{
+  flex:1; overflow-y:auto; padding:16px 2px 4px;
+}
+.modal-tab-pane{ display:flex; flex-direction:column; gap:14px; }
+.modal-tab-foot{
+  display:flex; gap:10px; align-items:center; flex-shrink:0;
+  padding-top:14px; margin-top:2px; border-top:1px solid var(--border);
+}
+
 .placement-options{ display:flex; flex-direction:column; gap:7px; margin-top:6px; }
 .placement-options label{
   display:flex; align-items:center; gap:8px;
@@ -464,8 +507,10 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 }
 .placement-options input[type=radio]{ width:auto; }
 
-/* ---- Memories modal ---- */
-.modal.wide{ max-width:640px; }
+/* .modal.wide is the character edit modal specifically — wide enough that
+   its Details tab's textareas (see .modal-tab-pane above) get real room,
+   especially on desktop. */
+.modal.wide{ max-width:900px; }
 .memory-row{
   border:1px solid var(--border); border-radius:8px; padding:10px 12px;
   margin-bottom:8px; display:flex; flex-direction:column; gap:6px;

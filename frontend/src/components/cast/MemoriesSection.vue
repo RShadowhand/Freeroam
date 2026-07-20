@@ -13,6 +13,7 @@ import { getMemories, addMemory, updateMemory, deleteMemory, queryMemories } fro
 // (each with a decoded row) into one response/render just to show a list
 // doesn't scale. "Load more" fetches the next page on demand instead.
 const props = defineProps({ characterId: { type: String, required: true } });
+const emit = defineEmits(['total-change']); // lets the modal show a live count badge on its Memories tab
 const world = useWorldStore();
 
 const PAGE_SIZE = 20;
@@ -46,6 +47,10 @@ function resetDebug() {
 }
 
 const hasMore = computed(() => memories.value.length < total.value);
+// A single watcher rather than an emit() next to every place total.value
+// changes (load, add, delete, loadMore's confirmed re-count) — one source
+// of truth that can't be missed if a future edit adds another mutation site.
+watch(total, (t) => emit('total-change', t));
 
 async function load() {
   editingId.value = null;
@@ -145,7 +150,6 @@ async function runDebugQuery() {
 
 <template>
   <div>
-    <h2 style="font-size:1rem;margin:18px 0 10px;border-top:1px solid var(--border);padding-top:16px;">Memories</h2>
     <div class="form-grid">
       <div>
         <label>Persona</label>

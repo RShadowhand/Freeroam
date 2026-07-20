@@ -26,6 +26,19 @@ const placement = computed(() => character.value ? world.placements[character.va
 const placeId = ref('');
 const greetingIndex = ref('');
 
+// Details / Relationships / Memories — see the CharacterModal.vue template
+// comment above the tab bar for why this replaced one long scroll.
+const activeTab = ref('details');
+const memoryCount = ref(null); // null until MemoriesSection's own fetch reports in — see its total-change emit
+// Mirrors RelationshipsSection's own relatedIds logic (relationships where
+// this character is the source) so the tab badge matches what that tab
+// actually shows, rather than recomputing a different definition of
+// "how many relationships."
+const relationshipCount = computed(() => {
+  if (!character.value) return 0;
+  return world.relationships.filter((r) => r.characterId === character.value.id && r.labels.length).length;
+});
+
 watch(characterModal.isOpen, (open) => {
   if (!open) return;
   const c = character.value;
@@ -37,6 +50,8 @@ watch(characterModal.isOpen, (open) => {
   status.value = '';
   placeId.value = placement.value ? placement.value.placeId : '';
   greetingIndex.value = placement.value && placement.value.greetingIndex != null ? String(placement.value.greetingIndex) : '';
+  activeTab.value = 'details';
+  memoryCount.value = null;
 });
 
 const placeGroups = computed(() => groupedByArea(world.places));
@@ -99,68 +114,99 @@ async function remove() {
 
 <template>
   <div class="modal-overlay" v-if="characterModal.isOpen.value" @click="(e) => { if (e.target === e.currentTarget) characterModal.close(); }">
-    <div class="modal wide">
-      <h2>{{ character ? `Edit ${character.name}` : 'New character' }}</h2>
-      <div class="char-modal-identity">
-        <CardAvatar v-if="character" :name="character.name" :avatar-url="character.avatarUrl" :color="character.color" />
-        <div class="field-row">
-          <label>Name</label>
-          <input type="text" v-model="name" placeholder="e.g. Marrow">
-        </div>
+    <div class="modal wide tabbed">
+      <div class="modal-head-row">
+        <h2>{{ character ? `Edit ${character.name}` : 'New character' }}</h2>
+        <button class="modal-close" type="button" @click="characterModal.close()">✕</button>
       </div>
-      <div class="field-row">
-        <label>Description</label>
-        <textarea v-model="description" placeholder="Who are they? Role in the world, appearance, background."></textarea>
-      </div>
-      <div class="form-grid">
-        <div>
-          <label>Personality <span class="hint-inline">(optional)</span></label>
-          <textarea v-model="personality" placeholder="Traits, manner of speaking."></textarea>
-        </div>
-        <div>
-          <label>Scenario <span class="hint-inline">(optional, opt-in — see Variables page)</span></label>
-          <textarea v-model="scenario" placeholder="A specific situation they're in, if any."></textarea>
-        </div>
-      </div>
-      <div class="field-row">
-        <label>Example dialogue <span class="hint-inline">(optional, opt-in)</span></label>
-        <textarea v-model="exampleDialogue" placeholder="A sample of how they talk."></textarea>
-      </div>
-      <p class="hint">Only Description (and Personality, if a preset asks for it) are sent by default. Scenario and Example dialogue are opt-in — they're only included if the active prompt preset has a block for them.</p>
 
-      <div v-if="character">
-        <div class="form-grid">
+      <!-- In create mode there's no character id yet for Relationships/
+           Memories to attach to, so only Details is shown until Save. -->
+      <div class="modal-tabs">
+        <button class="modal-tab" :class="{ active: activeTab === 'details' }" type="button" @click="activeTab = 'details'">Details</button>
+        <template v-if="character">
+          <button class="modal-tab" :class="{ active: activeTab === 'relationships' }" type="button" @click="activeTab = 'relationships'">
+            Relationships <span class="count" v-if="relationshipCount">{{ relationshipCount }}</span>
+          </button>
+          <button class="modal-tab" :class="{ active: activeTab === 'memories' }" type="button" @click="activeTab = 'memories'">
+            Memories <span class="count" v-if="memoryCount">{{ memoryCount }}</span>
+          </button>
+        </template>
+      </div>
+
+      <div class="modal-tab-body">
+        <div class="modal-tab-pane" v-show="activeTab === 'details'">
+          <div class="char-modal-identity">
+            <CardAvatar v-if="character" :name="character.name" :avatar-url="character.avatarUrl" :color="character.color" />
+            <div class="field-row">
+              <label>Name</label>
+              <input type="text" v-model="name" placeholder="e.g. Marrow">
+            </div>
+          </div>
           <div class="field-row">
-            <label>Place</label>
-            <select v-model="placeId" @change="onPlaceChange">
-              <option value="">— not placed —</option>
-              <optgroup v-for="(list, area) in placeGroups" :key="area" :label="area">
-                <option v-for="p in list" :key="p.id" :value="p.id">
-                  {{ p.name }} ({{ p.type === 'private' ? `private${p.ownerId ? ' · ' + (world.charName(p.ownerId) || '') : ''}` : 'communal' }})
-                </option>
-              </optgroup>
-            </select>
+            <label>Description</label>
+            <textarea v-model="description" rows="6" placeholder="Who are they? Role in the world, appearance, background."></textarea>
           </div>
-          <div class="field-row" v-if="greetings.length">
-            <label>Opening line</label>
-            <select v-model="greetingIndex" :disabled="!placeId" @change="onGreetingChange">
-              <option value="">No greeting — improvise on arrival</option>
-              <option v-for="(g, i) in greetings" :key="i" :value="String(i)">{{ greetingLabel(g, i) }}</option>
-            </select>
+          <div class="form-grid">
+            <div>
+              <label>Personality <span class="hint-inline">(optional)</span></label>
+              <textarea v-model="personality" rows="4" placeholder="Traits, manner of speaking."></textarea>
+            </div>
+            <div>
+              <label>Scenario <span class="hint-inline">(optional, opt-in — see Variables page)</span></label>
+              <textarea v-model="scenario" rows="4" placeholder="A specific situation they're in, if any."></textarea>
+            </div>
+          </div>
+          <div class="field-row">
+            <label>Example dialogue <span class="hint-inline">(optional, opt-in)</span></label>
+            <textarea v-model="exampleDialogue" rows="4" placeholder="A sample of how they talk."></textarea>
+          </div>
+          <p class="hint">Only Description (and Personality, if a preset asks for it) are sent by default. Scenario and Example dialogue are opt-in — they're only included if the active prompt preset has a block for them.</p>
+
+          <div v-if="character">
+            <div class="form-grid">
+              <div class="field-row">
+                <label>Place</label>
+                <select v-model="placeId" @change="onPlaceChange">
+                  <option value="">— not placed —</option>
+                  <optgroup v-for="(list, area) in placeGroups" :key="area" :label="area">
+                    <option v-for="p in list" :key="p.id" :value="p.id">
+                      {{ p.name }} ({{ p.type === 'private' ? `private${p.ownerId ? ' · ' + (world.charName(p.ownerId) || '') : ''}` : 'communal' }})
+                    </option>
+                  </optgroup>
+                </select>
+              </div>
+              <div class="field-row" v-if="greetings.length">
+                <label>Opening line</label>
+                <select v-model="greetingIndex" :disabled="!placeId" @change="onGreetingChange">
+                  <option value="">No greeting — improvise on arrival</option>
+                  <option v-for="(g, i) in greetings" :key="i" :value="String(i)">{{ greetingLabel(g, i) }}</option>
+                </select>
+              </div>
+            </div>
+            <button class="btn secondary small" type="button" @click="scheduleModal.open(character.id)">📅 Weekly schedule</button>
           </div>
         </div>
-        <button class="btn secondary small" type="button" @click="scheduleModal.open(character.id)">📅 Weekly schedule</button>
+
+        <!-- Mounted together (not per-tab) once the character exists, so
+             both load in the background and their tab badges are accurate
+             the moment the modal opens — v-show just picks which one shows. -->
+        <template v-if="character">
+          <div class="modal-tab-pane" v-show="activeTab === 'relationships'">
+            <RelationshipsSection :character-id="character.id" />
+          </div>
+          <div class="modal-tab-pane" v-show="activeTab === 'memories'">
+            <MemoriesSection :character-id="character.id" @total-change="memoryCount = $event" />
+          </div>
+        </template>
       </div>
 
-      <div class="form-actions">
+      <div class="modal-tab-foot">
         <button class="btn" @click="save">Save</button>
         <button class="btn secondary" @click="characterModal.close()">Cancel</button>
         <button class="btn danger" v-if="character && character.source !== 'builtin'" @click="remove">Remove character</button>
         <span class="form-status">{{ status }}</span>
       </div>
-
-      <RelationshipsSection v-if="character" :character-id="character.id" />
-      <MemoriesSection v-if="character" :character-id="character.id" />
     </div>
   </div>
 </template>

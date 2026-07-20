@@ -112,7 +112,6 @@ function onAddTarget(e) {
 
 <template>
   <div>
-    <h2 style="font-size:1rem;margin:18px 0 10px;border-top:1px solid var(--border);padding-top:16px;">Relationships</h2>
     <p class="hint">Multiple labels are fine at once (e.g. "ex-wife, friend") — pick from the standard list or type your own.</p>
 
     <div class="memory-debug">
