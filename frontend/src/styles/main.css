@@ -1116,7 +1116,13 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   .main-nav{ flex-wrap:wrap; gap:8px 10px; padding:var(--space-2) 0; margin:0 0 var(--space-4); }
   .nav-wordmark{ order:1; }
   .world-chip{ order:2; margin-left:auto; }
-  .nav-tabs{ order:3; width:100%; gap:6px; flex-wrap:wrap; }
+  /* flex:0 0 100%, not width:100% — the base rule's .nav-tabs{flex:1}
+     sets flex-basis:0%, and flex-basis wins over width in a row-flex
+     container, so a bare width:100% here silently loses to that and
+     nav-tabs never actually claims its own row (see .topbar-main .pname
+     above for the same bug pattern). The full flex shorthand overrides
+     grow/shrink/basis together so it actually gets one. */
+  .nav-tabs{ order:3; flex:0 0 100%; gap:6px; flex-wrap:wrap; }
   .nav-tab{ padding:5px 10px; font-size:0.64rem; flex-shrink:0; }
   .sub-nav{ gap:4px; margin:0 0 14px; }
 
