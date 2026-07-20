@@ -17,19 +17,23 @@ onMounted(async () => {
 
 <template>
   <section id="view-places" class="view">
-    <WorldSettingForm />
-    <AddPlaceFormFull />
+    <div class="places-top-forms">
+      <WorldSettingForm />
+      <AddPlaceFormFull />
+    </div>
 
     <div class="toolbar">
       <h2>The map</h2>
     </div>
     <div class="empty-note" v-if="!world.places.length">No places yet — add one above.</div>
-    <div class="area-group" v-for="(list, area) in groups" :key="area">
-      <div class="area-label">{{ area }}</div>
-      <PlaceEditRow
-        v-for="p in list" :key="p.id" :place="p" :editing="p.id === editingId"
-        @edit="editingId = p.id" @cancel="editingId = null"
-      />
+    <div class="map-columns" v-else>
+      <div class="area-group" v-for="(list, area) in groups" :key="area">
+        <div class="area-label">{{ area }}</div>
+        <PlaceEditRow
+          v-for="p in list" :key="p.id" :place="p" :editing="p.id === editingId"
+          @edit="editingId = p.id" @cancel="editingId = null"
+        />
+      </div>
     </div>
   </section>
 </template>

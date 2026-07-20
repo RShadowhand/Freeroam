@@ -5,6 +5,7 @@ import { useCharacterModal } from '../../composables/useCharacterModal';
 import { useScheduleModal } from '../../composables/useScheduleModal';
 import { createCharacter, updateCharacter, deleteCharacter, placeCharacter } from '../../api/characters';
 import { groupedByArea, castPreview } from '../../utils/format';
+import CardAvatar from '../shared/CardAvatar.vue';
 import RelationshipsSection from './RelationshipsSection.vue';
 import MemoriesSection from './MemoriesSection.vue';
 
@@ -100,27 +101,30 @@ async function remove() {
   <div class="modal-overlay" v-if="characterModal.isOpen.value" @click="(e) => { if (e.target === e.currentTarget) characterModal.close(); }">
     <div class="modal wide">
       <h2>{{ character ? `Edit ${character.name}` : 'New character' }}</h2>
-      <div class="form-grid">
-        <div>
+      <div class="char-modal-identity">
+        <CardAvatar v-if="character" :name="character.name" :avatar-url="character.avatarUrl" :color="character.color" />
+        <div class="field-row">
           <label>Name</label>
           <input type="text" v-model="name" placeholder="e.g. Marrow">
         </div>
-        <div class="span2">
-          <label>Description</label>
-          <textarea v-model="description" placeholder="Who are they? Role in the world, appearance, background."></textarea>
-        </div>
-        <div class="span2">
+      </div>
+      <div class="field-row">
+        <label>Description</label>
+        <textarea v-model="description" placeholder="Who are they? Role in the world, appearance, background."></textarea>
+      </div>
+      <div class="form-grid">
+        <div>
           <label>Personality <span class="hint-inline">(optional)</span></label>
           <textarea v-model="personality" placeholder="Traits, manner of speaking."></textarea>
         </div>
-        <div class="span2">
+        <div>
           <label>Scenario <span class="hint-inline">(optional, opt-in — see Variables page)</span></label>
           <textarea v-model="scenario" placeholder="A specific situation they're in, if any."></textarea>
         </div>
-        <div class="span2">
-          <label>Example dialogue <span class="hint-inline">(optional, opt-in)</span></label>
-          <textarea v-model="exampleDialogue" placeholder="A sample of how they talk."></textarea>
-        </div>
+      </div>
+      <div class="field-row">
+        <label>Example dialogue <span class="hint-inline">(optional, opt-in)</span></label>
+        <textarea v-model="exampleDialogue" placeholder="A sample of how they talk."></textarea>
       </div>
       <p class="hint">Only Description (and Personality, if a preset asks for it) are sent by default. Scenario and Example dialogue are opt-in — they're only included if the active prompt preset has a block for them.</p>
 

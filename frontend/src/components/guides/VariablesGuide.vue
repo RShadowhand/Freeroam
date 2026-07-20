@@ -28,29 +28,27 @@ const bracesExample = '{{these}}';
 </script>
 
 <template>
-  <section id="view-variables" class="view">
-    <div class="settings-card">
-      <h2>Variables</h2>
-      <p class="hint">
-        Any text you write — prompt blocks, character description/personality, world setting, place descriptions,
-        persona description, the <router-link to="/settings/connection">draft-persona prompt</router-link> — can use
-        <code>{{ bracesExample }}</code>. Unset ones quietly become an empty string; anything not in the list below is
-        left exactly as typed, unchanged.
-      </p>
-      <p class="hint">
-        This is separate from the standard <strong>prompt blocks</strong> (World Info, Character Description, etc.)
-        you insert from the dropdown on the <router-link to="/settings/prompts">Prompts</router-link> page — those decide
-        <em>what's included</em> in the request; variables below just fill in text wherever you write them.
-      </p>
-    </div>
-    <div class="settings-card">
-      <div class="var-table">
-        <div class="var-row" v-for="v in VARIABLES_CATALOG" :key="v.name">
-          <code>{{ v.name }}</code>
-          <div class="var-desc">{{ v.desc }}</div>
-          <div class="var-example"><b>Example:</b> {{ v.example }}</div>
-        </div>
+  <div class="settings-card">
+    <h2>Variables</h2>
+    <p class="hint">
+      Any text you write — prompt blocks, character description/personality, world setting, place descriptions,
+      persona description, the <router-link to="/settings/system">draft-persona prompt</router-link> — can use
+      <code>{{ bracesExample }}</code>. Unset ones quietly become an empty string; anything not in the list below is
+      left exactly as typed, unchanged.
+    </p>
+    <p class="hint">
+      This is separate from the standard <strong>prompt blocks</strong> (World Info, Character Description, etc.)
+      you insert from the dropdown on the <router-link to="/settings/prompts">Prompts</router-link> page — those decide
+      <em>what's included</em> in the request; variables below just fill in text wherever you write them.
+    </p>
+  </div>
+  <div class="settings-card">
+    <div class="var-table">
+      <div class="var-row" v-for="v in VARIABLES_CATALOG" :key="v.name">
+        <code>{{ v.name }}</code>
+        <div class="var-desc">{{ v.desc }}</div>
+        <div class="var-example"><b>Example:</b> {{ v.example }}</div>
       </div>
     </div>
-  </section>
+  </div>
 </template>

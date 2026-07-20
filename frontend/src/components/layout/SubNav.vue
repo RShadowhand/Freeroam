@@ -11,8 +11,9 @@ const worldTabs = [
 ];
 const settingsTabs = [
   { path: '/settings/connection', label: 'Connection' },
+  { path: '/settings/system', label: 'System' },
   { path: '/settings/prompts', label: 'Prompts' },
-  { path: '/settings/variables', label: 'Variables' },
+  { path: '/settings/guides', label: 'Guides' },
 ];
 
 const tabs = computed(() => {

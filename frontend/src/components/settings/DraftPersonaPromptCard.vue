@@ -36,7 +36,7 @@ async function reset() {
     <p class="hint">
       The system instruction sent to the model when you click "✨ Draft description from this scene" in the
       Save-as-character modal. Supports the same <code>{{ variablesExample }}</code> as everywhere else — see the
-      <router-link to="/settings/variables">Variables</router-link> page. <code>{{ charExample }}</code> is the
+      <router-link to="/settings/guides">Variables</router-link> guide. <code>{{ charExample }}</code> is the
       character being drafted; <code>{{ worldExample }}</code> is your World Setting text.
     </p>
     <textarea v-model="text" rows="5"></textarea>

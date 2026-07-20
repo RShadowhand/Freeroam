@@ -18,8 +18,12 @@ const routes = [
   { path: '/worlds', name: 'worlds', component: () => import('../views/WorldsView.vue'), meta: { top: '/worlds' } },
   { path: '/settings', redirect: '/settings/connection' },
   { path: '/settings/connection', name: 'settings-connection', component: () => import('../views/SettingsView.vue'), meta: { top: '/settings' } },
+  { path: '/settings/system', name: 'settings-system', component: () => import('../views/SystemView.vue'), meta: { top: '/settings' } },
   { path: '/settings/prompts', name: 'settings-prompts', component: () => import('../views/PromptsView.vue'), meta: { top: '/settings' } },
-  { path: '/settings/variables', name: 'settings-variables', component: () => import('../views/VariablesView.vue'), meta: { top: '/settings' } },
+  { path: '/settings/guides', name: 'settings-guides', component: () => import('../views/GuidesView.vue'), meta: { top: '/settings' } },
+  // Variables moved under Guides — redirected rather than dropped outright
+  // so an old bookmark/muscle-memory URL still lands somewhere sensible.
+  { path: '/settings/variables', redirect: '/settings/guides' },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ];
 

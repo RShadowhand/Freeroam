@@ -1,7 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue';
 import { useWorldsStore } from '../stores/worlds';
-import Brand from '../components/shared/Brand.vue';
 import WorldCard from '../components/worlds/WorldCard.vue';
 
 const worlds = useWorldsStore();
@@ -43,9 +42,11 @@ async function create() {
 
 <template>
   <section id="view-worlds" class="view">
-    <Brand tag="save slots — switch, duplicate, or start fresh" />
     <div class="toolbar">
-      <h2>Worlds</h2>
+      <div>
+        <h2>Worlds</h2>
+        <p class="hint" style="margin:2px 0 0;">Save slots — switch, duplicate, or start fresh.</p>
+      </div>
       <button class="btn secondary small" @click="openCreate">+ New world</button>
     </div>
 

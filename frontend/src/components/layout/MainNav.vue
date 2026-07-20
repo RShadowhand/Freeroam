@@ -8,9 +8,12 @@ const worlds = useWorldsStore();
 
 <template>
   <nav class="main-nav">
-    <router-link class="nav-tab" :class="{ active: route.meta.top === '/' }" to="/">🏠 Freeroam</router-link>
-    <router-link class="nav-tab" :class="{ active: route.meta.top === '/world' }" to="/world/places">🌍 World</router-link>
-    <router-link class="nav-tab" :class="{ active: route.meta.top === '/settings' }" to="/settings/connection">⚙ Settings</router-link>
+    <router-link to="/" class="nav-wordmark">Freeroam</router-link>
+    <div class="nav-tabs">
+      <router-link class="nav-tab" :class="{ active: route.meta.top === '/' }" to="/">🏠 Freeroam</router-link>
+      <router-link class="nav-tab" :class="{ active: route.meta.top === '/world' }" to="/world/places">🌍 World</router-link>
+      <router-link class="nav-tab" :class="{ active: route.meta.top === '/settings' }" to="/settings/connection">⚙ Settings</router-link>
+    </div>
     <router-link
       class="nav-tab world-chip" :class="{ active: route.meta.top === '/worlds' }"
       to="/worlds" title="Switch or manage worlds (save slots)"
