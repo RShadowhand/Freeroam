@@ -79,6 +79,8 @@
 .schedule-table{ width:100%; border-collapse:collapse; margin-top:14px; font-size:0.82rem; }
 .schedule-table th, .schedule-table td{ border:1px solid var(--border); text-align:center; padding:8px 5px; }
 .schedule-table th{ color:var(--dim); font-weight:normal; font-size:0.72rem; }
+.schedule-table th .tod-full{ text-transform:capitalize; }
+.schedule-table th .tod-emoji{ display:none; font-size:0.95rem; }
 .schedule-table td{ cursor:pointer; color:var(--dim); }
 .schedule-table td.set{ color:var(--accent); font-weight:600; background:rgba(var(--accent-rgb),0.08); }
 .schedule-table td:hover{ border-color:var(--accent); }
@@ -1122,6 +1124,13 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 
   .modal-overlay{ padding:10px; }
   .modal{ padding:16px 16px; }
+
+  /* Full "Afternoon" etc. don't fit a 7-column table on a phone screen —
+     "night" was getting sliced to "nig" (see schedule-table th above).
+     Swap to a same-width emoji per time-of-day instead of abbreviating
+     further; the full word is still one tap/hold away via the th title. */
+  .schedule-table th .tod-full{ display:none; }
+  .schedule-table th .tod-emoji{ display:inline; }
 
   /* 16px floor on form controls stops iOS zooming the page on focus. */
   input[type=text], input[type=password], input[type=number], textarea, select,

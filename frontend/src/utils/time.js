@@ -5,6 +5,23 @@
 export const TIMES_OF_DAY = ['sunrise', 'morning', 'noon', 'afternoon', 'evening', 'sunset', 'night'];
 export const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
+// For compact headers (the schedule table on mobile) where "sunrise" and
+// "sunset" can't both be abbreviated to "sun" — each glyph is a visually
+// distinct silhouette, not just a lighter/darker sun, so columns stay
+// tellable apart at a glance even at small table-cell sizes.
+const TIME_OF_DAY_EMOJI = {
+  sunrise: '🌅',
+  morning: '🌞',
+  noon: '☀️',
+  afternoon: '🌤️',
+  evening: '🌆',
+  sunset: '🌇',
+  night: '🌙',
+};
+export function timeOfDayEmoji(t) {
+  return TIME_OF_DAY_EMOJI[t] || '';
+}
+
 export function weekdayFor(day) {
   if (!Number.isInteger(day)) return null;
   const idx = ((day - 1) % 7 + 7) % 7;

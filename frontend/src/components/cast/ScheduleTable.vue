@@ -1,6 +1,6 @@
 <script setup>
 import { useWorldStore } from '../../stores/world';
-import { TIMES_OF_DAY, WEEKDAYS } from '../../utils/time';
+import { TIMES_OF_DAY, WEEKDAYS, timeOfDayEmoji } from '../../utils/time';
 import { initials } from '../../utils/format';
 
 const props = defineProps({ character: { type: Object, required: true } });
@@ -27,7 +27,10 @@ function cellTitle(day, t) {
     <thead>
       <tr>
         <th></th>
-        <th v-for="t in TIMES_OF_DAY" :key="t">{{ t.slice(0, 3) }}</th>
+        <th v-for="t in TIMES_OF_DAY" :key="t" :title="t">
+          <span class="tod-full">{{ t }}</span>
+          <span class="tod-emoji" aria-hidden="true">{{ timeOfDayEmoji(t) }}</span>
+        </th>
       </tr>
     </thead>
     <tbody>
