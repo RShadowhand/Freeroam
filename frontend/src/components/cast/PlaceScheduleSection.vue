@@ -160,19 +160,19 @@ async function copyFrom() {
             <option v-for="p in world.places" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
         </div>
-        <div class="field-row">
-          <label>Reason <span class="hint-inline">(pick one or type your own)</span></label>
-          <input type="text" v-model="reason" list="scheduleReasonOptions" placeholder="e.g. Work">
-          <datalist id="scheduleReasonOptions">
-            <option value="Home"></option>
-            <option value="Work"></option>
-            <option value="Meal"></option>
-            <option value="Errand"></option>
-            <option value="Leisure"></option>
-            <option value="Sleep"></option>
-            <option value="Social"></option>
-          </datalist>
-        </div>
+      </div>
+      <div class="field-row schedule-reason-row">
+        <label>Reason <span class="hint-inline">(pick one or type your own)</span></label>
+        <input type="text" v-model="reason" list="scheduleReasonOptions" placeholder="e.g. Work">
+        <datalist id="scheduleReasonOptions">
+          <option value="Home"></option>
+          <option value="Work"></option>
+          <option value="Meal"></option>
+          <option value="Errand"></option>
+          <option value="Leisure"></option>
+          <option value="Sleep"></option>
+          <option value="Social"></option>
+        </datalist>
       </div>
       <div class="form-actions">
         <button class="btn small" type="button" @click="save">Save slot</button>
