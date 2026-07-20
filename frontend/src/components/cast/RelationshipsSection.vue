@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { useWorldStore, RELATIONSHIP_LABELS } from '../../stores/world';
 import { setRelationshipLabels, queryRelationships } from '../../api/relationships';
+import CardAvatar from '../shared/CardAvatar.vue';
 
 // Relationships live inside the character modal — only the character being
 // edited is ever "the source", so instead of listing every other character
@@ -12,8 +13,14 @@ const props = defineProps({ characterId: { type: String, required: true } });
 const world = useWorldStore();
 const pendingTargetId = ref(null);
 const customInputs = ref({}); // targetId -> in-progress custom label text
+// Rows are collapsed to name + chips by default (see the template) — only
+// one row's add-label controls are expanded at a time, toggled by its own
+// +/− button, so adding several labels doesn't require re-clicking after
+// each one but browsing the list doesn't cost a whole edit-form's worth of
+// height per person either.
+const expandedId = ref(null);
 
-watch(() => props.characterId, () => { pendingTargetId.value = null; resetDebug(); });
+watch(() => props.characterId, () => { pendingTargetId.value = null; expandedId.value = null; resetDebug(); });
 
 // --- Debug: test a relationship query ------------------------------------
 // Ranks every one of this character's relationships (forward and reverse)
@@ -49,13 +56,23 @@ async function runDebugQuery() {
   }
 }
 
+// Carries avatarUrl/color alongside the name — with no surname field, two
+// characters both named "Megan" read as identical text; the avatar is
+// what actually tells them apart, matching how the Cast grid identifies
+// people everywhere else.
 const allTargets = computed(() => {
   const persona = world.activePersona;
-  const targets = [{ id: 'user', name: (persona ? persona.name : 'The visitor') + ' (you)' }];
-  world.charactersList.filter((c) => c.id !== props.characterId).forEach((c) => targets.push({ id: c.id, name: c.name }));
+  const targets = [{
+    id: 'user',
+    name: (persona ? persona.name : 'The visitor') + ' (you)',
+    avatarUrl: persona ? persona.avatarUrl : null,
+    color: persona ? persona.color : null,
+  }];
+  world.charactersList.filter((c) => c.id !== props.characterId)
+    .forEach((c) => targets.push({ id: c.id, name: c.name, avatarUrl: c.avatarUrl, color: c.color }));
   return targets;
 });
-const namesById = computed(() => Object.fromEntries(allTargets.value.map((t) => [t.id, t.name])));
+const targetsById = computed(() => Object.fromEntries(allTargets.value.map((t) => [t.id, t])));
 
 function labelsFor(targetId) {
   const r = world.relationships.find((x) => x.characterId === props.characterId && x.targetId === targetId);
@@ -69,7 +86,7 @@ const relatedIds = computed(() => {
   // A target just picked from the "add" dropdown shows its row immediately
   // (with nothing set yet) so labels can be added right there; it never
   // actually persists until a label is, via setLabels.
-  if (pendingTargetId.value && namesById.value[pendingTargetId.value]) ids.add(pendingTargetId.value);
+  if (pendingTargetId.value && targetsById.value[pendingTargetId.value]) ids.add(pendingTargetId.value);
   return [...ids];
 });
 
@@ -107,6 +124,10 @@ function onAddTarget(e) {
   e.target.value = '';
   if (!value) return;
   pendingTargetId.value = value;
+  expandedId.value = value; // a freshly-added row has no labels yet — open straight to where you'd add one
+}
+function toggleExpand(targetId) {
+  expandedId.value = expandedId.value === targetId ? null : targetId;
 }
 </script>
 
@@ -139,14 +160,22 @@ function onAddTarget(e) {
 
     <div class="empty-note" v-if="!relatedIds.length">No relationships set yet — pick someone below to add one.</div>
     <div class="rel-row" v-for="tid in relatedIds" :key="tid">
-      <div class="rel-target">{{ namesById[tid] || 'Unknown' }}</div>
-      <div class="rel-chips">
-        <span class="chip" v-for="l in labelsFor(tid)" :key="l">
-          {{ l }}<button class="chip-remove" @click="removeLabel(tid, l)">✕</button>
-        </span>
-        <span class="chip empty" v-if="!labelsFor(tid).length">no relation set</span>
+      <div class="rel-row-main">
+        <CardAvatar class="rel-avatar" :name="targetsById[tid]?.name || 'Unknown'" :avatar-url="targetsById[tid]?.avatarUrl" :color="targetsById[tid]?.color" />
+        <div class="rel-target">{{ targetsById[tid]?.name || 'Unknown' }}</div>
+        <div class="rel-chips">
+          <span class="chip" v-for="l in labelsFor(tid)" :key="l">
+            {{ l }}<button class="chip-remove" @click="removeLabel(tid, l)">✕</button>
+          </span>
+          <span class="chip empty" v-if="!labelsFor(tid).length">no relation set</span>
+        </div>
+        <button
+          class="rel-expand-toggle" :class="{ active: expandedId === tid }" type="button"
+          :title="expandedId === tid ? 'Hide label controls' : 'Add or edit labels'"
+          @click="toggleExpand(tid)"
+        >{{ expandedId === tid ? '−' : '+' }}</button>
       </div>
-      <div class="rel-add">
+      <div class="rel-add" v-show="expandedId === tid">
         <select @change="addStandardLabel(tid, $event)">
           <option value="">+ add standard label…</option>
           <optgroup v-for="g in groupedStandardOptions(tid)" :key="g.group" :label="g.group">

@@ -906,15 +906,29 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 }
 .provider-select{ margin-top:8px; }
 
-/* ---- Relationships view ---- */
-.rel-row{
-  background:var(--panel); border:1px solid var(--border); border-radius:10px;
-  padding:12px 14px; margin-bottom:10px;
-}
-.rel-target{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.05rem; margin-bottom:8px; }
-.rel-chips{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+/* ---- Relationships view ----
+   One line per relationship (avatar, name, chips) instead of a full card
+   each — with the add/remove-label controls collapsed behind a +/- toggle
+   and only ever one row's worth open at a time. A card per person doesn't
+   scale: even 4 relationships used to run past a full screen. */
+.rel-row{ border-bottom:1px solid var(--border-soft); padding:8px 2px; }
+.rel-row:first-child{ border-top:1px solid var(--border-soft); }
+.rel-row-main{ display:flex; align-items:center; gap:12px; }
+.rel-avatar.avatar, .rel-avatar.avatar-fallback{ width:32px; height:32px; font-size:0.8rem; flex-shrink:0; }
+.rel-target{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1rem; min-width:88px; flex-shrink:0; }
+.rel-chips{ display:flex; flex-wrap:wrap; gap:6px; flex:1; }
 .rel-chips .chip{ background:var(--panel-raised); }
-.rel-add{ display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+.rel-expand-toggle{
+  background:none; border:1px solid var(--border); color:var(--dim); cursor:pointer;
+  width:24px; height:24px; border-radius:6px; flex-shrink:0; font-size:0.85rem; line-height:1;
+  transition:border-color .15s ease, color .15s ease;
+}
+.rel-expand-toggle:hover{ border-color:var(--accent); color:var(--accent); }
+.rel-expand-toggle.active{ border-color:var(--accent); color:var(--accent); background:rgba(var(--accent-rgb),0.1); }
+.rel-add{
+  display:flex; gap:6px; flex-wrap:wrap; align-items:center;
+  background:var(--panel-raised); border-radius:8px; padding:10px 12px; margin:8px 0 2px 44px;
+}
 .rel-add select, .rel-add input{ width:auto; flex:1; min-width:140px; }
 
 /* ---- Freeroam topbar (collapsible) ---- */

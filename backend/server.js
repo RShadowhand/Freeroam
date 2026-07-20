@@ -284,10 +284,15 @@ function saveWorld(w, world) {
   fs.writeFileSync(w.paths.world, JSON.stringify(world, null, 2));
 }
 
-// Deterministic-ish color for uploaded characters, spread around the wheel.
-function colorForName(name) {
+// Deterministic-ish color, spread around the wheel — keyed by the
+// character/persona's own unique id, not their name. Two characters can
+// share a name with no surname to tell them apart (nothing stops it, and
+// it happens); hashing the name would give them the identical color too,
+// defeating the one thing that's still supposed to disambiguate them at a
+// glance (the Cast grid, relationship rows, chat avatars, ...).
+function colorForId(id) {
   let hash = 0;
-  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) % 360;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) % 360;
   return `hsl(${hash}, 55%, 62%)`;
 }
 
@@ -592,7 +597,7 @@ app.post('/api/characters', upload.single('card'), (req, res) => {
       greetings: card.greetings,
       source: 'upload',
       avatarUrl: `${w.avatarUrlBase}/${id}.png`,
-      color: colorForName(card.name),
+      color: colorForId(id),
       tags: card.tags,
       creator: card.creator,
       spec: card.spec,
@@ -620,7 +625,7 @@ app.post('/api/characters', upload.single('card'), (req, res) => {
     greetings: [],
     source: 'npc',
     avatarUrl: null,
-    color: colorForName(name.trim()),
+    color: colorForId(id),
   };
 
   const characters = loadCharacters(w);
@@ -834,7 +839,7 @@ app.post('/api/personas', uploadPersonaAvatar.single('avatar'), (req, res) => {
     name: name.trim(),
     description: (description || '').trim(),
     avatarUrl,
-    color: colorForName(name.trim()),
+    color: colorForId(id),
   };
 
   const data = loadPersonas(w);
