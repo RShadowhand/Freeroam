@@ -56,9 +56,10 @@ export function openDb(dbPath) {
     );
 
     CREATE TABLE IF NOT EXISTS character_embeddings (
-      character_id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL,
       embedding BLOB NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_ce_char ON character_embeddings(character_id);
   `);
 
   // Upgrade path for databases created before relationships were embeddable
@@ -70,6 +71,7 @@ export function openDb(dbPath) {
 
   migrateMemoriesSchema(db);
   backfillMemoryVectorIndex(db);
+  migrateCharacterEmbeddingsSchema(db);
 
   return db;
 }
@@ -270,6 +272,38 @@ function backfillMemoryVectorIndex(db) {
   backfill();
 
   logger.info('memory', `built vector index for ${rows.length} existing memories`);
+}
+
+// Upgrade path for databases created before character identity embeddings
+// were chunked — the original schema had character_id as a PRIMARY KEY (one
+// row per character); characterEmbeddings.js now stores one row per chunk
+// of a character's description/personality (see chunkText in
+// textChunks.js), the same dilution fix applied to memory text, so it
+// needs several rows per character to be allowed. Detected by checking
+// whether character_id is still a primary key column; runs at most once
+// per db. Existing single-vector rows are carried over as-is (one chunk),
+// not re-chunked here (no embedFn available synchronously) — they get
+// upgraded to real multi-chunk embeddings the next time that character is
+// edited or embeddings are rebuilt (see refreshCharacterEmbedding).
+function migrateCharacterEmbeddingsSchema(db) {
+  const columns = db.prepare('PRAGMA table_info(character_embeddings)').all();
+  const idColumn = columns.find((c) => c.name === 'character_id');
+  if (!idColumn || !idColumn.pk) return; // already migrated, or created fresh with the new shape
+
+  logger.info('memory', 'migrating character_embeddings: allowing multiple chunk rows per character');
+  const migrate = db.transaction(() => {
+    db.exec('ALTER TABLE character_embeddings RENAME TO character_embeddings_old;');
+    db.exec(`
+      CREATE TABLE character_embeddings (
+        character_id TEXT NOT NULL,
+        embedding BLOB NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_ce_char ON character_embeddings(character_id);
+    `);
+    db.exec('INSERT INTO character_embeddings (character_id, embedding) SELECT character_id, embedding FROM character_embeddings_old;');
+    db.exec('DROP TABLE character_embeddings_old;');
+  });
+  migrate();
 }
 
 // One-time import of the previous JSON memory files

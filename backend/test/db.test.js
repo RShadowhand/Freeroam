@@ -314,3 +314,75 @@ describe('memory_vectors write/delete helpers', () => {
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_vectors').get().n, 2);
   });
 });
+
+// Hand-builds a database in the OLD character_embeddings shape (character_id
+// as an actual PRIMARY KEY — one row per character, no room for chunks).
+// openDb()'s own :memory: use elsewhere always creates the new shape fresh,
+// so this is the only place the migration path gets exercised.
+function seedOldCharacterEmbeddingsSchema(dbPath, rows) {
+  const raw = new Database(dbPath);
+  raw.exec(`
+    CREATE TABLE character_embeddings (
+      character_id TEXT PRIMARY KEY,
+      embedding BLOB NOT NULL
+    );
+  `);
+  const insert = raw.prepare('INSERT INTO character_embeddings (character_id, embedding) VALUES (?, ?)');
+  rows.forEach((r) => insert.run(r.characterId, encodeEmbedding(r.embedding)));
+  raw.close();
+}
+
+describe('openDb — character_embeddings schema migration', () => {
+  test('an old-shape db (character_id PRIMARY KEY) is migrated to allow multiple chunk rows, preserving existing data', () => {
+    const dbPath = tempDbPath();
+    seedOldCharacterEmbeddingsSchema(dbPath, [
+      { characterId: 'ezra', embedding: [1, 0, 0] },
+      { characterId: 'mireille', embedding: [0, 1, 0] },
+    ]);
+
+    const db = openDb(dbPath);
+    try {
+      const idColumn = db.prepare('PRAGMA table_info(character_embeddings)').all().find((c) => c.name === 'character_id');
+      assert.equal(idColumn.pk, 0); // no longer a primary key
+
+      const ezraRows = db.prepare('SELECT embedding FROM character_embeddings WHERE character_id = ?').all('ezra');
+      assert.equal(ezraRows.length, 1);
+      assert.deepEqual(decodeEmbedding(ezraRows[0].embedding), [1, 0, 0]);
+
+      // The new shape actually allows a second row for the same character.
+      db.prepare('INSERT INTO character_embeddings (character_id, embedding) VALUES (?, ?)')
+        .run('ezra', encodeEmbedding([0, 0, 1]));
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM character_embeddings WHERE character_id = ?').get('ezra').n, 2);
+    } finally {
+      db.close();
+      fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test('re-opening an already-migrated db is a no-op — idempotent, no duplication', () => {
+    const dbPath = tempDbPath();
+    seedOldCharacterEmbeddingsSchema(dbPath, [{ characterId: 'ezra', embedding: [1, 0, 0] }]);
+
+    let db = openDb(dbPath);
+    db.close();
+    db = openDb(dbPath); // second open — must not re-migrate or duplicate
+    try {
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM character_embeddings').get().n, 1);
+    } finally {
+      db.close();
+      fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test('a brand-new db gets the new shape directly — character_id is not a primary key', () => {
+    const dbPath = tempDbPath();
+    const db = openDb(dbPath);
+    try {
+      const idColumn = db.prepare('PRAGMA table_info(character_embeddings)').all().find((c) => c.name === 'character_id');
+      assert.equal(idColumn.pk, 0);
+    } finally {
+      db.close();
+      fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+});

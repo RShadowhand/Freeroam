@@ -5,6 +5,7 @@ import {
   deleteMemoryVectorsForCharacter, queryMemoryVectorIndex,
 } from './db.js';
 import { weekdayFor } from './context.js';
+import { chunkText, MAX_CHUNKS_PER_TEXT } from './textChunks.js';
 import { logger } from './log.js';
 
 // Per-(character, persona) semantic memory, SQLite-backed (see db.js). A
@@ -74,50 +75,10 @@ export function timePrefix(day, timeOfDay) {
 // short phrase can then rank well below memories that just happen to
 // repeat a common word many times. Splitting into smaller chunks before
 // embedding — each chunk scored independently, see queryMemoryVectorIndex
-// — keeps a short salient phrase from getting averaged away.
-const CHUNK_TARGET_CHARS = 400; // small enough that pooling stays focused on roughly one topic
-// Hard cap on chunks per memory — not just a soft target: retrieveMemories
-// and queryCharacterMemories size their KNN fetch (k) off this constant to
-// guarantee they see enough raw rows to find the true top-K *distinct*
-// memories even when a few memories monopolize the nearest chunks (see the
-// dedupe-by-memory logic there). Keep any change to this value in sync
-// with that math.
-export const MAX_CHUNKS_PER_MEMORY = 6;
-
-// Splits text into sentence-ish pieces (first on blank lines/paragraph
-// breaks, then on sentence terminators within each), then greedily merges
-// them back up to CHUNK_TARGET_CHARS so short sentences don't each become
-// their own tiny, noisy chunk. Imperfect sentence detection is fine here —
-// it's a heuristic for keeping chunks topically focused, not a linguistic
-// requirement, and merge-back smooths over most mis-splits anyway.
-export function chunkText(text) {
-  const trimmed = (text || '').trim();
-  if (!trimmed) return [];
-  const sentences = trimmed
-    .split(/\n+/)
-    .flatMap((line) => line.split(/(?<=[.!?])\s+/))
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (!sentences.length) return [];
-
-  const chunks = [];
-  let buf = '';
-  for (const sentence of sentences) {
-    if (!buf) { buf = sentence; continue; }
-    if (buf.length + 1 + sentence.length <= CHUNK_TARGET_CHARS) {
-      buf += ' ' + sentence;
-    } else {
-      chunks.push(buf);
-      buf = sentence;
-    }
-  }
-  if (buf) chunks.push(buf);
-
-  if (chunks.length <= MAX_CHUNKS_PER_MEMORY) return chunks;
-  const head = chunks.slice(0, MAX_CHUNKS_PER_MEMORY - 1);
-  const tail = chunks.slice(MAX_CHUNKS_PER_MEMORY - 1).join(' ');
-  return [...head, tail];
-}
+// — keeps a short salient phrase from getting averaged away. chunkText
+// itself (and MAX_CHUNKS_PER_TEXT) lives in textChunks.js, shared with
+// characterEmbeddings.js for the same reason applied to character
+// descriptions.
 
 // Computes everything a memory write needs: a single whole-text embedding
 // (for the memories.embedding column — still useful as a coarse
@@ -140,7 +101,7 @@ async function computeMemoryEmbeddings(embedFn, fullText) {
 // rows (see chunkText), and each should only ever count once when ranking
 // memories against each other, scored by whichever of its chunks matched
 // best. `fetchK` must be large enough to guarantee seeing every chunk of
-// the memories that matter — callers size it off MAX_CHUNKS_PER_MEMORY.
+// the memories that matter — callers size it off MAX_CHUNKS_PER_TEXT.
 function bestChunkPerMemory(db, characterId, queryBuffer, fetchK, excludedMemoryIds = null) {
   const raw = queryMemoryVectorIndex(db, characterId, queryBuffer, fetchK);
   const bestByMemory = new Map();
@@ -256,7 +217,7 @@ export async function retrieveMemories({ db, embedFn, characterIds, query, topKP
   const selected = new Map(); // text -> { text, timestamp, score }
   characterIds.forEach((characterId) => {
     // Indexed KNN, nearest first — over-fetch by the number of excluded
-    // memories, times MAX_CHUNKS_PER_MEMORY (a memory can occupy several
+    // memories, times MAX_CHUNKS_PER_TEXT (a memory can occupy several
     // chunk rows — see chunkText/bestChunkPerMemory — so guaranteeing
     // topKPerCharacter *distinct* memories after dedup needs that many raw
     // rows in the worst case where a few memories monopolize the nearest
@@ -267,7 +228,7 @@ export async function retrieveMemories({ db, embedFn, characterIds, query, topKP
     // full-scan-then-filter would have picked).
     const knn = bestChunkPerMemory(
       db, characterId, queryBuffer,
-      (topKPerCharacter + excludedMemoryIds.size) * MAX_CHUNKS_PER_MEMORY,
+      (topKPerCharacter + excludedMemoryIds.size) * MAX_CHUNKS_PER_TEXT,
       excludedMemoryIds
     );
     knn.filter((r) => (1 - r.distance) >= minScore).slice(0, topKPerCharacter).forEach((r) => {
@@ -325,12 +286,12 @@ export async function queryCharacterMemories({ db, embedFn, characterId, query, 
   const rowById = new Map(rows.map((r) => [r.id, r]));
   // Exhaustive ranking via the same index retrieveMemories uses (k = every
   // chunk row this character could possibly have — rows.length memories ×
-  // MAX_CHUNKS_PER_MEMORY chunks each, an exact upper bound — so every
+  // MAX_CHUNKS_PER_TEXT chunks each, an exact upper bound — so every
   // memory is guaranteed to be seen) — this is a diagnostic tool whose
   // whole point is showing near-misses too, not just the winners, so it
   // needs the full ranked list, not just topK. Low-frequency/manual, so the
   // "fetch everyone" cost doesn't matter the way it would on the hot path.
-  const knn = bestChunkPerMemory(db, characterId, queryBuffer, rows.length * MAX_CHUNKS_PER_MEMORY);
+  const knn = bestChunkPerMemory(db, characterId, queryBuffer, rows.length * MAX_CHUNKS_PER_TEXT);
   const ranked = knn.map((r) => ({ entry: rowById.get(r.memory_id), score: 1 - r.distance })).filter((r) => r.entry);
 
   const recentIds = new Set(

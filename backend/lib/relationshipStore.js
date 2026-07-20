@@ -1,6 +1,6 @@
 import { encodeEmbedding, decodeEmbedding } from './db.js';
 import { cosineSimilarity } from './memoryStore.js';
-import { getCharacterEmbedding } from './characterEmbeddings.js';
+import { getCharacterEmbeddingChunks } from './characterEmbeddings.js';
 import { logger } from './log.js';
 
 // Relationships as a small RAG store, same idea as character memory: a
@@ -97,15 +97,22 @@ async function candidateRelationships({ db, embedFn, speakerId }) {
 // rows that's the row owner, which a single stored embedding could never
 // express). "Your friend with the blue eyes" scores on both; "your mother"
 // on the label alone; "the one who never stops joking" mostly on the
-// identity. Returns { score, labelScore, characterScore } — characterScore
-// is null when the other party is the user (no identity embedding to score
+// identity. The identity side takes the single best-matching chunk of the
+// other character's description (see getCharacterEmbeddingChunks) rather
+// than one vector averaged over their whole bio — otherwise a short,
+// specific detail like an exact age gets diluted by everything else in a
+// long description, the same problem chunking fixes for memory text.
+// Returns { score, labelScore, characterScore } — characterScore is null
+// when the other party is the user (no identity embedding to score
 // against).
 async function scoreCandidate({ db, embedFn, candidate, queryEmbedding, charactersById }) {
   const labelScore = cosineSimilarity(queryEmbedding, decodeEmbedding(candidate.embedding));
   const otherChar = candidate.otherId === 'user' ? null : charactersById[candidate.otherId];
-  const characterScore = otherChar
-    ? cosineSimilarity(queryEmbedding, await getCharacterEmbedding({ db, embedFn, char: otherChar }))
-    : null;
+  let characterScore = null;
+  if (otherChar) {
+    const chunks = await getCharacterEmbeddingChunks({ db, embedFn, char: otherChar });
+    characterScore = Math.max(...chunks.map((vec) => cosineSimilarity(queryEmbedding, vec)));
+  }
   return { score: characterScore === null ? labelScore : (labelScore + characterScore) / 2, labelScore, characterScore };
 }
 

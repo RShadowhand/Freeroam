@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import {
   characterSnippet,
   characterIdentityText,
-  getCharacterEmbedding,
+  getCharacterEmbeddingChunks,
   refreshCharacterEmbedding,
   deleteCharacterEmbedding,
   rebuildAllCharacterEmbeddings,
 } from '../lib/characterEmbeddings.js';
+import { MAX_CHUNKS_PER_TEXT } from '../lib/textChunks.js';
 import { openDb, decodeEmbedding } from '../lib/db.js';
 import { logger } from '../lib/log.js';
 
@@ -39,10 +40,10 @@ describe('characterSnippet', () => {
     assert.equal(characterSnippet({ name: 'X' }), '');
   });
 
-  test('truncates very long descriptions', () => {
-    const snippet = characterSnippet({ description: 'x'.repeat(2000) });
-    assert.ok(snippet.length < 700);
-    assert.ok(snippet.endsWith('…'));
+  test('does not truncate long descriptions — chunking (see chunkText) handles length instead', () => {
+    const longDescription = 'A vivid trait sentence. '.repeat(50); // ~1200 chars
+    const snippet = characterSnippet({ description: longDescription });
+    assert.equal(snippet, longDescription.replace(/\s+/g, ' ').trim());
   });
 });
 
@@ -59,35 +60,59 @@ describe('characterIdentityText', () => {
   });
 });
 
-describe('getCharacterEmbedding', () => {
-  test('computes and stores the vector on first call, reuses the stored row after', () => withDb(async (db) => {
+describe('getCharacterEmbeddingChunks', () => {
+  test('computes and stores one chunk for a short description, reuses the stored rows after', () => withDb(async (db) => {
     const char = { id: 'wren', name: 'Wren', description: 'Blue eyes.' };
-    const first = await getCharacterEmbedding({ db, embedFn, char });
-    assert.deepEqual(first, await embedFn('Wren. Blue eyes.'));
+    const first = await getCharacterEmbeddingChunks({ db, embedFn, char });
+    assert.equal(first.length, 1);
+    assert.deepEqual(first[0], await embedFn('Wren. Blue eyes.'));
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM character_embeddings').get().n, 1);
 
-    // A second call must read the stored row, not re-embed: prove it by
+    // A second call must read the stored rows, not re-embed: prove it by
     // passing an embedFn that would produce a different vector if called.
-    const second = await getCharacterEmbedding({ db, embedFn: async () => [9, 9], char });
+    const second = await getCharacterEmbeddingChunks({ db, embedFn: async () => [9, 9], char });
     assert.deepEqual(second, first);
+  }));
+
+  test('a long description is split into multiple stored chunk rows, capped at MAX_CHUNKS_PER_TEXT', () => withDb(async (db) => {
+    const sentence = 'She has a distinctive trait worth describing in some detail here. ';
+    const char = { id: 'lindsey', name: 'Lindsey', description: sentence.repeat(20) }; // forces multiple chunks
+    const chunks = await getCharacterEmbeddingChunks({ db, embedFn, char });
+    assert.ok(chunks.length > 1, `expected multiple chunks, got ${chunks.length}`);
+    assert.ok(chunks.length <= MAX_CHUNKS_PER_TEXT);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM character_embeddings WHERE character_id = ?').get('lindsey').n, chunks.length);
   }));
 });
 
 describe('refreshCharacterEmbedding', () => {
-  test('overwrites the stored vector with one for the current fields', () => withDb(async (db) => {
+  test('overwrites the stored chunk rows with ones for the current fields', () => withDb(async (db) => {
     const char = { id: 'wren', name: 'Wren', description: 'Brown eyes.' };
-    await getCharacterEmbedding({ db, embedFn, char });
+    await getCharacterEmbeddingChunks({ db, embedFn, char });
 
     await refreshCharacterEmbedding({ db, embedFn, char: { ...char, description: 'Blue eyes.' } });
-    const row = db.prepare('SELECT embedding FROM character_embeddings WHERE character_id = ?').get('wren');
-    assert.deepEqual(decodeEmbedding(row.embedding), await embedFn('Wren. Blue eyes.'));
+    const rows = db.prepare('SELECT embedding FROM character_embeddings WHERE character_id = ?').all('wren');
+    assert.equal(rows.length, 1);
+    assert.deepEqual(decodeEmbedding(rows[0].embedding), await embedFn('Wren. Blue eyes.'));
+  }));
+
+  test('replaces the whole chunk set, not just appends — a shorter description leaves fewer rows', () => withDb(async (db) => {
+    const sentence = 'She has a distinctive trait worth describing in some detail here. ';
+    const char = { id: 'lindsey', name: 'Lindsey', description: sentence.repeat(20) };
+    await getCharacterEmbeddingChunks({ db, embedFn, char });
+    const before = db.prepare('SELECT COUNT(*) AS n FROM character_embeddings WHERE character_id = ?').get('lindsey').n;
+    assert.ok(before > 1);
+
+    await refreshCharacterEmbedding({ db, embedFn, char: { ...char, description: 'Short now.' } });
+    const after = db.prepare('SELECT COUNT(*) AS n FROM character_embeddings WHERE character_id = ?').get('lindsey').n;
+    assert.equal(after, 1);
   }));
 });
 
 describe('deleteCharacterEmbedding', () => {
-  test('removes the character\'s row', () => withDb(async (db) => {
-    await getCharacterEmbedding({ db, embedFn, char: { id: 'wren', name: 'Wren' } });
-    deleteCharacterEmbedding(db, 'wren');
+  test('removes every one of the character\'s chunk rows', () => withDb(async (db) => {
+    const sentence = 'She has a distinctive trait worth describing in some detail here. ';
+    await getCharacterEmbeddingChunks({ db, embedFn, char: { id: 'lindsey', name: 'Lindsey', description: sentence.repeat(20) } });
+    deleteCharacterEmbedding(db, 'lindsey');
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM character_embeddings').get().n, 0);
   }));
 });
@@ -100,8 +125,8 @@ describe('rebuildAllCharacterEmbeddings', () => {
     ];
     const count = await rebuildAllCharacterEmbeddings({ db, embedFn, characters });
     assert.equal(count, 2);
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM character_embeddings').get().n, 2);
-    const ezra = db.prepare('SELECT embedding FROM character_embeddings WHERE character_id = ?').get('ezra');
-    assert.deepEqual(decodeEmbedding(ezra.embedding), await embedFn('Ezra. A meticulous archivist.'));
+    const ezra = db.prepare('SELECT embedding FROM character_embeddings WHERE character_id = ?').all('ezra');
+    assert.equal(ezra.length, 1);
+    assert.deepEqual(decodeEmbedding(ezra[0].embedding), await embedFn('Ezra. A meticulous archivist.'));
   }));
 });

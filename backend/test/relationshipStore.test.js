@@ -235,3 +235,55 @@ describe('queryCharacterRelationships', () => {
     assert.equal(byId['ghost-id'].otherName, 'ghost-id');
   }));
 });
+
+// A pooling-style fake embedder — like the one in memoryStore.test.js,
+// this normalizes by total word count (real pooling behavior) instead of
+// simple keyword presence, so a short, specific detail buried in a long,
+// mostly-shared description genuinely gets diluted. Reproduces the actual
+// reported bug: three "employee" relationships whose target characters
+// share near-identical filler text (same workplace, same role) and differ
+// only in one early word (their age).
+function poolingEmbed(text) {
+  const words = text.toLowerCase().split(/\W+/).filter(Boolean);
+  const vocab = ['twentythree', 'nineteen', 'twentysix', 'employee'];
+  const total = words.length || 1;
+  return vocab.map((w) => words.filter((x) => x === w).length / total);
+}
+const poolingEmbedFn = async (t) => poolingEmbed(t);
+
+describe('relationship ranking survives a diluted identity detail (character chunking)', () => {
+  const filler = 'She works long shifts at the restaurant and knows every regular by name and order, rarely missing a beat during the rush. ';
+  const longDescription = (ageWord) => `${ageWord} year old waitress who has worked here for a while. ${filler.repeat(6)}`;
+
+  const charactersById = {
+    a: { id: 'a', name: 'CorrectAge', description: longDescription('twentythree') },
+    b: { id: 'b', name: 'WrongAgeOne', description: longDescription('nineteen') },
+    c: { id: 'c', name: 'WrongAgeTwo', description: longDescription('twentysix') },
+  };
+
+  test('a long character description is split into multiple stored identity chunks', () => withDb(async (db) => {
+    const { getCharacterEmbeddingChunks } = await import('../lib/characterEmbeddings.js');
+    const chunks = await getCharacterEmbeddingChunks({ db, embedFn: poolingEmbedFn, char: charactersById.a });
+    assert.ok(chunks.length > 1, `expected multiple chunks, got ${chunks.length}`);
+  }));
+
+  test('the debug query correctly ranks the matching age at the top', () => withDb(async (db) => {
+    await upsertRelationship({ db, embedFn: poolingEmbedFn, characterId: 'ezra', targetId: 'a', labels: ['employee'] });
+    await upsertRelationship({ db, embedFn: poolingEmbedFn, characterId: 'ezra', targetId: 'b', labels: ['employee'] });
+    await upsertRelationship({ db, embedFn: poolingEmbedFn, characterId: 'ezra', targetId: 'c', labels: ['employee'] });
+
+    const rows = await queryCharacterRelationships({
+      db, embedFn: poolingEmbedFn, speakerId: 'ezra', charactersById, query: 'twentythree year old employee',
+    });
+    const byId = Object.fromEntries(rows.map((r) => [r.otherId, r]));
+
+    // All three share the identical "employee" label, so labelScore ties
+    // exactly — the identity-chunk match is the only thing that can (and
+    // must) break the tie, and it must break it correctly.
+    assert.equal(byId.a.labelScore, byId.b.labelScore);
+    assert.equal(byId.a.labelScore, byId.c.labelScore);
+    assert.ok(byId.a.characterScore > byId.b.characterScore);
+    assert.ok(byId.a.characterScore > byId.c.characterScore);
+    assert.equal(rows[0].otherId, 'a'); // ranked #1 overall
+  }));
+});
