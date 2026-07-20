@@ -1,7 +1,8 @@
 <script setup>
 import { useWorldStore } from '../../stores/world';
-import { TIMES_OF_DAY, WEEKDAYS, timeOfDayEmoji } from '../../utils/time';
+import { TIMES_OF_DAY, WEEKDAYS } from '../../utils/time';
 import { initials } from '../../utils/format';
+import TimeOfDayIcon from '../shared/TimeOfDayIcon.vue';
 
 const props = defineProps({ character: { type: Object, required: true } });
 const emit = defineEmits(['pick']);
@@ -29,7 +30,7 @@ function cellTitle(day, t) {
         <th></th>
         <th v-for="t in TIMES_OF_DAY" :key="t" :title="t">
           <span class="tod-full">{{ t }}</span>
-          <span class="tod-emoji" aria-hidden="true">{{ timeOfDayEmoji(t) }}</span>
+          <TimeOfDayIcon class="tod-icon-header" :time-of-day="t" />
         </th>
       </tr>
     </thead>

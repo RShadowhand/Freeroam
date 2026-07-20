@@ -80,7 +80,12 @@
 .schedule-table th, .schedule-table td{ border:1px solid var(--border); text-align:center; padding:8px 5px; }
 .schedule-table th{ color:var(--dim); font-weight:normal; font-size:0.72rem; }
 .schedule-table th .tod-full{ text-transform:capitalize; }
-.schedule-table th .tod-emoji{ display:none; font-size:0.95rem; }
+.schedule-table th .tod-icon-header{ display:none; }
+.tod-icon{ display:block; }
+.tod-arc{ fill:none; stroke:var(--border); stroke-width:1.3; }
+.tod-horizon{ stroke:var(--border); stroke-width:1.3; }
+.tod-sun{ fill:var(--accent); }
+.tod-moon, .tod-star{ fill:var(--dim); }
 .schedule-table td{ cursor:pointer; color:var(--dim); }
 .schedule-table td.set{ color:var(--accent); font-weight:600; background:rgba(var(--accent-rgb),0.08); }
 .schedule-table td:hover{ border-color:var(--accent); }
@@ -1130,7 +1135,7 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
      Swap to a same-width emoji per time-of-day instead of abbreviating
      further; the full word is still one tap/hold away via the th title. */
   .schedule-table th .tod-full{ display:none; }
-  .schedule-table th .tod-emoji{ display:inline; }
+  .schedule-table th .tod-icon-header{ display:block; width:20px; height:20px; margin:0 auto; }
 
   /* 16px floor on form controls stops iOS zooming the page on focus. */
   input[type=text], input[type=password], input[type=number], textarea, select,
