@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import { useWorldStore } from '../../stores/world';
 import { updatePersona, deletePersona, setActivePersona } from '../../api/personas';
 import CardAvatar from '../shared/CardAvatar.vue';
+import ExpandableTextarea from '../shared/ExpandableTextarea.vue';
 
 const props = defineProps({ persona: { type: Object, required: true } });
 const world = useWorldStore();
@@ -56,7 +57,7 @@ async function remove() {
         </div>
         <div class="span2">
           <label>Description</label>
-          <textarea class="persona-edit-text" v-model="description"></textarea>
+          <ExpandableTextarea class="persona-edit-text" v-model="description" />
         </div>
       </div>
       <div class="card-actions">

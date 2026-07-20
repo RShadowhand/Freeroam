@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import { useWorldStore } from '../../stores/world';
 import { createPersona } from '../../api/personas';
+import ExpandableTextarea from '../shared/ExpandableTextarea.vue';
 
 const world = useWorldStore();
 const name = ref('');
@@ -38,7 +39,7 @@ async function submit() {
       </div>
       <div class="span2">
         <label>Description</label>
-        <textarea class="persona-edit-text" v-model="description" placeholder='Who are you, in this world? Folded into the system prompt as your persona description, and used to replace "the visitor" in scenes.'></textarea>
+        <ExpandableTextarea class="persona-edit-text" v-model="description" placeholder='Who are you, in this world? Folded into the system prompt as your persona description, and used to replace "the visitor" in scenes.' />
       </div>
     </div>
     <div class="form-actions">

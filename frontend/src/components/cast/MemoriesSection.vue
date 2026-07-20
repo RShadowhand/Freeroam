@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { useWorldStore } from '../../stores/world';
 import { getMemories, addMemory, updateMemory, deleteMemory, queryMemories } from '../../api/memory';
+import ExpandableTextarea from '../shared/ExpandableTextarea.vue';
 
 // View/add/edit/delete a character's own memory entries. Memory is scoped
 // per (character, persona), so entries are tagged with which persona they
@@ -160,7 +161,7 @@ async function runDebugQuery() {
       </div>
       <div class="span2">
         <label>Text</label>
-        <textarea class="memory-textarea" v-model="newText" placeholder="What should this character remember?"></textarea>
+        <ExpandableTextarea class="memory-textarea" v-model="newText" placeholder="What should this character remember?" />
       </div>
     </div>
     <div class="form-actions">
@@ -202,7 +203,7 @@ async function runDebugQuery() {
         <span class="memory-time">{{ formattedTime(entry.timestamp) }}</span>
       </div>
       <template v-if="entry.id === editingId">
-        <textarea class="memory-textarea" v-model="editText"></textarea>
+        <ExpandableTextarea class="memory-textarea" v-model="editText" />
         <div class="form-actions">
           <button class="btn small" @click="saveEdit(entry)">Save</button>
           <button class="btn secondary small" @click="cancelEdit">Cancel</button>

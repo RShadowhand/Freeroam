@@ -132,6 +132,24 @@ textarea{ resize:vertical; min-height:52px; }
 .persona-edit-text{ min-height:120px; font-size:0.9rem; line-height:1.45; }
 input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outline-offset:1px; }
 
+/* ---- ExpandableTextarea (SillyTavern's "editor_maximize" pattern) ----
+   A small expand button sits in the textarea's own corner rather than
+   needing a label row to anchor to, since not every field that wants
+   one (e.g. an existing memory's inline edit box) has a visible label. */
+.expandable-textarea{ position:relative; }
+.expandable-textarea textarea{ padding-right:34px; }
+.expand-toggle{
+  position:absolute; top:6px; right:6px;
+  background:var(--panel); border:1px solid var(--border); color:var(--dim); cursor:pointer;
+  width:24px; height:24px; border-radius:6px; font-size:0.85rem; line-height:1;
+  transition:border-color .15s ease, color .15s ease;
+}
+.expand-toggle:hover{ border-color:var(--accent); color:var(--accent); }
+.modal.editor-modal{ height:78vh; max-height:78vh; }
+.editor-modal-textarea{
+  flex:1; width:100%; resize:none; font-size:0.95rem; line-height:1.5;
+}
+
 .btn{
   background:var(--accent);
   color:var(--accent-text);
@@ -1006,7 +1024,14 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   font-family:'IBM Plex Mono',monospace;
 }
 .retry-btn:hover{ background:rgba(var(--accent-rgb),0.12); }
-.msg-edit-textarea{ min-height:110px; font-size:0.92rem; line-height:1.42; margin-bottom:6px; }
+/* field-sizing:content (SillyTavern uses the same property) grows the box
+   to fit what's actually typed instead of a fixed height nobody can read
+   past — min-height is just the floor for browsers that don't support it
+   yet, where EditRow.vue's own scrollHeight fallback takes over. */
+.msg-edit-textarea{
+  field-sizing:content; min-height:110px; max-height:50vh;
+  font-size:0.92rem; line-height:1.42; margin-bottom:6px;
+}
 .msg-edit-actions{ display:flex; gap:8px; }
 
 /* ---- Reasoning / thinking trace ---- */
