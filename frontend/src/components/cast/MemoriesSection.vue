@@ -160,7 +160,7 @@ async function runDebugQuery() {
       </div>
       <div class="span2">
         <label>Text</label>
-        <textarea v-model="newText" placeholder="What should this character remember?"></textarea>
+        <textarea class="memory-textarea" v-model="newText" placeholder="What should this character remember?"></textarea>
       </div>
     </div>
     <div class="form-actions">
@@ -202,7 +202,7 @@ async function runDebugQuery() {
         <span class="memory-time">{{ formattedTime(entry.timestamp) }}</span>
       </div>
       <template v-if="entry.id === editingId">
-        <textarea class="edit-memory-text" v-model="editText"></textarea>
+        <textarea class="memory-textarea" v-model="editText"></textarea>
         <div class="form-actions">
           <button class="btn small" @click="saveEdit(entry)">Save</button>
           <button class="btn secondary small" @click="cancelEdit">Cancel</button>

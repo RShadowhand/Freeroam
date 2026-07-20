@@ -38,7 +38,7 @@ async function submit() {
       </div>
       <div class="span2">
         <label>Description</label>
-        <textarea v-model="description" placeholder='Who are you, in this world? Folded into the system prompt as your persona description, and used to replace "the visitor" in scenes.'></textarea>
+        <textarea class="persona-edit-text" v-model="description" placeholder='Who are you, in this world? Folded into the system prompt as your persona description, and used to replace "the visitor" in scenes.'></textarea>
       </div>
     </div>
     <div class="form-actions">

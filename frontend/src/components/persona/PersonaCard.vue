@@ -56,7 +56,7 @@ async function remove() {
         </div>
         <div class="span2">
           <label>Description</label>
-          <textarea v-model="description"></textarea>
+          <textarea class="persona-edit-text" v-model="description"></textarea>
         </div>
       </div>
       <div class="card-actions">
