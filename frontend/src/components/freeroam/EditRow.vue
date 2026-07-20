@@ -28,9 +28,15 @@ function cancel() {
 </script>
 
 <template>
-  <textarea ref="textareaEl" class="msg-edit-textarea" v-model="text" @input="autoResize"></textarea>
-  <div class="msg-edit-actions">
-    <button class="btn small" @click="save">Save</button>
-    <button class="btn secondary small" @click="cancel">Cancel</button>
+  <div class="msg-edit-wrap">
+    <div class="msg-edit-actions">
+      <button class="btn small" @click="save">Save</button>
+      <button class="btn secondary small" @click="cancel">Cancel</button>
+    </div>
+    <textarea ref="textareaEl" class="msg-edit-textarea" v-model="text" @input="autoResize"></textarea>
+    <div class="msg-edit-actions">
+      <button class="btn small" @click="save">Save</button>
+      <button class="btn secondary small" @click="cancel">Cancel</button>
+    </div>
   </div>
 </template>

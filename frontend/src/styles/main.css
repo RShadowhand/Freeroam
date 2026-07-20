@@ -1024,15 +1024,23 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   font-family:'IBM Plex Mono',monospace;
 }
 .retry-btn:hover{ background:rgba(var(--accent-rgb),0.12); }
+/* EditRow.vue is a single-root wrapper (not two sibling roots) specifically
+   so it lands as ONE flex item in .msg.char's row instead of the textarea
+   and its Save/Cancel splitting into two side-by-side items and squeezing
+   the box narrow. flex:1 then lets it actually claim that row's width;
+   width:100% covers .msg.user, which isn't a flex container at all. */
+.msg-edit-wrap{ flex:1; min-width:0; width:100%; }
 /* field-sizing:content (SillyTavern uses the same property) grows the box
    to fit what's actually typed instead of a fixed height nobody can read
    past — min-height is just the floor for browsers that don't support it
-   yet, where EditRow.vue's own scrollHeight fallback takes over. */
+   yet, where EditRow.vue's own scrollHeight fallback takes over. Save/
+   Cancel appear above AND below the box so they're reachable either way,
+   however tall it grows. */
 .msg-edit-textarea{
-  field-sizing:content; min-height:110px; max-height:50vh;
-  font-size:0.92rem; line-height:1.42; margin-bottom:6px;
+  field-sizing:content; min-height:110px; max-height:50vh; width:100%;
+  font-size:0.92rem; line-height:1.42;
 }
-.msg-edit-actions{ display:flex; gap:8px; }
+.msg-edit-actions{ display:flex; gap:8px; margin:6px 0; }
 
 /* ---- Reasoning / thinking trace ---- */
 .reasoning-toggle{
