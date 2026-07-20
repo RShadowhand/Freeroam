@@ -1121,7 +1121,12 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   .sub-nav{ gap:4px; margin:0 0 14px; }
 
   .topbar{ padding:8px 10px; }
-  .topbar-main .pname{ font-size:1.1rem; }
+  /* A long place name (e.g. "Susan's Restaurant") wraps to two lines at
+     this width; .pname's siblings (TimeWidget, the Details toggle) don't
+     shrink, so without this they'd stay vertically centered against the
+     whole two-line name and visually collide with its second line.
+     flex-basis:100% gives the name its own row and pushes them below it. */
+  .topbar-main .pname{ font-size:1.1rem; flex-basis:100%; }
   .topbar-details .pdesc{ font-size:0.78rem; }
   .messages{ padding:12px 12px; }
   .msg{ max-width:88%; }
