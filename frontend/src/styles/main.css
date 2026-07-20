@@ -76,14 +76,21 @@
 .var-row .var-desc{ color:var(--dim); font-size:0.8rem; margin:4px 0; line-height:1.4; }
 .var-row .var-example{ font-size:0.78rem; color:var(--dim); }
 .var-row .var-example b{ color:var(--fg); font-weight:normal; }
-.schedule-table{ width:100%; border-collapse:collapse; margin-top:14px; font-size:0.76rem; }
-.schedule-table th, .schedule-table td{ border:1px solid var(--border); text-align:center; padding:5px 3px; }
-.schedule-table th{ color:var(--dim); font-weight:normal; font-size:0.68rem; }
+.schedule-table{ width:100%; border-collapse:collapse; margin-top:14px; font-size:0.82rem; }
+.schedule-table th, .schedule-table td{ border:1px solid var(--border); text-align:center; padding:8px 5px; }
+.schedule-table th{ color:var(--dim); font-weight:normal; font-size:0.72rem; }
 .schedule-table td{ cursor:pointer; color:var(--dim); }
 .schedule-table td.set{ color:var(--accent); font-weight:600; background:rgba(var(--accent-rgb),0.08); }
 .schedule-table td:hover{ border-color:var(--accent); }
 .schedule-copy-row{ margin-top:14px; align-items:center; }
 .schedule-copy-row select{ width:auto; }
+/* ---- Place & Schedule tab (CharacterModal) ---- */
+.section-divider{ margin:20px 0 4px; padding-top:16px; border-top:1px solid var(--border-soft); }
+.section-divider h3{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.05rem; margin:0 0 4px; }
+.section-divider .hint{ margin-bottom:0; }
+.schedule-editor .form-grid{ grid-template-columns:1fr 1fr 1fr 1fr; }
+@media (max-width:720px){ .schedule-editor .form-grid{ grid-template-columns:1fr 1fr; } }
+@media (max-width:560px){ .schedule-editor .form-grid{ grid-template-columns:1fr; } }
 .hint{ color:var(--dim); font-size:0.8rem; margin:0 0 14px; line-height:1.5; }
 .hint a{ color:var(--accent); }
 .hint-inline{ color:var(--dim); font-weight:normal; font-size:0.85em; }

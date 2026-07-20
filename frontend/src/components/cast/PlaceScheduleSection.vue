@@ -1,44 +1,67 @@
 <script setup>
 import { computed, ref, watch } from 'vue';
 import { useWorldStore } from '../../stores/world';
-import { useScheduleModal } from '../../composables/useScheduleModal';
-import { saveScheduleSlot as apiSaveScheduleSlot } from '../../api/characters';
+import { placeCharacter, saveScheduleSlot as apiSaveScheduleSlot } from '../../api/characters';
+import { groupedByArea, castPreview } from '../../utils/format';
 import { TIMES_OF_DAY, WEEKDAYS, weekdayFor } from '../../utils/time';
 import ScheduleTable from './ScheduleTable.vue';
 
-// One slot (day + time of day) edited at a time, with an overview table of
-// everything already set for quick navigation. Edits PUT straight to
-// /api/characters/:id/schedule/:day/:timeOfDay so nothing needs a separate
-// "save" step at the character-modal level.
+// Place + Opening line + the weekly schedule editor, formerly split across
+// the Details tab and a separate ScheduleModal squeezed into the default
+// 480px modal width. Both are "where is this character" concerns, so they
+// share a tab now, and the schedule grid (7 days x 7 times of day) finally
+// gets the width of the wide character modal instead of a cramped 2-col
+// form-grid.
+const props = defineProps({ characterId: { type: String, required: true } });
 const world = useWorldStore();
-const scheduleModal = useScheduleModal();
+
+const character = computed(() => world.charactersById[props.characterId] || null);
+const placement = computed(() => world.placements[props.characterId] || null);
+const placeGroups = computed(() => groupedByArea(world.places));
+const greetings = computed(() => character.value?.greetings || []);
+
+const placeId = ref('');
+const greetingIndex = ref('');
 
 const day = ref(WEEKDAYS[0]);
 const timeOfDay = ref(TIMES_OF_DAY[0]);
-const place = ref('');
+const slotPlaceId = ref('');
 const reason = ref('');
 const status = ref('');
 const copyFromDay = ref('');
 const copyStatus = ref('');
-
-const character = computed(() => scheduleModal.characterId.value ? world.charactersById[scheduleModal.characterId.value] : null);
 const copyFromOptions = computed(() => WEEKDAYS.filter((d) => d !== day.value));
 
-watch(scheduleModal.isOpen, (open) => {
-  if (!open) return;
+watch(() => props.characterId, () => {
+  placeId.value = placement.value ? placement.value.placeId : '';
+  greetingIndex.value = placement.value && placement.value.greetingIndex != null ? String(placement.value.greetingIndex) : '';
   day.value = weekdayFor(world.time.day);
   timeOfDay.value = world.time.timeOfDay;
   status.value = '';
-  loadSlotIntoForm();
   copyStatus.value = '';
-});
+  loadSlotIntoForm();
+}, { immediate: true });
+
+function greetingLabel(g, i) {
+  return `${i === 0 ? 'Default' : `Alternate ${i}`}: "${castPreview(g, 40)}"`;
+}
+
+async function onPlaceChange() {
+  const { ok, data } = await placeCharacter(props.characterId, { placeId: placeId.value || null });
+  if (ok) world.placements = data.placements;
+}
+async function onGreetingChange() {
+  const { ok, data } = await placeCharacter(props.characterId, {
+    greetingIndex: greetingIndex.value === '' ? null : parseInt(greetingIndex.value, 10),
+  });
+  if (ok) world.placements = data.placements;
+}
 
 function loadSlotIntoForm() {
   const slot = character.value?.schedule?.[day.value]?.[timeOfDay.value] || null;
-  place.value = slot ? slot.placeId : '';
+  slotPlaceId.value = slot ? slot.placeId : '';
   reason.value = slot ? (slot.reason || '') : '';
 }
-
 function onDayChange() {
   loadSlotIntoForm();
   copyStatus.value = '';
@@ -50,30 +73,26 @@ function pickCell(d, t) {
 }
 
 function applyCharacterUpdate(updated) {
-  world.charactersById[scheduleModal.characterId.value] = updated;
-  const idx = world.charactersList.findIndex((c) => c.id === scheduleModal.characterId.value);
+  world.charactersById[props.characterId] = updated;
+  const idx = world.charactersList.findIndex((c) => c.id === props.characterId);
   if (idx !== -1) world.charactersList[idx] = updated;
 }
 
 async function saveSlot(placeIdValue, reasonValue) {
-  const { ok, data } = await apiSaveScheduleSlot(scheduleModal.characterId.value, day.value, timeOfDay.value, { placeId: placeIdValue, reason: reasonValue });
+  const { ok, data } = await apiSaveScheduleSlot(props.characterId, day.value, timeOfDay.value, { placeId: placeIdValue, reason: reasonValue });
   if (!ok) { status.value = data.error || 'Could not save.'; return; }
   applyCharacterUpdate(data.character);
   status.value = 'Saved.';
   loadSlotIntoForm();
 }
-
 function save() {
-  if (!place.value) { status.value = 'Pick a place, or use Clear slot to remove it.'; return; }
-  saveSlot(place.value, reason.value.trim());
+  if (!slotPlaceId.value) { status.value = 'Pick a place, or use Clear slot to remove it.'; return; }
+  saveSlot(slotPlaceId.value, reason.value.trim());
 }
 function clear() {
   saveSlot(null, '');
 }
 
-// Copies every set time-of-day slot from another day onto the day
-// currently selected in the editor — a slot the source day doesn't have
-// set is left untouched on the target, rather than clearing it.
 async function copyFrom() {
   if (!copyFromDay.value || copyFromDay.value === day.value) return;
   const source = character.value.schedule?.[copyFromDay.value] || {};
@@ -82,7 +101,7 @@ async function copyFrom() {
 
   copyStatus.value = 'Copying…';
   for (const t of slots) {
-    const { ok, data } = await apiSaveScheduleSlot(scheduleModal.characterId.value, day.value, t, {
+    const { ok, data } = await apiSaveScheduleSlot(props.characterId, day.value, t, {
       placeId: source[t].placeId, reason: source[t].reason || '',
     });
     if (ok) applyCharacterUpdate(data.character);
@@ -93,10 +112,34 @@ async function copyFrom() {
 </script>
 
 <template>
-  <div class="modal-overlay" v-if="scheduleModal.isOpen.value && character" @click="(e) => { if (e.target === e.currentTarget) scheduleModal.close(); }">
-    <div class="modal">
-      <h2>Schedule — {{ character.name }}</h2>
+  <div v-if="character">
+    <div class="form-grid">
+      <div class="field-row">
+        <label>Place</label>
+        <select v-model="placeId" @change="onPlaceChange">
+          <option value="">— not placed —</option>
+          <optgroup v-for="(list, area) in placeGroups" :key="area" :label="area">
+            <option v-for="p in list" :key="p.id" :value="p.id">
+              {{ p.name }} ({{ p.type === 'private' ? `private${p.ownerId ? ' · ' + (world.charName(p.ownerId) || '') : ''}` : 'communal' }})
+            </option>
+          </optgroup>
+        </select>
+      </div>
+      <div class="field-row" v-if="greetings.length">
+        <label>Opening line</label>
+        <select v-model="greetingIndex" :disabled="!placeId" @change="onGreetingChange">
+          <option value="">No greeting — improvise on arrival</option>
+          <option v-for="(g, i) in greetings" :key="i" :value="String(i)">{{ greetingLabel(g, i) }}</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="section-divider">
+      <h3>Weekly schedule</h3>
       <p class="hint">Where this character should be for a given day and time of day. Characters move to their scheduled place automatically when you advance or jump the world clock. A slot with nothing set just leaves them wherever they already are.</p>
+    </div>
+
+    <div class="schedule-editor">
       <div class="form-grid">
         <div class="field-row">
           <label>Day</label>
@@ -112,7 +155,7 @@ async function copyFrom() {
         </div>
         <div class="field-row">
           <label>Place</label>
-          <select v-model="place">
+          <select v-model="slotPlaceId">
             <option value="">— pick a place —</option>
             <option v-for="p in world.places" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
@@ -132,21 +175,20 @@ async function copyFrom() {
         </div>
       </div>
       <div class="form-actions">
-        <button class="btn small" @click="save">Save slot</button>
-        <button class="btn secondary small" @click="clear">Clear slot</button>
+        <button class="btn small" type="button" @click="save">Save slot</button>
+        <button class="btn secondary small" type="button" @click="clear">Clear slot</button>
         <span class="form-status">{{ status }}</span>
       </div>
+
       <ScheduleTable :character="character" @pick="pickCell" />
+
       <div class="form-actions schedule-copy-row">
         <label style="margin:0;">Copy all slots from</label>
         <select v-model="copyFromDay">
           <option v-for="d in copyFromOptions" :key="d" :value="d">{{ d }}</option>
         </select>
-        <button class="btn secondary small" @click="copyFrom">Copy</button>
+        <button class="btn secondary small" type="button" @click="copyFrom">Copy</button>
         <span class="form-status">{{ copyStatus }}</span>
-      </div>
-      <div class="form-actions">
-        <button class="btn secondary" @click="scheduleModal.close()">Close</button>
       </div>
     </div>
   </div>
