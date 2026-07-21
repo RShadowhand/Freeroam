@@ -2,30 +2,20 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useWorldStore } from '../../stores/world';
 import { usePhoneStore } from '../../stores/phone';
-import { useChatStore } from '../../stores/chat';
 import { useSettingsStore } from '../../stores/settings';
 import { useThemeStore } from '../../stores/theme';
 import { formatMessage } from '../../utils/format';
 import CardAvatar from '../shared/CardAvatar.vue';
 
+// Calling lives in its own app (Wavelength) now, not a button bolted onto
+// a text thread — matches a real phone's Messages/Phone app split.
 const props = defineProps({ characterId: { type: String, required: true } });
-const emit = defineEmits(['back', 'call-started']);
+const emit = defineEmits(['back']);
 
 const world = useWorldStore();
 const phone = usePhoneStore();
-const chat = useChatStore();
 const settings = useSettingsStore();
 const theme = useThemeStore();
-
-// A call happens back in the main scene (see chat.js's startCall) — the
-// bystanders demoted are whoever's in chat.currentPlace, so there has to
-// be one, and the call panel closes to show it actually happening there.
-const canCall = computed(() => !!chat.currentPlace && !chat.activeCall && !chat.loading);
-async function startCall() {
-  if (!canCall.value) return;
-  await chat.startCall(props.characterId);
-  if (chat.activeCall) emit('call-started');
-}
 
 const character = computed(() => world.charactersById[props.characterId]);
 const log = computed(() => phone.logs[props.characterId] || []);
@@ -84,10 +74,6 @@ function onKeydown(e) {
       <button class="phone-back" type="button" @click="emit('back')">‹ Contacts</button>
       <CardAvatar :name="character.name" :avatar-url="character.avatarUrl" :color="character.color" />
       <span class="phone-thread-name">{{ character.name }}</span>
-      <button
-        class="phone-call-btn" type="button" :disabled="!canCall"
-        :title="chat.currentPlace ? 'Call ' + character.name : 'Enter a place first'" @click="startCall"
-      >📞 Call</button>
     </div>
 
     <div class="messages" ref="box">

@@ -54,7 +54,7 @@ export const useWorldStore = defineStore('world', {
     // explicitly given them a relationship to the user via Cast — either
     // signal is enough on its own, so this is a union, not an intersection.
     knowsUser: (state) => (charId) => state.metCharacterIds.includes(charId)
-      || state.relationships.some((r) => r.character_id === charId && r.target_id === 'user'),
+      || state.relationships.some((r) => r.characterId === charId && r.targetId === 'user'),
   },
   actions: {
     async loadWorldState() {

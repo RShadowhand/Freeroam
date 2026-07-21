@@ -1283,20 +1283,40 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 .new-group-row .phone-contact-name{ color:var(--accent); }
 
 .phone-thread{ flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; }
+.phone-app-screen{ flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; }
 .phone-thread-header{ display:flex; align-items:center; gap:10px; padding-bottom:8px; border-bottom:1px solid var(--border-subtle); flex-shrink:0; }
 .phone-back{
   background:none; border:none; color:var(--accent); cursor:pointer;
   font-size:0.82rem; padding:4px 2px; flex-shrink:0;
 }
 .phone-thread-name{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.05rem; }
-.phone-call-btn{
-  margin-left:auto; flex-shrink:0; background:none; border:1px solid var(--accent); color:var(--accent);
-  border-radius:14px; cursor:pointer; font-size:0.72rem; padding:4px 10px;
-}
-.phone-call-btn:hover:not(:disabled){ background:rgba(var(--accent-rgb),0.14); }
-.phone-call-btn:disabled{ opacity:0.4; cursor:not-allowed; border-color:var(--border); color:var(--dim); }
 .phone-thread .messages{ flex:1; min-height:0; border:1px solid var(--border); border-radius:10px; }
 .typing-bubble{ font-style:italic; color:var(--dim); }
+
+/* ---- RoamOS home screen (Phone panel, redesigned) ---- */
+.phone-home{
+  flex:1; min-height:0; overflow-y:auto;
+  display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; align-content:start;
+  padding:10px 4px;
+}
+.phone-app-icon{
+  display:flex; flex-direction:column; align-items:center; gap:6px;
+  background:none; border:none; cursor:pointer; color:inherit; padding:6px 2px;
+}
+.phone-app-glyph{
+  width:56px; height:56px; border-radius:16px; font-size:1.7rem;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--panel-raised); border:1px solid var(--border);
+  transition:border-color .15s ease, transform .1s ease;
+}
+.phone-app-icon:hover .phone-app-glyph{ border-color:var(--accent); }
+.phone-app-icon:active .phone-app-glyph{ transform:scale(0.94); }
+.phone-app-label{
+  font-family:'IBM Plex Mono',monospace; font-size:0.7rem; letter-spacing:0.02em; color:var(--dim);
+}
+.phone-app-hint{ flex-shrink:0; margin:0; }
+.phone-call-icon{ margin-left:auto; flex-shrink:0; color:var(--accent); font-size:0.9rem; }
+.phone-call-icon.disabled{ color:var(--dim); opacity:0.5; }
 
 /* ---- Group texting (Phase 4) ---- */
 .group-char{ display:flex; align-items:flex-start; gap:8px; align-self:flex-start; max-width:85%; }
