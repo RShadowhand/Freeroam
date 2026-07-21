@@ -32,6 +32,16 @@ function postJson(urlPath, body) {
     body: JSON.stringify(body),
   });
 }
+function putJson(urlPath, body) {
+  return fetch(`${baseUrl}${urlPath}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+function del(urlPath) {
+  return fetch(`${baseUrl}${urlPath}`, { method: 'DELETE' });
+}
 async function getJson(urlPath) {
   return (await fetch(`${baseUrl}${urlPath}`)).json();
 }
@@ -216,6 +226,159 @@ describe('Groups: the cascade (OpenRouter + Math.random mocked)', () => {
       assert.ok(run <= 2, `charId ${speakers[i]} replied ${run} times in a row: ${speakers.join(',')}`);
     }
 
-    await postJson('/api/settings', { cascadeBaseChance: 0.85, cascadeDecayRate: 0.98, cascadePerCharacterCap: 2 });
+    await postJson('/api/settings', { cascadeBaseChance: 0.85, cascadeDecayRate: 0.98, cascadePerCharacterCap: 1 });
+  });
+
+  test('the default cap (1) never lets a character reply to their own line twice in a row', async (t) => {
+    // The bug this guards against: with a higher cap, a character could get
+    // picked again immediately after their OWN last line, with nothing new
+    // from anyone else to react to — a real model asked to "continue" with
+    // no new stimulus tends to just repeat itself, which read as a
+    // duplicate-message bug even though the stored text was never literally
+    // appended twice.
+    const settingsRes = await (await fetch(`${baseUrl}/api/settings`)).json();
+    assert.equal(settingsRes.cascadePerCharacterCap, 1, 'expected the default cap to be 1');
+
+    const { group: defaultCapGroup } = await (await postJson('/api/groups', { name: 'Default Cap', participantIds: ['ezra', 'mireille'] })).json();
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: 'reply' } }] }), { status: 200 })));
+    // Always continue, always try to pick the same slot — proves the
+    // default cap alone (no explicit override) still alternates speakers.
+    let n = 0;
+    t.mock.method(Math, 'random', () => {
+      n += 1;
+      return n % 20 === 0 ? 0.999 : 0;
+    });
+
+    const res = await postJson(`/api/groups/${defaultCapGroup.id}/send`, { text: 'Go.' });
+    const data = await res.json();
+    const speakers = data.log.filter((e) => e.type === 'char').map((e) => e.charId);
+    for (let i = 1; i < speakers.length; i++) {
+      assert.notEqual(speakers[i], speakers[i - 1], `${speakers[i]} replied to their own line twice in a row: ${speakers.join(',')}`);
+    }
+  });
+});
+
+describe('Groups: delete message', () => {
+  let group;
+  before(async () => {
+    ({ group } = await (await postJson('/api/groups', { name: 'Delete Test', participantIds: ['ezra', 'mireille'] })).json());
+  });
+
+  test('404s for an unknown group', async () => {
+    const res = await del('/api/groups/not-a-real-id/messages/whatever');
+    assert.equal(res.status, 404);
+  });
+
+  test('404s for an unknown message id', async () => {
+    const res = await del(`/api/groups/${group.id}/messages/not-a-real-entry`);
+    assert.equal(res.status, 404);
+  });
+
+  test('removes the message from the log', async () => {
+    await postJson('/api/settings', { apiKey: '' }); // no key — just want the user line persisted, no generation
+    const sendRes = await (await postJson(`/api/groups/${group.id}/send`, { text: 'delete me' })).json();
+    const entry = sendRes.log.find((e) => e.text === 'delete me');
+    assert.ok(entry, 'expected the user line to be in the log');
+
+    const res = await del(`/api/groups/${group.id}/messages/${entry.id}`);
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.ok(!data.log.some((e) => e.id === entry.id));
+  });
+});
+
+describe('Groups: retry', () => {
+  let group;
+  before(async () => {
+    await postJson('/api/settings', { apiKey: '' });
+    ({ group } = await (await postJson('/api/groups', { name: 'Retry Test', participantIds: ['ezra', 'mireille'] })).json());
+  });
+
+  test('rejects retry with nothing sent yet', async () => {
+    const res = await postJson(`/api/groups/${group.id}/retry`, {});
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.match(data.error, /say something first/i);
+  });
+
+  test('rejects retry when the last message already has a reply', async (t) => {
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: 'reply' } }] }), { status: 200 })));
+    t.mock.method(Math, 'random', mockRandomSequence([0, 0, 0.99])); // one reply lands
+
+    await postJson(`/api/groups/${group.id}/send`, { text: 'hi' });
+    const res = await postJson(`/api/groups/${group.id}/retry`, {});
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.match(data.error, /already has a reply/i);
+  });
+
+  test('re-runs the cascade for a trailing message with no reply', async (t) => {
+    await postJson('/api/settings', { apiKey: '' }); // no key -> guaranteed zero replies land
+    const { group: retryGroup } = await (await postJson('/api/groups', { name: 'Retry2', participantIds: ['ezra', 'mireille'] })).json();
+    await postJson(`/api/groups/${retryGroup.id}/send`, { text: 'anyone?' });
+
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: 'finally replying' } }] }), { status: 200 })));
+    t.mock.method(Math, 'random', mockRandomSequence([0, 0, 0.99]));
+
+    const res = await postJson(`/api/groups/${retryGroup.id}/retry`, {});
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.ok(data.log.some((e) => e.type === 'char' && e.text === 'finally replying'));
+  });
+});
+
+describe('Groups: edit (rename + participants)', () => {
+  let group;
+  before(async () => {
+    ({ group } = await (await postJson('/api/groups', { name: 'Edit Test', participantIds: ['ezra', 'mireille'] })).json());
+  });
+
+  test('404s for an unknown group', async () => {
+    const res = await putJson('/api/groups/not-a-real-id', { name: 'New name' });
+    assert.equal(res.status, 404);
+  });
+
+  test('renames the group', async () => {
+    const res = await putJson(`/api/groups/${group.id}`, { name: 'Renamed' });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.group.name, 'Renamed');
+
+    const { groups } = await getJson('/api/groups');
+    assert.ok(groups.some((g) => g.id === group.id && g.name === 'Renamed'));
+  });
+
+  test('rejects an empty rename', async () => {
+    const res = await putJson(`/api/groups/${group.id}`, { name: '  ' });
+    assert.equal(res.status, 400);
+  });
+
+  test('adds a participant', async () => {
+    const res = await putJson(`/api/groups/${group.id}`, { participantIds: ['ezra', 'mireille', 'soot'] });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.deepEqual(data.group.participantIds.sort(), ['ezra', 'mireille', 'soot']);
+  });
+
+  test('rejects an unknown character id when editing participants', async () => {
+    const res = await putJson(`/api/groups/${group.id}`, { participantIds: ['ezra', 'nobody'] });
+    assert.equal(res.status, 400);
+  });
+
+  test('rejects dropping below 2 participants', async () => {
+    const res = await putJson(`/api/groups/${group.id}`, { participantIds: ['ezra'] });
+    assert.equal(res.status, 400);
+  });
+
+  test('removes a participant down to exactly 2', async () => {
+    const res = await putJson(`/api/groups/${group.id}`, { participantIds: ['ezra', 'mireille'] });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.deepEqual(data.group.participantIds.sort(), ['ezra', 'mireille']);
   });
 });

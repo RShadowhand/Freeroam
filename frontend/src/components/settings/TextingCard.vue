@@ -87,6 +87,10 @@ async function saveCascade() {
       <label style="flex-shrink:0;">Max replies in a row per character</label>
       <input type="number" v-model="cascadePerCharacterCap" min="1" step="1" style="width:90px;">
     </div>
+    <p class="hint">
+      The default (1) means nobody replies to themselves twice in a row — a character with nothing new to react to
+      tends to just repeat their last message. Raise this only if you want a character able to "double text."
+    </p>
     <div class="form-actions">
       <button class="btn small" @click="saveCascade">Save</button>
       <span class="form-status">{{ cascadeStatus }}</span>

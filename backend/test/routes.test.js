@@ -722,6 +722,87 @@ describe('Texting: GET/POST /api/texts/:characterId (validation paths — no rea
   });
 });
 
+describe('Texting: delete message (DELETE /api/texts/:characterId/messages/:entryId)', () => {
+  async function makeCharacter(name) {
+    const { character } = await (await postJson('/api/characters', { name, description: 'Texts sometimes.' })).json();
+    return character;
+  }
+
+  test('404s for an unknown character', async () => {
+    const res = await fetch(`${baseUrl}/api/texts/nope/messages/whatever`, { method: 'DELETE' });
+    assert.equal(res.status, 404);
+  });
+
+  test('404s for an unknown message id', async () => {
+    const character = await makeCharacter('Delete Test A');
+    const res = await fetch(`${baseUrl}/api/texts/${character.id}/messages/not-a-real-entry`, { method: 'DELETE' });
+    assert.equal(res.status, 404);
+  });
+
+  test('removes the message from the log', async () => {
+    const character = await makeCharacter('Delete Test B');
+    const sendRes = await (await postJson(`/api/texts/${character.id}/send`, { text: 'delete me' })).json();
+    const entry = sendRes.log.find((e) => e.text === 'delete me');
+    assert.ok(entry, 'expected the user line to be in the log');
+
+    const res = await fetch(`${baseUrl}/api/texts/${character.id}/messages/${entry.id}`, { method: 'DELETE' });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.ok(!data.log.some((e) => e.id === entry.id));
+  });
+});
+
+describe('Texting: retry (POST /api/texts/:characterId/retry)', () => {
+  const realFetch = globalThis.fetch;
+  function mockOpenRouterFetch(handler) {
+    return async (url, opts) => {
+      if (typeof url === 'string' && url.includes('/chat/completions')) return handler(url, opts);
+      return realFetch(url, opts);
+    };
+  }
+  async function makeCharacter(name) {
+    const { character } = await (await postJson('/api/characters', { name, description: 'Texts sometimes.' })).json();
+    return character;
+  }
+
+  test('rejects retry with nothing sent yet', async () => {
+    const character = await makeCharacter('Retry Test A');
+    const res = await postJson(`/api/texts/${character.id}/retry`, {});
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.match(data.error, /say something first/i);
+  });
+
+  test('rejects retry when the last message already has a reply', async (t) => {
+    const character = await makeCharacter('Retry Test B');
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: 'a reply' } }] }), { status: 200 })));
+
+    await postJson(`/api/texts/${character.id}/send`, { text: 'hi' });
+    const res = await postJson(`/api/texts/${character.id}/retry`, {});
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.match(data.error, /already has a reply/i);
+    await postJson('/api/settings/clear-key', {});
+  });
+
+  test('re-runs generation for a trailing message with no reply', async (t) => {
+    const character = await makeCharacter('Retry Test C');
+    await postJson(`/api/texts/${character.id}/send`, { text: 'anyone?' }); // no key -> guaranteed zero replies
+
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: 'finally replying' } }] }), { status: 200 })));
+
+    const res = await postJson(`/api/texts/${character.id}/retry`, {});
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.ok(data.log.some((e) => e.type === 'char' && e.text === 'finally replying'));
+    await postJson('/api/settings/clear-key', {});
+  });
+});
+
 describe('POST /api/places/:placeId/retry (validation paths — no real OpenRouter call)', () => {
   async function makePlace(name) {
     const res = await postJson('/api/places', { name, type: 'communal' });

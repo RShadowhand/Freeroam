@@ -6,6 +6,7 @@ import { useSettingsStore } from '../../stores/settings';
 import { useThemeStore } from '../../stores/theme';
 import { formatMessage } from '../../utils/format';
 import CardAvatar from '../shared/CardAvatar.vue';
+import GroupInfoPanel from './GroupInfoPanel.vue';
 
 const props = defineProps({ groupId: { type: String, required: true } });
 const emit = defineEmits(['back']);
@@ -20,6 +21,7 @@ const log = computed(() => groups.logs[props.groupId] || []);
 const text = ref('');
 const box = ref(null);
 const textareaEl = ref(null);
+const showInfo = ref(false);
 
 // Same generic "..." bubble as 1-on-1 texting (PhoneThread.vue) — only
 // shows when the setting AND streaming are both actually on.
@@ -28,6 +30,13 @@ const showTyping = computed(() => (
   && groups.streamingState && groups.streamingState.groupId === props.groupId
 ));
 const typingName = computed(() => groups.streamingState?.name || '');
+
+// Nothing replied to the trailing message yet — same "offer to try again"
+// condition place chat's UserMessage.vue uses for its own retry button.
+const showRetry = computed(() => {
+  const l = log.value;
+  return l.length > 0 && l[l.length - 1].type === 'user' && !groups.streamingState;
+});
 
 function charName(charId) {
   return world.charactersById[charId]?.name || charId;
@@ -66,14 +75,26 @@ function onKeydown(e) {
     send();
   }
 }
+
+function deleteMessage(entryId) {
+  if (!entryId) return;
+  if (confirm('Delete this message? Linked memories will be updated to match.')) {
+    groups.deleteMessage(props.groupId, entryId);
+  }
+}
+function retry() {
+  groups.retryText(props.groupId);
+}
 </script>
 
 <template>
-  <div class="phone-thread" v-if="group">
+  <GroupInfoPanel v-if="showInfo" :group-id="groupId" @back="showInfo = false" />
+  <div class="phone-thread" v-else-if="group">
     <div class="phone-thread-header">
       <button class="phone-back" type="button" @click="emit('back')">‹ Contacts</button>
       <span class="group-icon">👥</span>
       <span class="phone-thread-name">{{ group.name }}</span>
+      <button class="phone-info-btn" type="button" title="Group info" @click="showInfo = true">ⓘ</button>
     </div>
 
     <div class="messages" ref="box">
@@ -82,12 +103,22 @@ function onKeydown(e) {
         <div class="msg error" v-if="m.type === 'error'">{{ m.text }}</div>
         <div class="msg user" v-else-if="m.type === 'user'">
           <div class="bubble" v-html="html(m.text)"></div>
+          <div class="msg-actions">
+            <button v-if="m.id" class="msg-delete-btn" title="Delete" @click="deleteMessage(m.id)">🗑</button>
+            <button
+              v-if="i === log.length - 1 && showRetry" class="retry-btn"
+              title="No reply yet — try sending this again" @click="retry"
+            >↻ Retry</button>
+          </div>
         </div>
         <div class="msg char group-char" v-else>
           <CardAvatar :name="charName(m.charId)" :avatar-url="world.charactersById[m.charId]?.avatarUrl" :color="world.charactersById[m.charId]?.color" />
           <div class="group-char-body">
             <div class="speaker">{{ m.name || charName(m.charId) }}</div>
             <div class="bubble" v-html="html(m.text)"></div>
+            <div class="msg-actions">
+              <button v-if="m.id" class="msg-delete-btn" title="Delete" @click="deleteMessage(m.id)">🗑</button>
+            </div>
           </div>
         </div>
       </template>

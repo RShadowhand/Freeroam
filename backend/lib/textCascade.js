@@ -14,7 +14,15 @@
 // split across more or fewer people.
 export const DEFAULT_CASCADE_BASE_CHANCE = 0.85;
 export const DEFAULT_CASCADE_DECAY_RATE = 0.98;
-export const DEFAULT_CASCADE_PER_CHARACTER_CAP = 2;
+// 1, not 2: a cap >1 lets a character get picked to reply again immediately
+// after their OWN last line, with nothing new from anyone else to react
+// to — a real model asked to "continue" with no new stimulus tends to
+// just repeat itself, which reads as a glitchy double-text rather than a
+// deliberate one. Cascade length (E[N]) is governed by the decay curve,
+// not by this cap — it only decides who's picked, so lowering it to 1
+// doesn't change the tuned anchors (confirmed by simulation: ~3-5 total
+// for 2 others, ~0.7-0.8/character for 5 others, same at cap 1 or 2).
+export const DEFAULT_CASCADE_PER_CHARACTER_CAP = 1;
 
 // Hard ceiling on additional replies per cascade, regardless of how the
 // dice keep landing — decay alone only ever asymptotes toward zero chance,

@@ -32,6 +32,13 @@ const showTyping = computed(() => (
   && phone.streamingState && phone.streamingState.characterId === props.characterId
 ));
 
+// Nothing replied to the trailing message yet — same "offer to try again"
+// condition place chat's UserMessage.vue and GroupThread.vue both use.
+const showRetry = computed(() => {
+  const l = log.value;
+  return l.length > 0 && l[l.length - 1].type === 'user' && !phone.streamingState;
+});
+
 function html(t) {
   return formatMessage(t, theme.format);
 }
@@ -66,6 +73,16 @@ function onKeydown(e) {
     send();
   }
 }
+
+function deleteMessage(entryId) {
+  if (!entryId) return;
+  if (confirm('Delete this message? Linked memories will be updated to match.')) {
+    phone.deleteMessage(props.characterId, entryId);
+  }
+}
+function retry() {
+  phone.retryText(props.characterId);
+}
 </script>
 
 <template>
@@ -82,6 +99,13 @@ function onKeydown(e) {
         <div class="msg error" v-if="m.type === 'error'">{{ m.text }}</div>
         <div class="msg" :class="m.type === 'user' ? 'user' : 'char'" v-else>
           <div class="bubble" v-html="html(m.text)"></div>
+          <div class="msg-actions">
+            <button v-if="m.id" class="msg-delete-btn" title="Delete" @click="deleteMessage(m.id)">🗑</button>
+            <button
+              v-if="m.type === 'user' && i === log.length - 1 && showRetry" class="retry-btn"
+              title="No reply yet — try sending this again" @click="retry"
+            >↻ Retry</button>
+          </div>
         </div>
       </template>
       <div class="msg char" v-if="showTyping"><div class="bubble typing-bubble">…</div></div>

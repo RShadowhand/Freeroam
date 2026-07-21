@@ -1,7 +1,9 @@
 import { defineStore } from 'pinia';
 import { useUiStore } from './ui';
 import { getSettings } from '../api/settings';
-import { getTextLog, sendTextApi, sendTextStreamRequest } from '../api/phone';
+import {
+  getTextLog, sendTextApi, sendTextStreamRequest, retryTextApi, retryTextStreamRequest, deleteTextMessageApi,
+} from '../api/phone';
 
 // One conversation per character (Phase 2 scope — group texting is a
 // later phase), so a character's own id doubles as its conversation id.
@@ -108,6 +110,45 @@ export const usePhoneStore = defineStore('phone', {
         this.streamingState = null;
         this.loading = false;
       }
+    },
+
+    // Re-runs generation for the trailing user message when nothing
+    // replied — same idea as chat.js's retryMessage and groups.js's
+    // retryText.
+    async retryText(characterId) {
+      if (this.loading) return;
+      this.loading = true;
+
+      try {
+        const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
+        let result;
+        if (cfg.streaming) {
+          result = await this._consumeSse(characterId, await retryTextStreamRequest(characterId));
+        } else {
+          const { ok, data } = await retryTextApi(characterId);
+          if (!ok) throw new Error(data.error || 'request failed');
+          this.logs[characterId] = data.log;
+          result = { error: data.error };
+        }
+
+        if (result.error) {
+          this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'error', text: `Couldn't retry. (${result.error})` }];
+          useUiStore().showError(result.error);
+        }
+      } catch (err) {
+        this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'error', text: `Couldn't retry. (${err.message})` }];
+        useUiStore().showError(err.message);
+      } finally {
+        this.streamingState = null;
+        this.loading = false;
+      }
+    },
+
+    async deleteMessage(characterId, entryId) {
+      const { ok, data } = await deleteTextMessageApi(characterId, entryId);
+      if (ok) this.logs[characterId] = data.log;
+      else useUiStore().showError(data.error || 'Could not delete the message.');
+      return { ok, data };
     },
   },
 });

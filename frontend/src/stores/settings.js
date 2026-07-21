@@ -34,7 +34,7 @@ export const useSettingsStore = defineStore('settings', {
     textingTypingIndicator: false,
     cascadeBaseChance: 0.85,
     cascadeDecayRate: 0.98,
-    cascadePerCharacterCap: 2,
+    cascadePerCharacterCap: 1,
   }),
   getters: {
     // Providers are an OpenRouter-only concept — a custom OpenAI-spec
@@ -63,7 +63,7 @@ export const useSettingsStore = defineStore('settings', {
       this.textingTypingIndicator = !!data.textingTypingIndicator;
       this.cascadeBaseChance = Number.isFinite(data.cascadeBaseChance) ? data.cascadeBaseChance : 0.85;
       this.cascadeDecayRate = Number.isFinite(data.cascadeDecayRate) ? data.cascadeDecayRate : 0.98;
-      this.cascadePerCharacterCap = Number.isInteger(data.cascadePerCharacterCap) ? data.cascadePerCharacterCap : 2;
+      this.cascadePerCharacterCap = Number.isInteger(data.cascadePerCharacterCap) ? data.cascadePerCharacterCap : 1;
       await this.loadAvailableProviders();
     },
     async loadModels() {

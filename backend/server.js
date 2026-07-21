@@ -1286,6 +1286,77 @@ app.post('/api/texts/:characterId/send', async (req, res) => {
   res.json({ log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error } : {}) });
 });
 
+// Re-runs generation for the trailing user message when nothing replied —
+// mirrors /api/places/:placeId/retry and /api/groups/:groupId/retry
+// exactly. Reuses the same trigger entry (rather than re-appending it) so
+// a second retry after another all-replies-deleted round doesn't leave
+// yet another stale "just the user's words" memory row behind —
+// pruneReplylessMemories clears the previous attempt's memory first.
+app.post('/api/texts/:characterId/retry', async (req, res) => {
+  const w = req.world;
+  const { characterId } = req.params;
+  const character = loadCharacters(w).find((c) => c.id === characterId);
+  if (!character) return res.status(404).json({ error: 'Character not found.' });
+
+  const log = loadChatLog(w.textsDir, characterId);
+  let lastUserIdx = -1;
+  for (let i = log.length - 1; i >= 0; i--) { if (log[i].type === 'user') { lastUserIdx = i; break; } }
+  if (lastUserIdx === -1) return res.status(400).json({ error: 'Nothing to retry — say something first.' });
+  if (log.slice(lastUserIdx + 1).some((e) => e.type === 'char')) {
+    return res.status(400).json({ error: 'The last message already has a reply.' });
+  }
+
+  const userEntryId = log[lastUserIdx].id;
+  if (userEntryId) {
+    pruneReplylessMemories(w.db, findMemoriesWitnessing(w.db, userEntryId), log);
+  }
+
+  const cfg = loadConfig();
+  if (cfg.streaming && cfg.apiKey) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    send({ type: 'ack', log });
+
+    const result = await runTextingReply({ w, cfg, characterId, character, onEvent: send });
+    send({ type: 'done', log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error } : {}) });
+    return res.end();
+  }
+
+  const result = await runTextingReply({ w, cfg, characterId, character });
+  res.json({ log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error } : {}) });
+});
+
+// Deletes one message from a 1-on-1 texting conversation — mirrors
+// /api/places/:placeId/messages/:entryId's DELETE and
+// /api/groups/:groupId/messages/:entryId exactly, just against
+// w.textsDir keyed by characterId instead of a place or group id.
+app.delete('/api/texts/:characterId/messages/:entryId', async (req, res) => {
+  const w = req.world;
+  const { characterId, entryId } = req.params;
+  if (!loadCharacters(w).some((c) => c.id === characterId)) return res.status(404).json({ error: 'Character not found.' });
+
+  const log = loadChatLog(w.textsDir, characterId);
+  const idx = log.findIndex((e) => e.id === entryId);
+  if (idx === -1) return res.status(404).json({ error: 'Message not found.' });
+
+  log.splice(idx, 1);
+  saveChatLog(w.textsDir, characterId, log);
+  logger.info('chat', `deleted text message ${entryId} @ ${characterId}`);
+
+  const { personas, activePersonaId } = loadPersonas(w);
+  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+  await syncMemoriesForEntry({
+    db: w.db, embedFn: embed, entryId, newEntryIds: [],
+    log, userLabel: activePersona ? activePersona.name : 'Visitor',
+    formatEntry: formatLogEntry,
+  }).catch((err) => logger.error('memory', `text delete memory sync failed: ${err.message}`));
+
+  res.json({ log });
+});
+
 // --- Group texting routes ------------------------------------------------
 // A group conversation is the same stored-log shape 1-on-1 texting already
 // uses (w.textsDir/<id>.json), just keyed by a group id instead of a
@@ -1487,6 +1558,120 @@ app.post('/api/groups/:groupId/send', async (req, res) => {
   const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user' });
   finish(result);
   res.json({ log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error } : {}) });
+});
+
+// Re-runs the cascade for the trailing user message when nothing replied —
+// mirrors /api/places/:placeId/retry exactly. Reuses the same trigger
+// entry (rather than re-appending it) so a second retry after another
+// all-replies-deleted round doesn't leave yet another stale "just the
+// user's words" memory row behind — pruneReplylessMemories clears the
+// previous attempt's memory (if any) first.
+app.post('/api/groups/:groupId/retry', async (req, res) => {
+  const w = req.world;
+  const { groupId } = req.params;
+  const group = loadGroups(w).find((g) => g.id === groupId);
+  if (!group) return res.status(404).json({ error: 'Group not found.' });
+
+  const log = loadChatLog(w.textsDir, groupId);
+  let lastUserIdx = -1;
+  for (let i = log.length - 1; i >= 0; i--) { if (log[i].type === 'user') { lastUserIdx = i; break; } }
+  if (lastUserIdx === -1) return res.status(400).json({ error: 'Nothing to retry — say something first.' });
+  if (log.slice(lastUserIdx + 1).some((e) => e.type === 'char')) {
+    return res.status(400).json({ error: 'The last message already has a reply.' });
+  }
+
+  const triggerEntry = log[lastUserIdx];
+  if (triggerEntry.id) {
+    pruneReplylessMemories(w.db, findMemoriesWitnessing(w.db, triggerEntry.id), log);
+  }
+
+  const charactersById = {};
+  loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+
+  const cfg = loadConfig();
+  const { personas, activePersonaId } = loadPersonas(w);
+  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+  const userLabel = activePersona ? activePersona.name : 'Visitor';
+  const time = loadWorld(w).time;
+
+  const finish = (result) => recordGroupRound(w, {
+    group, triggerEntry, cascadeEntries: result.entries, userLabel, activePersonaId, time,
+  });
+
+  if (cfg.streaming && cfg.apiKey) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    send({ type: 'ack', log });
+
+    const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user', onEvent: send });
+    finish(result);
+    send({ type: 'done', log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error } : {}) });
+    return res.end();
+  }
+
+  const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user' });
+  finish(result);
+  res.json({ log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error } : {}) });
+});
+
+// Deletes one message from a group's log — mirrors
+// /api/places/:placeId/messages/:entryId's DELETE exactly, just against
+// w.textsDir instead of w.chatDir.
+app.delete('/api/groups/:groupId/messages/:entryId', async (req, res) => {
+  const w = req.world;
+  const { groupId, entryId } = req.params;
+  if (!loadGroups(w).some((g) => g.id === groupId)) return res.status(404).json({ error: 'Group not found.' });
+
+  const log = loadChatLog(w.textsDir, groupId);
+  const idx = log.findIndex((e) => e.id === entryId);
+  if (idx === -1) return res.status(404).json({ error: 'Message not found.' });
+
+  log.splice(idx, 1);
+  saveChatLog(w.textsDir, groupId, log);
+  logger.info('chat', `deleted group message ${entryId} @ ${groupId}`);
+
+  const { personas, activePersonaId } = loadPersonas(w);
+  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+  await syncMemoriesForEntry({
+    db: w.db, embedFn: embed, entryId, newEntryIds: [],
+    log, userLabel: activePersona ? activePersona.name : 'Visitor',
+    formatEntry: formatLogEntry,
+  }).catch((err) => logger.error('memory', `group delete memory sync failed: ${err.message}`));
+
+  res.json({ log });
+});
+
+// Renames a group and/or changes its participants — at least 2 must
+// remain. Removing a participant only drops them from the roster; their
+// past lines stay in the log (deleting the messages themselves is a
+// separate, explicit action).
+app.put('/api/groups/:groupId', (req, res) => {
+  const w = req.world;
+  const { groupId } = req.params;
+  const groups = loadGroups(w);
+  const group = groups.find((g) => g.id === groupId);
+  if (!group) return res.status(404).json({ error: 'Group not found.' });
+
+  const { name, participantIds } = req.body || {};
+  if (name !== undefined) {
+    if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'A group name is required.' });
+    group.name = name.trim();
+  }
+  if (participantIds !== undefined) {
+    if (!Array.isArray(participantIds) || new Set(participantIds).size < 2) {
+      return res.status(400).json({ error: 'At least 2 participants are required.' });
+    }
+    const characters = loadCharacters(w);
+    const unknown = participantIds.filter((id) => !characters.some((c) => c.id === id));
+    if (unknown.length) return res.status(400).json({ error: `Unknown character id(s): ${unknown.join(', ')}` });
+    group.participantIds = [...new Set(participantIds)];
+  }
+
+  saveGroups(w, groups);
+  res.json({ group });
 });
 
 // --- Call routes -------------------------------------------------------

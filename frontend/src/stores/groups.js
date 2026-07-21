@@ -2,7 +2,8 @@ import { defineStore } from 'pinia';
 import { useUiStore } from './ui';
 import { getSettings } from '../api/settings';
 import {
-  getGroups, createGroupApi, getGroupLog, sendGroupTextApi, sendGroupTextStreamRequest, deleteGroupApi,
+  getGroups, createGroupApi, getGroupLog, updateGroupApi, sendGroupTextApi, sendGroupTextStreamRequest,
+  retryGroupApi, retryGroupStreamRequest, deleteGroupApi, deleteGroupMessageApi,
 } from '../api/groups';
 
 // Group text conversations — same stored-log shape as stores/phone.js's
@@ -37,6 +38,22 @@ export const useGroupsStore = defineStore('groups', {
         delete this.logs[groupId];
         this.loadedIds.delete(groupId);
       }
+      return { ok, data };
+    },
+
+    async updateGroup(groupId, { name, participantIds } = {}) {
+      const body = {};
+      if (name !== undefined) body.name = name;
+      if (participantIds !== undefined) body.participantIds = participantIds;
+      const { ok, data } = await updateGroupApi(groupId, body);
+      if (ok) this.groups = this.groups.map((g) => (g.id === groupId ? data.group : g));
+      return { ok, data };
+    },
+
+    async deleteMessage(groupId, entryId) {
+      const { ok, data } = await deleteGroupMessageApi(groupId, entryId);
+      if (ok) this.logs[groupId] = data.log;
+      else useUiStore().showError(data.error || 'Could not delete the message.');
       return { ok, data };
     },
 
@@ -125,6 +142,38 @@ export const useGroupsStore = defineStore('groups', {
         }
       } catch (err) {
         this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'error', text: `Couldn't send that. (${err.message})` }];
+        useUiStore().showError(err.message);
+      } finally {
+        this.streamingState = null;
+        this.loading = false;
+      }
+    },
+
+    // Re-runs the cascade for the trailing user message when nothing
+    // replied — same "nothing new sent, just try generation again" idea as
+    // chat.js's retryMessage.
+    async retryText(groupId) {
+      if (this.loading) return;
+      this.loading = true;
+
+      try {
+        const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
+        let result;
+        if (cfg.streaming) {
+          result = await this._consumeSse(groupId, await retryGroupStreamRequest(groupId));
+        } else {
+          const { ok, data } = await retryGroupApi(groupId);
+          if (!ok) throw new Error(data.error || 'request failed');
+          this.logs[groupId] = data.log;
+          result = { error: data.error };
+        }
+
+        if (result.error) {
+          this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'error', text: `Couldn't retry. (${result.error})` }];
+          useUiStore().showError(result.error);
+        }
+      } catch (err) {
+        this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'error', text: `Couldn't retry. (${err.message})` }];
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;

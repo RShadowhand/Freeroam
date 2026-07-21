@@ -1317,6 +1317,11 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 .phone-app-hint{ flex-shrink:0; margin:0; }
 .phone-call-icon{ margin-left:auto; flex-shrink:0; color:var(--accent); font-size:0.9rem; }
 .phone-call-icon.disabled{ color:var(--dim); opacity:0.5; }
+.phone-info-btn{
+  margin-left:auto; flex-shrink:0; background:none; border:none; color:var(--dim);
+  cursor:pointer; font-size:1rem; padding:2px 4px;
+}
+.phone-info-btn:hover{ color:var(--accent); }
 
 /* ---- Group texting (Phase 4) ---- */
 .group-char{ display:flex; align-items:flex-start; gap:8px; align-self:flex-start; max-width:85%; }
