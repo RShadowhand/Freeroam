@@ -25,7 +25,7 @@ function onQuickMoveClick(e) {
 </script>
 
 <template>
-  <div class="msg char">
+  <div class="msg char" :class="{ editing: isEditing }">
     <EditRow v-if="isEditing" :message="message" />
     <template v-else>
       <div class="msg-avatar">

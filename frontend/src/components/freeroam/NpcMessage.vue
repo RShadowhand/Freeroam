@@ -23,7 +23,7 @@ const html = computed(() => formatMessage(props.message.text, theme.format));
 </script>
 
 <template>
-  <div class="msg char npc">
+  <div class="msg char npc" :class="{ editing: isEditing }">
     <EditRow v-if="isEditing" :message="message" />
     <template v-else>
       <div class="msg-avatar"><span class="npc-dot"></span></div>

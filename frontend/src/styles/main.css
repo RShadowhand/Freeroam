@@ -369,10 +369,14 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 }
 .msg{max-width:78%;}
 /* The 78%/88% caps below are sized for reading a normal chat bubble, not
-   for editing one — :has() wins over both by specificity regardless of
-   source order, so this one rule covers desktop and the mobile override
-   at line ~1178 without needing to touch the media query separately. */
-.msg:has(.msg-edit-wrap){ max-width:100%; }
+   for editing one. .editing is a real class toggled from each message
+   component's isEditing computed (not a CSS :has() trick, which some
+   desktop browsers still don't support and would silently no-op on) —
+   this one rule covers desktop and the mobile override at line ~1178
+   without needing to touch the media query separately, since a plain
+   class selector wins over both by specificity regardless of source
+   order or browser. */
+.msg.editing{ max-width:100%; }
 .msg.user{align-self:flex-end;}
 .msg.char{ align-self:flex-start; display:flex; align-items:flex-start; gap:9px; }
 .msg-avatar{ flex-shrink:0; margin-top:2px; display:flex; flex-direction:column; align-items:center; gap:2px; }

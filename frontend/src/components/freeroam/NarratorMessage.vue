@@ -15,7 +15,7 @@ const html = computed(() => formatMessage(props.message.text, theme.format));
 </script>
 
 <template>
-  <div class="msg narrator">
+  <div class="msg narrator" :class="{ editing: isEditing }">
     <EditRow v-if="isEditing" :message="message" />
     <template v-else>
       <MessageActions :message="message" />
