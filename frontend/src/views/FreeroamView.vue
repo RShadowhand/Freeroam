@@ -1,7 +1,8 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 import { useWorldStore } from '../stores/world';
 import { useChatStore } from '../stores/chat';
+import { usePhoneStore } from '../stores/phone';
 import MapAreaPanel from '../components/freeroam/MapAreaPanel.vue';
 import ChatPanel from '../components/freeroam/ChatPanel.vue';
 import PhonePanel from '../components/phone/PhonePanel.vue';
@@ -13,6 +14,7 @@ import FreeroamBanner from '../components/freeroam/FreeroamBanner.vue';
 
 const world = useWorldStore();
 const chat = useChatStore();
+const phone = usePhoneStore();
 const ready = ref(false);
 
 // Mobile only: which single panel currently owns the screen. A plain
@@ -22,6 +24,13 @@ const mobilePanel = ref('chat');
 function toggleMobilePanel(panel) {
   mobilePanel.value = mobilePanel.value === panel ? 'chat' : panel;
 }
+
+// Proactive texts (Phase 5) land as a background side effect of some
+// other request — nothing pushes the badge update to the client, so this
+// polls for it instead. No WebSocket/SSE channel exists for "just tell me
+// when something changes," and a 20s cadence is frequent enough to feel
+// live without hammering the server over something this infrequent.
+let unreadPollId = null;
 
 onMounted(async () => {
   if (!chat.currentPlace) {
@@ -35,6 +44,12 @@ onMounted(async () => {
     await chat.checkApiKeyBanner();
   }
   ready.value = true;
+  phone.refreshUnreadCount();
+  unreadPollId = setInterval(() => phone.refreshUnreadCount(), 20000);
+});
+
+onUnmounted(() => {
+  if (unreadPollId) clearInterval(unreadPollId);
 });
 
 // On mobile, picking a room flips back from the map (or phone) to the chat.

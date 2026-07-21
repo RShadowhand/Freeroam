@@ -83,6 +83,7 @@ import {
   DEFAULT_CASCADE_BASE_CHANCE, DEFAULT_CASCADE_DECAY_RATE, DEFAULT_CASCADE_PER_CHARACTER_CAP, MAX_CASCADE_REPLIES,
   nextCascadeChance, rollContinues, eligibleReplierIds, pickReplier,
 } from './lib/textCascade.js';
+import { rollsProactiveText } from './lib/proactiveTexts.js';
 import { logger } from './lib/log.js';
 logger.setLevel("debug")
 
@@ -138,6 +139,7 @@ const DEFAULT_CONFIG = {
   cascadeBaseChance: DEFAULT_CASCADE_BASE_CHANCE,       // Phase 4 — see lib/textCascade.js
   cascadeDecayRate: DEFAULT_CASCADE_DECAY_RATE,
   cascadePerCharacterCap: DEFAULT_CASCADE_PER_CHARACTER_CAP,
+  textingChancePerChar: 0.002,           // Phase 5 — per-character odds of a spontaneous text on each user input
 };
 
 // The model in use before embeddingModelVersion existed — configs saved
@@ -437,6 +439,7 @@ function publicConfig(cfg) {
     cascadeBaseChance: Number.isFinite(cfg.cascadeBaseChance) ? cfg.cascadeBaseChance : DEFAULT_CASCADE_BASE_CHANCE,
     cascadeDecayRate: Number.isFinite(cfg.cascadeDecayRate) ? cfg.cascadeDecayRate : DEFAULT_CASCADE_DECAY_RATE,
     cascadePerCharacterCap: Number.isInteger(cfg.cascadePerCharacterCap) ? cfg.cascadePerCharacterCap : DEFAULT_CASCADE_PER_CHARACTER_CAP,
+    textingChancePerChar: Number.isFinite(cfg.textingChancePerChar) ? cfg.textingChancePerChar : DEFAULT_CONFIG.textingChancePerChar,
   };
 }
 
@@ -449,7 +452,7 @@ app.post('/api/settings', (req, res) => {
   const {
     apiKey, model, apiBase, streaming, reasoning, providers, memoryMinScore, suggestedActionsMode,
     draftPersonaPrompt, narratorEnabled, textingPromptTemplate, textingTypingIndicator,
-    cascadeBaseChance, cascadeDecayRate, cascadePerCharacterCap,
+    cascadeBaseChance, cascadeDecayRate, cascadePerCharacterCap, textingChancePerChar,
   } = req.body || {};
   if (typeof apiKey === 'string' && apiKey.trim()) cfg.apiKey = apiKey.trim();
   if (typeof model === 'string' && model.trim()) cfg.model = model.trim();
@@ -477,6 +480,9 @@ app.post('/api/settings', (req, res) => {
   }
   if (typeof cascadePerCharacterCap === 'number' && Number.isInteger(cascadePerCharacterCap)) {
     cfg.cascadePerCharacterCap = Math.max(1, cascadePerCharacterCap);
+  }
+  if (typeof textingChancePerChar === 'number' && Number.isFinite(textingChancePerChar)) {
+    cfg.textingChancePerChar = Math.max(0, Math.min(1, textingChancePerChar));
   }
   saveConfig(cfg);
   res.json(publicConfig(cfg));
@@ -1241,12 +1247,139 @@ async function runTextingReply({ w, cfg, characterId, character, onEvent = null 
   }
 }
 
+// A character spontaneously texting the user, unprompted — reuses the same
+// texting-mode generation as runTextingReply, but there's no user line
+// triggering it, so buildTextingMessages' proactive flag appends a final
+// directive turn instead. Recorded as a single addCharacterMemory rather
+// than recordTurn's shared-row-per-exchange — there's no "exchange" here,
+// just one spontaneous message — per the plan's own call-out. Not
+// streamed: this always runs as a background side effect of some other
+// request, never behind a live SSE connection of its own.
+async function generateProactiveText({ w, cfg, characterId, character }) {
+  const { personas, activePersonaId } = loadPersonas(w);
+  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+  const personaLabel = activePersona ? activePersona.name : 'Visitor';
+  const world = loadWorld(w);
+  const log = loadChatLog(w.textsDir, characterId);
+
+  const memoryQuery = `${character.name} decides to text ${personaLabel} out of the blue.`;
+  let memories = [];
+  try {
+    memories = await retrieveMemories({
+      db: w.db, embedFn: embed, characterIds: [characterId], query: memoryQuery, minScore: cfg.memoryMinScore,
+    });
+  } catch (err) {
+    logger.warn('memory', `proactive text retrieval failed, continuing without memories: ${err.message}`);
+  }
+
+  const charactersById = {};
+  loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+  const placesById = {};
+  loadPlaces(w).forEach((p) => { placesById[p.id] = p; });
+  const relationships = await relationshipKnowledge(w, characterId, charactersById, placesById, world, activePersona ? activePersona.name : null, memoryQuery);
+
+  const messages = buildTextingMessages({
+    char: character,
+    persona: activePersona ? { name: activePersona.name, description: activePersona.description } : null,
+    memories, relationships, time: world.time, proactive: true,
+    textingPromptTemplate: publicConfig(cfg).textingPromptTemplate,
+  }, historyFromLog(log));
+
+  const { text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (proactive text)`);
+
+  const entry = { type: 'char', charId: characterId, name: character.name, text: (text || '').trim(), proactive: true };
+  const stats = buildGenerationStats(usage, timing);
+  if (stats) entry.stats = stats;
+  appendChatEntries(w.textsDir, characterId, [entry]);
+
+  await addCharacterMemory({
+    db: w.db, embedFn: embed, characterId, personaId: activePersonaId || null,
+    text: `${character.name} texted you out of the blue: ${entry.text}`,
+    placeId: null, day: world.time.day, timeOfDay: world.time.timeOfDay,
+  }).catch((err) => logger.error('memory', `proactive text memory failed: ${err.message}`));
+
+  logger.info('chat', `proactive text: ${character.name} -> ${personaLabel}`);
+  return entry;
+}
+
+// Rolls once per character not already part of the current exchange —
+// present at the place being said in, or the one being texted — and
+// kicks off (but doesn't await) generation for anyone who hits. Fire-and-
+// forget on purpose: this is a spontaneous background event, not part of
+// the request that triggered it, so it shouldn't add latency or let one
+// character's generation failure affect the response the user is actually
+// waiting on. A missing/zero chance or key is a cheap no-op.
+function maybeSendProactiveTexts(w, excludeIds) {
+  const cfg = loadConfig();
+  if (!cfg.apiKey || !(cfg.textingChancePerChar > 0)) return;
+
+  const characters = loadCharacters(w).filter((c) => !excludeIds.includes(c.id));
+  for (const character of characters) {
+    if (!rollsProactiveText(cfg.textingChancePerChar)) continue;
+    generateProactiveText({ w, cfg, characterId: character.id, character })
+      .catch((err) => logger.warn('chat', `proactive text failed for ${character.name}: ${err.message}`));
+  }
+}
+
+// Every proactive (unprompted) char entry, across every 1-on-1 texting
+// log, that hasn't been marked read yet — group logs live in the same
+// dir but their entries never get `proactive` set, so they're already
+// excluded without any special-casing. Registered before the
+// :characterId route below so "unread" is never captured as a param.
+function countUnreadProactiveTexts(w) {
+  let files;
+  try {
+    files = fs.readdirSync(w.textsDir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return 0;
+  }
+  let total = 0;
+  for (const file of files) {
+    const id = file.slice(0, -'.json'.length);
+    total += loadChatLog(w.textsDir, id).filter((e) => e.type === 'char' && e.proactive && !e.read).length;
+  }
+  return total;
+}
+
+app.get('/api/texts/unread', (req, res) => {
+  res.json({ count: countUnreadProactiveTexts(req.world) });
+});
+
+// Opening a conversation marks any proactive texts in it as read — the
+// unread badge (GET /api/texts/unread) only ever counts what's actually
+// still unseen.
 app.get('/api/texts/:characterId', (req, res) => {
   const w = req.world;
   const { characterId } = req.params;
   const character = loadCharacters(w).find((c) => c.id === characterId);
   if (!character) return res.status(404).json({ error: 'Character not found.' });
-  res.json({ log: loadChatLog(w.textsDir, characterId) });
+
+  const log = loadChatLog(w.textsDir, characterId);
+  if (log.some((e) => e.proactive && !e.read)) {
+    log.forEach((e) => { if (e.proactive) e.read = true; });
+    saveChatLog(w.textsDir, characterId, log);
+  }
+  res.json({ log });
+});
+
+// Manual "text me now" — same generation path as an automatic hit, just
+// skipping the dice roll (debugging the prompt/memory injection, or a
+// real player-facing nudge for a character you're missing).
+app.post('/api/texts/:characterId/trigger', async (req, res) => {
+  const w = req.world;
+  const { characterId } = req.params;
+  const character = loadCharacters(w).find((c) => c.id === characterId);
+  if (!character) return res.status(404).json({ error: 'Character not found.' });
+
+  const cfg = loadConfig();
+  if (!cfg.apiKey) return res.status(400).json({ error: 'No API key configured. Add one in Settings.' });
+
+  try {
+    const entry = await generateProactiveText({ w, cfg, characterId, character });
+    res.json({ log: loadChatLog(w.textsDir, characterId), entry });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
 });
 
 // Sending a text: appends the user's line, then generates the character's
@@ -1267,6 +1400,7 @@ app.post('/api/texts/:characterId/send', async (req, res) => {
 
   appendChatEntries(w.textsDir, characterId, [{ type: 'user', text: text.trim() }]);
   logger.info('chat', `text -> ${character.name}`);
+  maybeSendProactiveTexts(w, [characterId]);
 
   const cfg = loadConfig();
   if (cfg.streaming && cfg.apiKey) {
@@ -1408,7 +1542,7 @@ app.delete('/api/groups/:groupId', (req, res) => {
 // API has no "third party" role, so everyone else's lines, including the
 // user's, fold into 'user' turns; only the replying character's own past
 // lines come back as 'assistant').
-async function generateGroupReply({ w, cfg, group, replierId, character, charactersById, onEvent = null }) {
+async function generateGroupReply({ w, cfg, group, replierId, character, charactersById, onEvent = null, selfContinuation = false }) {
   const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
   const personaLabel = activePersona ? activePersona.name : 'Visitor';
@@ -1433,7 +1567,7 @@ async function generateGroupReply({ w, cfg, group, replierId, character, charact
   const messages = buildTextingMessages({
     char: character,
     persona: activePersona ? { name: activePersona.name, description: activePersona.description } : null,
-    memories, relationships, time: world.time, groupMembers,
+    memories, relationships, time: world.time, groupMembers, selfContinuation,
     textingPromptTemplate: publicConfig(cfg).textingPromptTemplate,
   }, groupHistoryFromLog(log, replierId, personaLabel));
 
@@ -1482,9 +1616,17 @@ async function runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId
     const character = charactersById[replierId];
     if (!character) break; // shouldn't happen — participantIds are validated at creation
 
+    // The cap can let replierId go again right after their OWN last line
+    // (a deliberate "double text" allowance) — when it does, the message
+    // array would otherwise end on their own assistant turn with nothing
+    // new to react to. buildTextingMessages' selfContinuation directive is
+    // what keeps that from just restating the same thing (see its own
+    // comment, and textCascade.js's, for why the cap itself isn't the fix).
+    const selfContinuation = replierId === lastSpeakerId;
+
     let entry;
     try {
-      entry = await generateGroupReply({ w, cfg, group, replierId, character, charactersById, onEvent });
+      entry = await generateGroupReply({ w, cfg, group, replierId, character, charactersById, onEvent, selfContinuation });
     } catch (err) {
       logger.warn('chat', `group cascade reply failed, stopping the cascade here: ${err.message}`);
       break;
@@ -3013,6 +3155,7 @@ app.post('/api/places/:placeId/say', async (req, res) => {
   turnEntries.push({ type: 'user', text: text.trim() });
   appendChatEntries(w.chatDir, placeId, turnEntries);
   logger.info('chat', `say @ ${place.name}: ${charIds.length} character(s) present, ${activeIds.length} active`);
+  maybeSendProactiveTexts(w, charIds);
 
   if (!charIds.length) {
     await narrateEmptyPlaceOrEcho({ w, placeId, place });

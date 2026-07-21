@@ -177,6 +177,43 @@ describe('Groups: the cascade (OpenRouter + Math.random mocked)', () => {
     assert.equal(lastTwo[1].text, 'Mireille here.');
   });
 
+  test('a same-character back-to-back reply gets a follow-up directive, not silence or a repeat prompt', async (t) => {
+    // The actual fix for the reported "character says hi twice" bug: when
+    // the cap lets ezra go again right after his own last line, the prompt
+    // needs an explicit "add something new" nudge — otherwise the message
+    // array ends on his own assistant turn with nothing to react to and a
+    // real model just restates itself. See lib/texting.js's selfContinuation.
+    let call = 0;
+    const payloads = [];
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async (url, opts) => {
+      call += 1;
+      payloads.push(JSON.parse(opts.body));
+      const text = call === 1 ? 'hiii everyone!!' : 'omg one more thing!!';
+      return new Response(JSON.stringify({ choices: [{ message: { content: text } }] }), { status: 200 });
+    }));
+    // iter1: roll continue (0), pick ezra (idx0 of 2)
+    // iter2: roll continue (0), pick ezra again (streak=1 < cap 2, still eligible, idx0 again)
+    // iter3: roll stop (0.99)
+    t.mock.method(Math, 'random', mockRandomSequence([0, 0, 0, 0, 0.99]));
+
+    const res = await postJson(`/api/groups/${group.id}/send`, { text: 'Hey all!' });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+
+    const charEntries = data.log.filter((e) => e.type === 'char').slice(-2);
+    assert.equal(charEntries[0].charId, 'ezra');
+    assert.equal(charEntries[1].charId, 'ezra');
+
+    assert.equal(payloads.length, 2);
+    const secondCallLast = payloads[1].messages[payloads[1].messages.length - 1];
+    assert.equal(secondCallLast.role, 'user');
+    assert.match(secondCallLast.content, /follow-up/i, 'expected the selfContinuation directive on the second call');
+
+    const secondToLast = payloads[1].messages[payloads[1].messages.length - 2];
+    assert.equal(secondToLast.role, 'assistant', "ezra's own first line should still be a clean assistant turn");
+    assert.equal(secondToLast.content, 'hiii everyone!!');
+  });
+
   test("every participant's memory records the round, including whoever didn't reply this time", async (t) => {
     // Fresh group where only one member is ever picked, so the other member's
     // memory can only have come from the shared-round recording, not from
@@ -226,24 +263,22 @@ describe('Groups: the cascade (OpenRouter + Math.random mocked)', () => {
       assert.ok(run <= 2, `charId ${speakers[i]} replied ${run} times in a row: ${speakers.join(',')}`);
     }
 
-    await postJson('/api/settings', { cascadeBaseChance: 0.85, cascadeDecayRate: 0.98, cascadePerCharacterCap: 1 });
+    await postJson('/api/settings', { cascadeBaseChance: 0.85, cascadeDecayRate: 0.98, cascadePerCharacterCap: 2 });
   });
 
-  test('the default cap (1) never lets a character reply to their own line twice in a row', async (t) => {
-    // The bug this guards against: with a higher cap, a character could get
-    // picked again immediately after their OWN last line, with nothing new
-    // from anyone else to react to — a real model asked to "continue" with
-    // no new stimulus tends to just repeat itself, which read as a
-    // duplicate-message bug even though the stored text was never literally
-    // appended twice.
+  test('the default cap (2) allows a back-to-back double-text but never a third in a row', async (t) => {
+    // Cap 2 is a deliberate default, not a bug — a character replying to
+    // their own line once in a row reads as a natural double-text. What it
+    // must never do is run a third time with nothing new from anyone else
+    // to react to; groupHistoryFromLog's turn-merging (lib/texting.js) is
+    // what keeps that from reading as a repeated-greeting glitch, not the
+    // cap itself — see textCascade.js's comment for the full history.
     const settingsRes = await (await fetch(`${baseUrl}/api/settings`)).json();
-    assert.equal(settingsRes.cascadePerCharacterCap, 1, 'expected the default cap to be 1');
+    assert.equal(settingsRes.cascadePerCharacterCap, 2, 'expected the default cap to be 2');
 
     const { group: defaultCapGroup } = await (await postJson('/api/groups', { name: 'Default Cap', participantIds: ['ezra', 'mireille'] })).json();
     t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
       new Response(JSON.stringify({ choices: [{ message: { content: 'reply' } }] }), { status: 200 })));
-    // Always continue, always try to pick the same slot — proves the
-    // default cap alone (no explicit override) still alternates speakers.
     let n = 0;
     t.mock.method(Math, 'random', () => {
       n += 1;
@@ -253,8 +288,10 @@ describe('Groups: the cascade (OpenRouter + Math.random mocked)', () => {
     const res = await postJson(`/api/groups/${defaultCapGroup.id}/send`, { text: 'Go.' });
     const data = await res.json();
     const speakers = data.log.filter((e) => e.type === 'char').map((e) => e.charId);
+    let run = 1;
     for (let i = 1; i < speakers.length; i++) {
-      assert.notEqual(speakers[i], speakers[i - 1], `${speakers[i]} replied to their own line twice in a row: ${speakers.join(',')}`);
+      run = speakers[i] === speakers[i - 1] ? run + 1 : 1;
+      assert.ok(run <= 2, `charId ${speakers[i]} replied ${run} times in a row: ${speakers.join(',')}`);
     }
   });
 });

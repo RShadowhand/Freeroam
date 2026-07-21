@@ -1304,19 +1304,30 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   background:none; border:none; cursor:pointer; color:inherit; padding:6px 2px;
 }
 .phone-app-glyph{
-  width:56px; height:56px; border-radius:16px; font-size:1.7rem;
+  position:relative; width:56px; height:56px; border-radius:16px; font-size:1.7rem;
   display:flex; align-items:center; justify-content:center;
   background:var(--panel-raised); border:1px solid var(--border);
   transition:border-color .15s ease, transform .1s ease;
 }
 .phone-app-icon:hover .phone-app-glyph{ border-color:var(--accent); }
 .phone-app-icon:active .phone-app-glyph{ transform:scale(0.94); }
+.phone-app-badge{
+  position:absolute; top:-6px; right:-6px; min-width:18px; height:18px; padding:0 4px;
+  border-radius:9px; background:var(--rose); color:#1A1620;
+  font-family:'IBM Plex Mono',monospace; font-size:0.68rem; font-weight:700;
+  display:flex; align-items:center; justify-content:center; line-height:1;
+}
 .phone-app-label{
   font-family:'IBM Plex Mono',monospace; font-size:0.7rem; letter-spacing:0.02em; color:var(--dim);
 }
 .phone-app-hint{ flex-shrink:0; margin:0; }
 .phone-call-icon{ margin-left:auto; flex-shrink:0; color:var(--accent); font-size:0.9rem; }
 .phone-call-icon.disabled{ color:var(--dim); opacity:0.5; }
+.phone-nudge-btn{
+  margin-left:auto; flex-shrink:0; cursor:pointer; font-size:0.9rem; opacity:0.6;
+  transition:opacity .15s ease;
+}
+.phone-nudge-btn:hover{ opacity:1; }
 .phone-info-btn{
   margin-left:auto; flex-shrink:0; background:none; border:none; color:var(--dim);
   cursor:pointer; font-size:1rem; padding:2px 4px;

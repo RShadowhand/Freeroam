@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildTextingMessages, historyFromLog } from '../lib/texting.js';
+import { buildTextingMessages, historyFromLog, groupHistoryFromLog } from '../lib/texting.js';
 
 describe('buildTextingMessages', () => {
   const baseScene = {
@@ -74,6 +74,48 @@ describe('buildTextingMessages', () => {
     const without = buildTextingMessages(baseScene)[0];
     assert.ok(!without.content.includes('What you know about people:'));
   });
+
+  test('group texts phrase the roster line and warn against repeating what was already said', () => {
+    const scene = { ...baseScene, persona: { name: 'Shad', description: null }, groupMembers: ['Mireille', 'Soot'] };
+    const [system] = buildTextingMessages(scene);
+    assert.ok(system.content.includes('in a group text with Shad, Mireille, and Soot'));
+    assert.match(system.content, /don't repeat a greeting or message/i);
+  });
+
+  test('1-on-1 texts omit the group roster and repeat-warning language', () => {
+    const [system] = buildTextingMessages(baseScene);
+    assert.ok(!system.content.includes('group text'));
+    assert.ok(!system.content.includes("don't repeat"));
+  });
+
+  test('proactive appends a final directive turn to originate a message unprompted', () => {
+    const scene = { ...baseScene, persona: { name: 'Shad', description: null }, proactive: true };
+    const messages = buildTextingMessages(scene, [{ role: 'assistant', content: 'an earlier text' }]);
+    const last = messages[messages.length - 1];
+    assert.equal(last.role, 'user');
+    assert.match(last.content, /out of the blue/i);
+  });
+
+  test('selfContinuation appends a follow-up directive instead, distinct from proactive', () => {
+    const scene = { ...baseScene, persona: { name: 'Shad', description: null }, selfContinuation: true };
+    const messages = buildTextingMessages(scene, [{ role: 'assistant', content: 'hi daddy!!' }]);
+    const last = messages[messages.length - 1];
+    assert.equal(last.role, 'user');
+    assert.match(last.content, /follow-up/i);
+    assert.ok(!last.content.includes('out of the blue'));
+  });
+
+  test('proactive and selfContinuation are mutually exclusive — proactive wins if both are set', () => {
+    const scene = { ...baseScene, proactive: true, selfContinuation: true };
+    const messages = buildTextingMessages(scene);
+    const last = messages[messages.length - 1];
+    assert.match(last.content, /out of the blue/i);
+  });
+
+  test('neither directive is appended when both flags are false/absent', () => {
+    const messages = buildTextingMessages(baseScene, [{ role: 'user', content: 'hi' }]);
+    assert.equal(messages.length, 2); // just [system, history] — no extra turn
+  });
 });
 
 describe('historyFromLog', () => {
@@ -107,5 +149,81 @@ describe('historyFromLog', () => {
 
   test('returns an empty array for an empty log', () => {
     assert.deepEqual(historyFromLog([]), []);
+  });
+});
+
+describe('groupHistoryFromLog', () => {
+  test('the current speaker\'s own lines become "assistant", unprefixed', () => {
+    const log = [{ type: 'char', charId: 'ezra', name: 'Ezra', text: 'hey all' }];
+    assert.deepEqual(groupHistoryFromLog(log, 'ezra'), [{ role: 'assistant', content: 'hey all' }]);
+  });
+
+  test('other characters\' lines become "user", prefixed with their name', () => {
+    const log = [{ type: 'char', charId: 'mireille', name: 'Mireille', text: 'hi!' }];
+    assert.deepEqual(groupHistoryFromLog(log, 'ezra'), [{ role: 'user', content: 'Mireille: hi!' }]);
+  });
+
+  test('the human\'s lines become "user", prefixed with the given userLabel', () => {
+    const log = [{ type: 'user', text: 'hello everyone' }];
+    assert.deepEqual(groupHistoryFromLog(log, 'ezra', 'Shad'), [{ role: 'user', content: 'Shad: hello everyone' }]);
+  });
+
+  test('drops entries of any other type', () => {
+    const log = [
+      { type: 'user', text: 'hi' },
+      { type: 'error', text: 'something broke' },
+      { type: 'char', charId: 'ezra', name: 'Ezra', text: 'hey' },
+    ];
+    assert.deepEqual(groupHistoryFromLog(log, 'ezra', 'Shad'), [
+      { role: 'user', content: 'Shad: hi' },
+      { role: 'assistant', content: 'hey' },
+    ]);
+  });
+
+  test('returns an empty array for an empty log', () => {
+    assert.deepEqual(groupHistoryFromLog([], 'ezra'), []);
+  });
+
+  // The actual bug report this guards against: two different characters
+  // (or the human, then a character) both replying before the current
+  // speaker's turn both map to role:'user' as SEPARATE entries unless
+  // merged — three or more consecutive same-role turns with no
+  // 'assistant' turn between them is an unusual shape for a chat-
+  // completion API and can make it lose track of who already said what.
+  test('merges consecutive turns that end up with the same role, newline-joined', () => {
+    const log = [
+      { type: 'user', text: 'Welcome to the group!' },
+      { type: 'char', charId: 'mireille', name: 'Mireille', text: 'hi mom!!' },
+      { type: 'char', charId: 'mireille', name: 'Mireille', text: 'omg hi grandma!!' },
+    ];
+    // From soot's perspective: all three are 'user' (Shad's line, then two
+    // of Mireille's) — none of them are soot's own lines.
+    assert.deepEqual(groupHistoryFromLog(log, 'soot', 'Shad'), [
+      { role: 'user', content: 'Shad: Welcome to the group!\nMireille: hi mom!!\nMireille: omg hi grandma!!' },
+    ]);
+  });
+
+  test('does not merge across an intervening turn of a different role', () => {
+    const log = [
+      { type: 'char', charId: 'mireille', name: 'Mireille', text: 'hi!' },
+      { type: 'char', charId: 'ezra', name: 'Ezra', text: 'hello.' }, // ezra's own line, from ezra's perspective
+      { type: 'char', charId: 'mireille', name: 'Mireille', text: 'how are you?' },
+    ];
+    assert.deepEqual(groupHistoryFromLog(log, 'ezra'), [
+      { role: 'user', content: 'Mireille: hi!' },
+      { role: 'assistant', content: 'hello.' },
+      { role: 'user', content: 'Mireille: how are you?' },
+    ]);
+  });
+
+  test('merges more than two consecutive same-role turns', () => {
+    const log = [
+      { type: 'char', charId: 'mireille', name: 'Mireille', text: 'a' },
+      { type: 'char', charId: 'soot', name: 'Soot', text: 'b' },
+      { type: 'char', charId: 'custodian', name: 'Custodian', text: 'c' },
+    ];
+    assert.deepEqual(groupHistoryFromLog(log, 'ezra'), [
+      { role: 'user', content: 'Mireille: a\nSoot: b\nCustodian: c' },
+    ]);
   });
 });

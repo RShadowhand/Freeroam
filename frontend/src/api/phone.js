@@ -6,6 +6,8 @@ export const sendTextApi = (characterId, body) => apiJson(`/api/texts/${encodeUR
 export const retryTextApi = (characterId) => apiJson(`/api/texts/${encodeURIComponent(characterId)}/retry`, 'POST', {});
 export const deleteTextMessageApi = (characterId, entryId) =>
   apiDelete(`/api/texts/${encodeURIComponent(characterId)}/messages/${encodeURIComponent(entryId)}`);
+export const triggerTextApi = (characterId) => apiJson(`/api/texts/${encodeURIComponent(characterId)}/trigger`, 'POST', {});
+export const getUnreadTextCount = () => apiGet('/api/texts/unread');
 
 // Streaming variant returns the raw fetch Response so the caller can read
 // its SSE body directly — same pattern as api/chat.js's sayStreamRequest,

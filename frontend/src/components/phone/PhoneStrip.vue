@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useWorldStore } from '../../stores/world';
 import { useChatStore } from '../../stores/chat';
+import { usePhoneStore } from '../../stores/phone';
 import { getWeather } from '../../api/weather';
 
 // Mobile-only: a single persistent control that's an info strip when
@@ -13,6 +14,7 @@ defineEmits(['toggle']);
 
 const world = useWorldStore();
 const chat = useChatStore();
+const phone = usePhoneStore();
 const weatherByArea = ref({});
 
 const currentPlace = computed(() => (chat.currentPlace ? world.placeById(chat.currentPlace) : null));
@@ -21,11 +23,7 @@ const currentWeather = computed(() => {
   return area ? weatherByArea.value[area]?.condition || null : null;
 });
 
-// Nothing generates an unread text yet (Phase 2 is user-initiated only —
-// you're always already looking at whatever you just sent) — this becomes
-// real once Phase 5 (proactive texts) exists. Left at 0 rather than
-// invented store state with no producer.
-const unreadCount = 0;
+const unreadCount = computed(() => phone.unreadCount);
 
 function capitalize(s) {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';

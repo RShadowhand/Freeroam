@@ -39,6 +39,17 @@ async function saveCascade() {
   });
   cascadeStatus.value = 'Saved.';
 }
+
+// Displayed as a percentage (0.2%) rather than a raw 0.002 fraction —
+// easier to reason about at these vanishingly small odds.
+const textingChancePercent = ref(settings.textingChancePerChar * 100);
+const proactiveStatus = ref('');
+watch(() => settings.textingChancePerChar, (v) => { textingChancePercent.value = v * 100; });
+
+async function saveProactiveChance() {
+  await settings.setTextingChancePerChar(Number(textingChancePercent.value) / 100);
+  proactiveStatus.value = 'Saved.';
+}
 </script>
 
 <template>
@@ -88,12 +99,28 @@ async function saveCascade() {
       <input type="number" v-model="cascadePerCharacterCap" min="1" step="1" style="width:90px;">
     </div>
     <p class="hint">
-      The default (1) means nobody replies to themselves twice in a row — a character with nothing new to react to
-      tends to just repeat their last message. Raise this only if you want a character able to "double text."
+      The default (2) lets a character send a quick follow-up right after their own line, like a real double-text —
+      lower it to 1 if you'd rather nobody ever replies to themselves back-to-back.
     </p>
     <div class="form-actions">
       <button class="btn small" @click="saveCascade">Save</button>
       <span class="form-status">{{ cascadeStatus }}</span>
+    </div>
+
+    <h3 style="margin-top:18px;">Proactive texts</h3>
+    <p class="hint">
+      Each time you say something (in a place, or in a text thread), every character not already part of that
+      exchange gets an independent, very low chance to text you out of the blue instead — asking for something, or
+      sharing news. You can also nudge a specific character to text you right now from the Phone tab, skipping the
+      dice entirely.
+    </p>
+    <div class="endpoint-row">
+      <label style="flex-shrink:0;">Chance per character (%)</label>
+      <input type="number" v-model="textingChancePercent" min="0" max="100" step="0.1" style="width:90px;">
+    </div>
+    <div class="form-actions">
+      <button class="btn small" @click="saveProactiveChance">Save</button>
+      <span class="form-status">{{ proactiveStatus }}</span>
     </div>
   </div>
 </template>

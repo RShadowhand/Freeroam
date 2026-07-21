@@ -34,7 +34,8 @@ export const useSettingsStore = defineStore('settings', {
     textingTypingIndicator: false,
     cascadeBaseChance: 0.85,
     cascadeDecayRate: 0.98,
-    cascadePerCharacterCap: 1,
+    cascadePerCharacterCap: 2,
+    textingChancePerChar: 0.002,
   }),
   getters: {
     // Providers are an OpenRouter-only concept — a custom OpenAI-spec
@@ -63,7 +64,8 @@ export const useSettingsStore = defineStore('settings', {
       this.textingTypingIndicator = !!data.textingTypingIndicator;
       this.cascadeBaseChance = Number.isFinite(data.cascadeBaseChance) ? data.cascadeBaseChance : 0.85;
       this.cascadeDecayRate = Number.isFinite(data.cascadeDecayRate) ? data.cascadeDecayRate : 0.98;
-      this.cascadePerCharacterCap = Number.isInteger(data.cascadePerCharacterCap) ? data.cascadePerCharacterCap : 1;
+      this.cascadePerCharacterCap = Number.isInteger(data.cascadePerCharacterCap) ? data.cascadePerCharacterCap : 2;
+      this.textingChancePerChar = Number.isFinite(data.textingChancePerChar) ? data.textingChancePerChar : 0.002;
       await this.loadAvailableProviders();
     },
     async loadModels() {
@@ -156,6 +158,10 @@ export const useSettingsStore = defineStore('settings', {
       this.cascadeBaseChance = data.cascadeBaseChance;
       this.cascadeDecayRate = data.cascadeDecayRate;
       this.cascadePerCharacterCap = data.cascadePerCharacterCap;
+    },
+    async setTextingChancePerChar(value) {
+      const { data } = await saveSettings({ textingChancePerChar: value });
+      this.textingChancePerChar = data.textingChancePerChar;
     },
     async rebuildEmbeddings() {
       const { ok, data } = await rebuildEmbeddingsRequest();

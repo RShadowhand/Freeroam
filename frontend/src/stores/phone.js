@@ -3,6 +3,7 @@ import { useUiStore } from './ui';
 import { getSettings } from '../api/settings';
 import {
   getTextLog, sendTextApi, sendTextStreamRequest, retryTextApi, retryTextStreamRequest, deleteTextMessageApi,
+  triggerTextApi, getUnreadTextCount,
 } from '../api/phone';
 
 // One conversation per character (Phase 2 scope — group texting is a
@@ -18,6 +19,7 @@ export const usePhoneStore = defineStore('phone', {
     loading: false,
     streamingState: null, // { characterId, name } | null
     loadedIds: new Set(), // characters whose log has been fetched at least once this session
+    unreadCount: 0, // proactive texts (Phase 5) not yet seen — badge count
   }),
   actions: {
     async openConversation(characterId) {
@@ -26,7 +28,34 @@ export const usePhoneStore = defineStore('phone', {
       if (ok) {
         this.logs[characterId] = data.log;
         this.loadedIds.add(characterId);
+        // The GET just marked any proactive texts in this conversation as
+        // read server-side — refresh the badge to match.
+        this.refreshUnreadCount();
       }
+    },
+
+    async refreshUnreadCount() {
+      const { ok, data } = await getUnreadTextCount();
+      if (ok) this.unreadCount = data.count;
+    },
+
+    // Manual "nudge" — same generation path as a real automatic hit, just
+    // skipping the dice roll. Doesn't touch loading/streamingState (this
+    // isn't a reply to anything the user is actively waiting on) but does
+    // update the conversation log and badge once it lands. Deliberately
+    // does NOT mark characterId as loaded — the message still counts as
+    // unread server-side until the conversation is actually opened, and
+    // openConversation's own GET is what marks it read; skipping that here
+    // would let loadedIds' guard block that GET from ever firing.
+    async triggerText(characterId) {
+      const { ok, data } = await triggerTextApi(characterId);
+      if (ok) {
+        this.logs[characterId] = data.log;
+        this.refreshUnreadCount();
+      } else {
+        useUiStore().showError(data.error || 'Could not reach them.');
+      }
+      return { ok, data };
     },
 
     _parseSseEvents(buffer) {
