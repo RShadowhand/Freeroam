@@ -29,7 +29,13 @@ const showTyping = computed(() => (
   settings.textingTypingIndicator && settings.streaming
   && groups.streamingState && groups.streamingState.groupId === props.groupId
 ));
-const typingName = computed(() => groups.streamingState?.name || '');
+// Guarded by groupId, not just truthiness — groups.streamingState is one
+// piece of shared store state, so without this check, switching to a
+// different group while a send is still in flight elsewhere would show
+// that OTHER group's speaker name here.
+const typingName = computed(() => (
+  groups.streamingState && groups.streamingState.groupId === props.groupId ? groups.streamingState.name : ''
+));
 
 // Nothing replied to the trailing message yet — same "offer to try again"
 // condition place chat's UserMessage.vue uses for its own retry button.
@@ -128,7 +134,10 @@ function retry() {
           <div class="bubble typing-bubble">…</div>
         </div>
       </div>
-      <div class="typing" v-else-if="groups.loading">typing…</div>
+      <div class="typing" v-else-if="groups.loading">
+        <template v-if="typingName">{{ typingName }} is typing…</template>
+        <template v-else>typing…</template>
+      </div>
     </div>
 
     <div class="input-row">
