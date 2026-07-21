@@ -35,10 +35,12 @@ onMounted(async () => {
 
 <template>
   <div class="phone-header">
-    <div class="phone-time">{{ capitalize(world.time.timeOfDay) }}</div>
-    <div class="phone-date">Day {{ world.time.day }}<template v-if="weekday"> · {{ weekday }}</template></div>
-    <div class="phone-weather" v-if="currentWeather">
-      {{ capitalize(currentWeather) }}<template v-if="currentPlace.area"> · {{ currentPlace.area }}</template>
+    <div class="phone-info">
+      <div class="phone-time">{{ capitalize(world.time.timeOfDay) }}</div>
+      <div class="phone-date">
+        Day {{ world.time.day }}<template v-if="weekday"> · {{ weekday }}</template>
+        <template v-if="currentWeather"> · {{ capitalize(currentWeather) }}<template v-if="currentPlace.area"> · {{ currentPlace.area }}</template></template>
+      </div>
     </div>
     <div class="phone-time-controls">
       <TimeWidget :show-label="false" />

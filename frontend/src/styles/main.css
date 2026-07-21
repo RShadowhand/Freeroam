@@ -227,9 +227,15 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
    whatever's left after fixed-height siblings (tab row / header) instead
    of also claiming the full column height itself — otherwise the column
    runs taller than the viewport and the whole page scrolls, with
-   .chat-panel (which has no such siblings) appearing short by comparison. */
+   .chat-panel (which has no such siblings) appearing short by comparison.
+   min-width:0 for the same reason a flex item needs it: a CSS Grid item's
+   default min-width is also `auto` (= its content's natural size), which
+   silently stops a 1fr track (mobile's single-column .layout) from ever
+   actually shrinking the column down to the viewport's real width — this
+   is what let .phone-header's content demand 462px on a 390px screen and
+   push its own time-controls off the right edge entirely. */
 .map-col, .phone-col{
-  display:flex; flex-direction:column; gap:8px;
+  display:flex; flex-direction:column; gap:8px; min-width:0;
   height:calc(100vh - 130px); min-height:520px;
 }
 .quick-add-form{
@@ -1203,6 +1209,46 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   .map-col{ height:auto; min-height:0; }
   .phone-col{ height:auto; min-height:0; }
   .map{ max-height:none; }
+
+  /* The phone panel takes over the FULL mobile viewport (see phone-open
+     above), so its header competes with the actual thread/contacts list
+     for the same cramped vertical space that desktop's roomy .phone-col
+     never has to worry about. Desktop's stacked, centered "lock screen"
+     look (large time-of-day heading, then date, then a separate controls
+     row) costs three full lines; collapsing it to a single left-to-right
+     row — small inline info on the left, controls on the right — gets the
+     same information into a third of the height. */
+  /* min-width:0 on .phone-header itself, not just .phone-info below — the
+     same recurring flex "blowout" this project keeps hitting. .phone-col
+     is display:flex;flex-direction:column, so .phone-header is a cross-
+     axis (width) flex item there too, and a flex item's default min-width
+     is auto (= its own content's natural size), not 0. Without this,
+     .phone-header demanded its full unshrunk content width (measured:
+     462px against a 390px viewport) and overflowed sideways, pushing
+     .phone-time-controls off the right edge entirely — every level in the
+     shrink chain needs its own min-width:0, not just the innermost one. */
+  .phone-header{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:6px 10px; text-align:left; min-width:0;
+  }
+  /* Standard flex-truncation pattern: .phone-info is the row (time label
+     that never shrinks, then the date/weather/area line that can), and it
+     needs its own min-width:0 to be allowed to shrink below its content's
+     natural width in the first place — a flex item's default min-width is
+     auto (= its content size), which silently defeats any child's
+     overflow:ellipsis further down. display:inline on the date line (an
+     earlier version of this rule) doesn't reliably support
+     text-overflow:ellipsis at all — inline boxes don't establish the kind
+     of box overflow:hidden needs — which is what produced the mangled,
+     clipped-mid-word rendering this replaces. */
+  .phone-info{ display:flex; align-items:baseline; gap:4px; min-width:0; overflow:hidden; }
+  .phone-time{ font-size:0.78rem; font-family:'IBM Plex Mono',monospace; letter-spacing:0.04em; flex-shrink:0; }
+  .phone-time::after{ content:'·'; margin-left:4px; color:var(--dim); }
+  .phone-date{
+    font-size:0.78rem; margin-top:0; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .phone-time-controls{ margin-top:0; flex-shrink:0; }
 }
 
 @media (max-width:600px){
@@ -1259,8 +1305,10 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   text-align:center; padding:12px 0; border-bottom:1px solid var(--border-subtle); flex-shrink:0;
 }
 .phone-time{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.8rem; }
-.phone-date{ font-family:'IBM Plex Mono',monospace; font-size:0.76rem; color:var(--dim); letter-spacing:0.04em; margin-top:2px; }
-.phone-weather{ font-family:'IBM Plex Mono',monospace; font-size:0.76rem; color:var(--accent); margin-top:2px; }
+.phone-date{
+  font-family:'IBM Plex Mono',monospace; font-size:0.76rem; color:var(--dim);
+  letter-spacing:0.04em; margin-top:2px;
+}
 .phone-time-controls{ display:flex; justify-content:center; margin-top:8px; }
 
 .phone-contacts{
