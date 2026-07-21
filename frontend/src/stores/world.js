@@ -33,6 +33,7 @@ export const useWorldStore = defineStore('world', {
     time: { day: 1, timeOfDay: 'morning' },
     worldSetting: '',
     relationships: [],
+    metCharacterIds: [],
   }),
   getters: {
     activePersona: (state) => state.personasList.find((p) => p.id === state.activePersonaId) || null,
@@ -47,6 +48,13 @@ export const useWorldStore = defineStore('world', {
     // character) counts as active. Mirrors backend/server.js's
     // activeCharIds().
     isActive: (state) => (charId) => state.placements[charId]?.active !== false,
+    // A character counts as "known" (and so eligible to show up as a Phone
+    // contact) once either the user has actually shared a scene with them
+    // (they've spoken in some place's chat log) or the world author has
+    // explicitly given them a relationship to the user via Cast — either
+    // signal is enough on its own, so this is a union, not an intersection.
+    knowsUser: (state) => (charId) => state.metCharacterIds.includes(charId)
+      || state.relationships.some((r) => r.character_id === charId && r.target_id === 'user'),
   },
   actions: {
     async loadWorldState() {
@@ -70,6 +78,7 @@ export const useWorldStore = defineStore('world', {
       this.time = world.time || this.time;
       this.worldSetting = world.setting || '';
       this.relationships = rel.relationships || [];
+      this.metCharacterIds = world.metCharacterIds || [];
     },
     async saveWorldSetting(setting) {
       const { ok, data } = await apiSaveWorldSetting(setting);

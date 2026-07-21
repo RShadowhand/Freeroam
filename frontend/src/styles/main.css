@@ -216,19 +216,19 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 /* ---- Freeroam view ---- */
 .layout{
   display:grid;
-  grid-template-columns:300px 1fr;
+  grid-template-columns:300px 1fr 300px;
   gap:18px;
   align-items:start;
 }
 @media (max-width:820px){ .layout{grid-template-columns:1fr;} }
 
-/* map-col's total height is pinned to match .chat-panel exactly; .map
-   flexes to fill whatever's left after its siblings (brand, add-place
-   button) instead of also claiming the full column height itself —
-   otherwise the column runs taller than the viewport and the whole page
-   scrolls, with .chat-panel (which has no such siblings) appearing short
-   by comparison. */
-.map-col{
+/* map-col/phone-col's total height is pinned to match .chat-panel exactly
+   (both use this same block); their own tab content flexes to fill
+   whatever's left after fixed-height siblings (tab row / header) instead
+   of also claiming the full column height itself — otherwise the column
+   runs taller than the viewport and the whole page scrolls, with
+   .chat-panel (which has no such siblings) appearing short by comparison. */
+.map-col, .phone-col{
   display:flex; flex-direction:column; gap:8px;
   height:calc(100vh - 130px); min-height:520px;
 }
@@ -322,12 +322,31 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   height:calc(100vh - 130px);
   min-height:520px;
 }
-.topbar-details .area-context{
-  font-family:'IBM Plex Mono',monospace; font-size:0.68rem; letter-spacing:0.06em;
-  text-transform:uppercase; color:var(--dim);
+/* ---- Map/Current-area tabs (left column) ---- */
+.panel-tabs{ display:flex; gap:0; border-bottom:1px solid var(--border); flex-shrink:0; }
+.panel-tab{
+  flex:1; text-align:center;
+  font-family:'IBM Plex Mono',monospace; font-size:0.72rem; letter-spacing:0.04em;
+  background:none; border:none; color:var(--dim); cursor:pointer;
+  padding:9px 4px; border-bottom:2px solid transparent;
+  transition:color .15s ease, border-color .15s ease;
 }
-.topbar-details .pdesc{ font-size:0.82rem; color:var(--dim); margin-top:6px; line-height:1.4; }
-.topbar-details .persona-tag{
+.panel-tab:hover{ color:var(--parchment); }
+.panel-tab.active{ color:var(--accent); border-bottom-color:var(--accent); }
+.map-tab-body{ flex:1; min-height:0; display:flex; flex-direction:column; margin-top:8px; }
+.map-tab-content{ flex:1; min-height:0; display:flex; flex-direction:column; gap:8px; }
+
+.current-area{
+  flex:1; min-height:0; overflow-y:auto;
+  background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px;
+}
+.current-area .pname{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.2rem; }
+.current-area .area-context{
+  font-family:'IBM Plex Mono',monospace; font-size:0.68rem; letter-spacing:0.06em;
+  text-transform:uppercase; color:var(--dim); margin-top:4px;
+}
+.current-area .pdesc{ font-size:0.82rem; color:var(--dim); margin-top:6px; line-height:1.4; }
+.current-area .persona-tag{
   font-family:'IBM Plex Mono',monospace; font-size:0.66rem; letter-spacing:0.05em;
   color:var(--accent); margin-top:8px;
 }
@@ -485,6 +504,20 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 
 .msg.char.npc .speaker{ color:var(--rose); }
 .msg.char.npc .bubble{ border-style:dashed; }
+
+/* ---- Calls (Phase 3) — call-tagged messages get a thin accent edge so a
+   call reads as its own thread within the place's continuous log, without
+   a whole second bubble style. ---- */
+.msg.user.call .bubble, .msg.char.call .bubble{ border-left:3px solid var(--accent); }
+.msg.system.call{ color:var(--accent); }
+.msg.narrator.call{ border-color:var(--accent); }
+.call-bar{
+  display:flex; align-items:center; justify-content:space-between; gap:10px; flex-shrink:0;
+  background:rgba(var(--accent-rgb),0.12); border-bottom:1px solid var(--accent);
+  border-radius:10px 10px 0 0; padding:9px 14px;
+  font-family:'IBM Plex Mono',monospace; font-size:0.78rem; color:var(--accent);
+}
+.call-bar-label{ letter-spacing:0.02em; }
 .msg-avatar .npc-dot{
   display:inline-block; width:38px; height:38px; border-radius:var(--avatar-radius);
   background:var(--rose); opacity:0.5; flex-shrink:0;
@@ -1003,13 +1036,7 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 }
 .rel-add select, .rel-add input{ width:auto; flex:1; min-width:140px; }
 
-/* ---- Freeroam topbar (collapsible) ---- */
-.topbar{
-  background:var(--panel); border:1px solid var(--border); border-radius:10px;
-  padding:10px 14px; margin-bottom:10px;
-}
-.topbar-main{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-.topbar-main .pname{ font-family:'Cormorant Garamond',serif; font-weight:700; font-size:1.25rem; flex:1; min-width:0; }
+/* ---- Time widget (used inside PhoneHeader.vue) ---- */
 .time-widget{
   display:flex; align-items:center; gap:6px;
   font-family:'IBM Plex Mono',monospace; font-size:0.68rem; letter-spacing:0.05em;
@@ -1029,13 +1056,6 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 .time-jump-row input[type=number]{ width:70px; }
 .time-jump-row select{ width:auto; }
 .time-jump-weekday{ color:var(--accent); font-family:'IBM Plex Mono',monospace; font-size:0.72rem; min-width:70px; }
-.topbar-toggle{
-  background:none; border:1px solid var(--border); color:var(--dim); cursor:pointer;
-  border-radius:14px; font-size:0.72rem; padding:3px 10px; flex-shrink:0;
-}
-.topbar-toggle:hover{ border-color:var(--accent); color:var(--accent); }
-.topbar-details{ margin-top:10px; padding-top:10px; border-top:1px solid var(--border); }
-.topbar-details.collapsed{ display:none; }
 
 /* ---- Message edit/delete ---- */
 .msg-actions{ display:flex; gap:2px; justify-content:flex-end; margin-top:2px; }
@@ -1134,7 +1154,8 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 .bubble .hidden-tag{ display:none; }
 
 /* ---- Responsive / mobile ---- */
-.map-toggle{ display:none; }
+.mobile-panel-toggles{ display:none; }
+.phone-strip-mobile{ display:none; }
 
 /* Hover-revealed controls need to be visible on touch devices. */
 @media (hover:none){
@@ -1142,12 +1163,19 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 }
 
 @media (max-width:820px){
-  /* Chat-first, like a messaging app: the map hides behind a toggle,
-     and picking a room returns to the chat automatically. */
-  .map-toggle{ display:inline-block; margin-bottom:10px; }
+  /* Chat-first, like a messaging app: the map/phone side panels hide
+     behind toggles, and picking a room returns to the chat automatically.
+     mobilePanel (FreeroamView.vue) is a single value, not two independent
+     booleans, so map-open and phone-open can never both be true — but the
+     CSS still only needs to know "is this specific one open," not enforce
+     the exclusivity itself. */
+  .mobile-panel-toggles{ display:flex; gap:8px; margin-bottom:10px; }
+  .phone-strip-mobile{ display:flex; margin-bottom:10px; }
   .map-col{ display:none; }
+  .phone-col{ display:none; }
   .layout.map-open .map-col{ display:flex; }
-  .layout.map-open .chat-panel{ display:none; }
+  .layout.phone-open .phone-col{ display:flex; }
+  .layout.map-open .chat-panel, .layout.phone-open .chat-panel{ display:none; }
 
   /* Pin the Freeroam view to exactly one viewport's height so only its
      message backlog scrolls, not the whole page.
@@ -1173,6 +1201,7 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   .app.freeroam-view #view-freeroam .layout{ flex:1; min-height:0; overflow:hidden; align-items:stretch; grid-template-rows:1fr; }
   .chat-panel{ height:auto; min-height:0; }
   .map-col{ height:auto; min-height:0; }
+  .phone-col{ height:auto; min-height:0; }
   .map{ max-height:none; }
 }
 
@@ -1190,21 +1219,14 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   /* flex:0 0 100%, not width:100% — the base rule's .nav-tabs{flex:1}
      sets flex-basis:0%, and flex-basis wins over width in a row-flex
      container, so a bare width:100% here silently loses to that and
-     nav-tabs never actually claims its own row (see .topbar-main .pname
-     above for the same bug pattern). The full flex shorthand overrides
-     grow/shrink/basis together so it actually gets one. */
+     nav-tabs never actually claims its own row. The full flex shorthand
+     overrides grow/shrink/basis together so it actually gets one. */
   .nav-tabs{ order:3; flex:0 0 100%; gap:6px; flex-wrap:wrap; }
   .nav-tab{ padding:5px 10px; font-size:0.64rem; flex-shrink:0; }
   .sub-nav{ gap:4px; margin:0 0 14px; }
 
-  .topbar{ padding:8px 10px; }
-  /* A long place name (e.g. "Susan's Restaurant") wraps to two lines at
-     this width; .pname's siblings (TimeWidget, the Details toggle) don't
-     shrink, so without this they'd stay vertically centered against the
-     whole two-line name and visually collide with its second line.
-     flex-basis:100% gives the name its own row and pushes them below it. */
-  .topbar-main .pname{ font-size:1.1rem; flex-basis:100%; }
-  .topbar-details .pdesc{ font-size:0.78rem; }
+  .current-area .pname{ font-size:1.1rem; }
+  .current-area .pdesc{ font-size:0.78rem; }
   .messages{ padding:12px 12px; }
   .msg{ max-width:88%; }
   .input-row{ padding:10px 10px; }
@@ -1225,3 +1247,63 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
     font-size:16px;
   }
 }
+
+/* ---- Phone panel (right column) ----
+   .phone-col is part of the same fixed-height/viewport-pinning treatment
+   .map-col already gets (see the .map-col, .phone-col rule and the mobile
+   .app.freeroam-view block) — now that it's a real column in .layout
+   instead of a standalone routed view, .phone-thread .messages can just
+   flex:1 within that bounded height like .map does, instead of the
+   max-height guess the old standalone Phone view needed. */
+.phone-header{
+  text-align:center; padding:12px 0; border-bottom:1px solid var(--border-subtle); flex-shrink:0;
+}
+.phone-time{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.8rem; }
+.phone-date{ font-family:'IBM Plex Mono',monospace; font-size:0.76rem; color:var(--dim); letter-spacing:0.04em; margin-top:2px; }
+.phone-weather{ font-family:'IBM Plex Mono',monospace; font-size:0.76rem; color:var(--accent); margin-top:2px; }
+.phone-time-controls{ display:flex; justify-content:center; margin-top:8px; }
+
+.phone-contacts{
+  flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:2px;
+  background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:6px;
+}
+.phone-contact-row{
+  display:flex; align-items:center; gap:12px; width:100%;
+  background:none; border:none; border-bottom:1px solid var(--border-soft);
+  padding:10px 4px; cursor:pointer; text-align:left; color:inherit;
+}
+.phone-contact-row:hover{ background:var(--panel-raised); }
+.phone-contact-name{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1rem; }
+
+.phone-thread{ flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; }
+.phone-thread-header{ display:flex; align-items:center; gap:10px; padding-bottom:8px; border-bottom:1px solid var(--border-subtle); flex-shrink:0; }
+.phone-back{
+  background:none; border:none; color:var(--accent); cursor:pointer;
+  font-size:0.82rem; padding:4px 2px; flex-shrink:0;
+}
+.phone-thread-name{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.05rem; }
+.phone-call-btn{
+  margin-left:auto; flex-shrink:0; background:none; border:1px solid var(--accent); color:var(--accent);
+  border-radius:14px; cursor:pointer; font-size:0.72rem; padding:4px 10px;
+}
+.phone-call-btn:hover:not(:disabled){ background:rgba(var(--accent-rgb),0.14); }
+.phone-call-btn:disabled{ opacity:0.4; cursor:not-allowed; border-color:var(--border); color:var(--dim); }
+.phone-thread .messages{ flex:1; min-height:0; border:1px solid var(--border); border-radius:10px; }
+.typing-bubble{ font-style:italic; color:var(--dim); }
+
+/* ---- Phone strip (mobile-only collapsed/back toggle) ----
+   No `display` here on purpose: this class always co-occurs with
+   .phone-strip-mobile on the same element (see PhoneStrip.vue), and that
+   class owns visibility (none on desktop, flex under the 820px media
+   query) — an unconditional display here at equal specificity would win
+   the cascade regardless of viewport and leak the strip onto desktop. */
+.phone-strip{
+  width:100%; align-items:center; justify-content:center; gap:6px;
+  background:var(--panel); border:1px solid var(--border); border-radius:10px;
+  padding:8px 12px; font-family:'IBM Plex Mono',monospace; font-size:0.76rem; color:var(--dim);
+  cursor:pointer;
+}
+.phone-strip:hover{ border-color:var(--accent); color:var(--parchment); }
+.phone-strip-icon{ font-size:0.9rem; }
+.phone-strip-time{ color:var(--parchment); }
+.phone-strip-badge{ margin-left:6px; color:var(--accent); }

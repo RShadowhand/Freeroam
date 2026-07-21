@@ -142,13 +142,16 @@ export function createWorldRegistry({ rootDir }) {
     const avatarDir = path.join(avatarsRoot, id);
     const personaAvatarDir = path.join(avatarDir, 'personas');
     const chatDir = path.join(dataDir, 'chats');
+    const textsDir = path.join(dataDir, 'texts');
     fs.mkdirSync(chatDir, { recursive: true });
+    fs.mkdirSync(textsDir, { recursive: true });
     fs.mkdirSync(personaAvatarDir, { recursive: true });
 
     const ctx = {
       id,
       dataDir,
       chatDir,
+      textsDir,
       avatarDir,
       personaAvatarDir,
       avatarUrlBase: `/avatars/${id}`,
@@ -159,6 +162,7 @@ export function createWorldRegistry({ rootDir }) {
         personas: path.join(dataDir, 'personas.json'),
         presets: path.join(dataDir, 'presets.json'),
         weather: path.join(dataDir, 'weather.json'),
+        calls: path.join(dataDir, 'calls.json'),
       },
       _db: null,
       get db() {

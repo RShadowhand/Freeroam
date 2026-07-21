@@ -76,6 +76,8 @@ import {
 import { loadChatLog, saveChatLog, appendChatEntries, deleteChatLog } from './lib/chatStore.js';
 import { createWorldRegistry } from './lib/worldRegistry.js';
 import { CONDITIONS as WEATHER_CONDITIONS, loadWeather, saveWeather, rollAutoWeather, setManualWeather, setAutoWeather } from './lib/weather.js';
+import { buildTextingMessages, historyFromLog } from './lib/texting.js';
+import { loadCalls, saveCalls } from './lib/calls.js';
 import { logger } from './lib/log.js';
 logger.setLevel("debug")
 
@@ -109,6 +111,12 @@ const DEFAULT_API_BASE = 'https://openrouter.ai/api/v1';
 // resolve too, in case a customized prompt wants to lean on them.
 const DEFAULT_DRAFT_PERSONA_PROMPT = 'You are a character-sheet writing assistant for a roleplay app. Based on the world setting and scene excerpt below, write a short persona description for the character named "{{char}}": 2 to 4 sentences, factual character-sheet voice covering personality, manner of speaking, and role in the scene. No dialogue, no first person, no meta-commentary — output only the description text.';
 
+// No {{macro}} substitution here (unlike DEFAULT_DRAFT_PERSONA_PROMPT) —
+// this is a pure style instruction, not something that needs to reference
+// the character/world by name; identity is already injected separately
+// by buildTextingMessages.
+const DEFAULT_TEXTING_PROMPT_TEMPLATE = "You are texting, not narrating a scene. Reply the way a real person texts: short, casual lines of dialogue only — no *action descriptions*, no third-person narration, no scene-setting. Emoji are fine occasionally if they fit your character's voice, but don't overuse them. Stay fully in character.";
+
 const DEFAULT_CONFIG = {
   apiKey: '',
   model: 'anthropic/claude-3.5-sonnet',
@@ -120,6 +128,8 @@ const DEFAULT_CONFIG = {
   suggestedActionsMode: 'regex',        // regex | hybrid | ml — see lib/suggestedActions.js
   draftPersonaPrompt: '',              // '' = use DEFAULT_DRAFT_PERSONA_PROMPT; see /api/characters/draft
   narratorEnabled: true,                // ambient world-voice for empty/solo/background scenes — see lib/narrator.js
+  textingPromptTemplate: '',            // '' = use DEFAULT_TEXTING_PROMPT_TEMPLATE; see lib/texting.js
+  textingTypingIndicator: false,        // opt-in; only does anything when streaming is also on
 };
 
 // The model in use before embeddingModelVersion existed — configs saved
@@ -413,6 +423,9 @@ function publicConfig(cfg) {
     embeddingModel: EMBEDDING_MODEL_ID,
     embeddingsStale: (cfg.embeddingModelVersion || LEGACY_EMBEDDING_MODEL_ID) !== EMBEDDING_MODEL_ID,
     narratorEnabled: cfg.narratorEnabled !== false,
+    textingPromptTemplate: (cfg.textingPromptTemplate || '').trim() || DEFAULT_TEXTING_PROMPT_TEMPLATE,
+    textingPromptTemplateIsCustom: !!(cfg.textingPromptTemplate || '').trim(),
+    textingTypingIndicator: !!cfg.textingTypingIndicator,
   };
 }
 
@@ -422,7 +435,10 @@ app.get('/api/settings', (req, res) => {
 
 app.post('/api/settings', (req, res) => {
   const cfg = loadConfig();
-  const { apiKey, model, apiBase, streaming, reasoning, providers, memoryMinScore, suggestedActionsMode, draftPersonaPrompt, narratorEnabled } = req.body || {};
+  const {
+    apiKey, model, apiBase, streaming, reasoning, providers, memoryMinScore, suggestedActionsMode,
+    draftPersonaPrompt, narratorEnabled, textingPromptTemplate, textingTypingIndicator,
+  } = req.body || {};
   if (typeof apiKey === 'string' && apiKey.trim()) cfg.apiKey = apiKey.trim();
   if (typeof model === 'string' && model.trim()) cfg.model = model.trim();
   if (typeof apiBase === 'string') cfg.apiBase = apiBase.trim().replace(/\/+$/, '') || DEFAULT_API_BASE;
@@ -439,6 +455,8 @@ app.post('/api/settings', (req, res) => {
   // '' is a valid, meaningful value here (reset to the built-in default —
   // see publicConfig), so this only guards the type, not truthiness.
   if (typeof draftPersonaPrompt === 'string') cfg.draftPersonaPrompt = draftPersonaPrompt.trim();
+  if (typeof textingPromptTemplate === 'string') cfg.textingPromptTemplate = textingPromptTemplate.trim();
+  if (typeof textingTypingIndicator === 'boolean') cfg.textingTypingIndicator = textingTypingIndicator;
   saveConfig(cfg);
   res.json(publicConfig(cfg));
 });
@@ -1128,12 +1146,391 @@ app.post('/api/weather/:area', (req, res) => {
   res.json({ weather: updated });
 });
 
+// --- Texting routes --------------------------------------------------------
+
+// Generates one texting reply from `character` to the active persona,
+// appending it to their conversation log. Mirrors runReactionRound's
+// single-character branch (context-gathering, the streaming/non-streaming
+// OpenRouter call, memory recording) but through buildTextingMessages
+// instead of the physical-scene prompt pipeline — see lib/texting.js for
+// why. onEvent (when given) streams speaker/delta/turn events, the same
+// shape /say's SSE path uses. placeId is null for texting memories (no
+// physical place involved) — recordTurn already treats that as "no place."
+async function runTextingReply({ w, cfg, characterId, character, onEvent = null }) {
+  if (!cfg.apiKey) return { error: 'No API key configured. Add one in Settings.' };
+
+  try {
+    const { personas, activePersonaId } = loadPersonas(w);
+    const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+    const personaLabel = activePersona ? activePersona.name : 'Visitor';
+    const world = loadWorld(w);
+    const log = loadChatLog(w.textsDir, characterId);
+
+    const latestUserEntry = [...log].reverse().find((m) => m.type === 'user');
+    const memoryQuery = latestUserEntry ? latestUserEntry.text : `${personaLabel} texts ${character.name}.`;
+
+    let memories = [];
+    try {
+      memories = await retrieveMemories({
+        db: w.db, embedFn: embed, characterIds: [characterId], query: memoryQuery, minScore: cfg.memoryMinScore,
+      });
+    } catch (err) {
+      logger.warn('memory', `texting retrieval failed, continuing without memories: ${err.message}`);
+    }
+
+    const charactersById = {};
+    loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+    const placesById = {};
+    loadPlaces(w).forEach((p) => { placesById[p.id] = p; });
+    const relationships = await relationshipKnowledge(w, characterId, charactersById, placesById, world, activePersona ? activePersona.name : null, memoryQuery);
+
+    const messages = buildTextingMessages({
+      char: character,
+      persona: activePersona ? { name: activePersona.name, description: activePersona.description } : null,
+      memories, relationships, time: world.time,
+      textingPromptTemplate: publicConfig(cfg).textingPromptTemplate,
+    }, historyFromLog(log));
+
+    if (onEvent) onEvent({ type: 'speaker', charId: characterId, name: character.name });
+
+    let text, usage, timing;
+    if (onEvent && cfg.streaming) {
+      ({ text, usage, timing } = await streamOpenRouter(cfg, messages, undefined, `${character.name} (text)`,
+        (delta) => onEvent({ type: 'delta', ...delta })));
+    } else {
+      ({ text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (text)`));
+    }
+
+    const entry = { type: 'char', charId: characterId, name: character.name, text: (text || '').trim() };
+    const stats = buildGenerationStats(usage, timing);
+    if (stats) entry.stats = stats;
+    appendChatEntries(w.textsDir, characterId, [entry]);
+    if (onEvent) onEvent({ type: 'turn', entries: [entry] });
+
+    recordTurn({
+      db: w.db, embedFn: embed, characterIds: [characterId], personaId: activePersonaId || null,
+      text: `${personaLabel}: ${latestUserEntry ? latestUserEntry.text : ''}\n${character.name}: ${entry.text}`,
+      placeId: null, entryIds: [latestUserEntry?.id, entry.id].filter(Boolean),
+      day: world.time.day, timeOfDay: world.time.timeOfDay,
+    }).catch((err) => logger.error('memory', `texting round recording failed: ${err.message}`));
+
+    return { entries: [entry] };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+app.get('/api/texts/:characterId', (req, res) => {
+  const w = req.world;
+  const { characterId } = req.params;
+  const character = loadCharacters(w).find((c) => c.id === characterId);
+  if (!character) return res.status(404).json({ error: 'Character not found.' });
+  res.json({ log: loadChatLog(w.textsDir, characterId) });
+});
+
+// Sending a text: appends the user's line, then generates the character's
+// reply — as SSE when streaming is enabled in Settings, as one JSON
+// response otherwise. Mirrors /api/places/:placeId/say's shape exactly so
+// the frontend's SSE-consuming logic can be reused as-is. The user's line
+// persists even when generation fails.
+app.post('/api/texts/:characterId/send', async (req, res) => {
+  const w = req.world;
+  const { characterId } = req.params;
+  const { text } = req.body || {};
+  if (typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'text is required.' });
+  }
+
+  const character = loadCharacters(w).find((c) => c.id === characterId);
+  if (!character) return res.status(404).json({ error: 'Character not found.' });
+
+  appendChatEntries(w.textsDir, characterId, [{ type: 'user', text: text.trim() }]);
+  logger.info('chat', `text -> ${character.name}`);
+
+  const cfg = loadConfig();
+  if (cfg.streaming && cfg.apiKey) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    send({ type: 'ack', log: loadChatLog(w.textsDir, characterId) });
+
+    const result = await runTextingReply({ w, cfg, characterId, character, onEvent: send });
+    send({ type: 'done', log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error } : {}) });
+    return res.end();
+  }
+
+  const result = await runTextingReply({ w, cfg, characterId, character });
+  res.json({ log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error } : {}) });
+});
+
+// --- Call routes -------------------------------------------------------
+// A call is appended into the CALLER's current place's own chat log (not a
+// separate thread, unlike texting) so it stays part of one continuous scene
+// history — see phase3-calls.md. The callee's replies reuse Phase 2's
+// texting-mode generation (buildTextingMessages), but fed only the call's
+// own transcript (calls[placeId].transcript), never the physical scene's
+// history around it — a call is generation-wise closer to a text exchange
+// than a physical scene. Everyone present in the caller's place when the
+// call starts becomes a bystander for its duration: demoted (silenced) like
+// any inactive character, restored to their exact prior active state
+// (including "never explicitly set") on hangup, and — per the "hear only
+// your side" rule — their memory of each round contains only the user's own
+// words, never the callee's reply.
+
+function normalizeActiveForCallSnapshot(active) {
+  return active === undefined ? null : active;
+}
+function restoreActiveFromCallSnapshot(placement, snapshotValue) {
+  if (snapshotValue === null) delete placement.active;
+  else placement.active = snapshotValue;
+}
+function publicActiveCall(callState) {
+  return callState ? { charId: callState.charId, name: callState.name } : null;
+}
+
+app.post('/api/calls/:characterId/start', (req, res) => {
+  const w = req.world;
+  const { characterId } = req.params;
+  const { placeId } = req.body || {};
+
+  const character = loadCharacters(w).find((c) => c.id === characterId);
+  if (!character) return res.status(404).json({ error: 'Character not found.' });
+  const place = loadPlaces(w).find((p) => p.id === placeId);
+  if (!place) return res.status(404).json({ error: 'Place not found.' });
+
+  const calls = loadCalls(w);
+  if (calls[placeId]) return res.status(409).json({ error: 'A call is already in progress here.' });
+
+  const charactersById = {};
+  loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+  const presentIds = presentCharIds(w, placeId, charactersById);
+  if (presentIds.includes(characterId)) {
+    return res.status(400).json({ error: `${character.name} is right here — no need to call them.` });
+  }
+
+  const world = loadWorld(w);
+  const bystanders = {};
+  presentIds.forEach((cid) => {
+    bystanders[cid] = normalizeActiveForCallSnapshot(world.placements[cid]?.active);
+    world.placements[cid] = { ...world.placements[cid], active: false };
+  });
+  saveWorld(w, world);
+
+  calls[placeId] = { charId: characterId, name: character.name, bystanders, transcript: [], roundCount: 0 };
+  saveCalls(w, calls);
+
+  appendChatEntries(w.chatDir, placeId, [{ type: 'system', text: `📞 You call ${character.name}.`, call: true }]);
+  logger.info('chat', `call started: ${character.name} @ ${place.name} (${presentIds.length} bystander(s))`);
+
+  res.json({ log: loadChatLog(w.chatDir, placeId), placements: world.placements, callee: { id: character.id, name: character.name } });
+});
+
+// One call round: appends the user's line, generates the callee's reply,
+// records full memory for the callee and redacted (user-only) memory for
+// bystanders, and — mirroring how present-but-inactive characters already
+// get ambient narration in a normal reaction round — gives the existing
+// narrator mechanism a turn for the bystanders, explicitly told they're
+// overhearing one side of a call rather than part of it. Mutates
+// callState.transcript/roundCount in place; the caller persists it.
+async function runCallReply({ w, cfg, placeId, place, characterId, character, callState, onEvent = null }) {
+  if (!cfg.apiKey) return { error: 'No API key configured. Add one in Settings.' };
+
+  try {
+    const { personas, activePersonaId } = loadPersonas(w);
+    const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+    const personaLabel = activePersona ? activePersona.name : 'Visitor';
+    const world = loadWorld(w);
+
+    const latestUserEntry = [...callState.transcript].reverse().find((m) => m.type === 'user');
+    const memoryQuery = latestUserEntry ? latestUserEntry.text : `${personaLabel} calls ${character.name}.`;
+
+    let memories = [];
+    try {
+      memories = await retrieveMemories({
+        db: w.db, embedFn: embed, characterIds: [characterId], query: memoryQuery, minScore: cfg.memoryMinScore,
+      });
+    } catch (err) {
+      logger.warn('memory', `call retrieval failed, continuing without memories: ${err.message}`);
+    }
+
+    const charactersById = {};
+    loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+    const placesById = {};
+    loadPlaces(w).forEach((p) => { placesById[p.id] = p; });
+    const relationships = await relationshipKnowledge(w, characterId, charactersById, placesById, world, activePersona ? activePersona.name : null, memoryQuery);
+
+    const messages = buildTextingMessages({
+      char: character,
+      persona: activePersona ? { name: activePersona.name, description: activePersona.description } : null,
+      memories, relationships, time: world.time, mode: 'call',
+      textingPromptTemplate: publicConfig(cfg).textingPromptTemplate,
+    }, historyFromLog(callState.transcript));
+
+    if (onEvent) onEvent({ type: 'speaker', charId: characterId, name: character.name });
+
+    let text, usage, timing;
+    if (onEvent && cfg.streaming) {
+      ({ text, usage, timing } = await streamOpenRouter(cfg, messages, undefined, `${character.name} (call)`,
+        (delta) => onEvent({ type: 'delta', ...delta })));
+    } else {
+      ({ text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (call)`));
+    }
+
+    const entry = { type: 'char', charId: characterId, name: character.name, text: (text || '').trim(), call: true };
+    const stats = buildGenerationStats(usage, timing);
+    if (stats) entry.stats = stats;
+    appendChatEntries(w.chatDir, placeId, [entry]);
+    if (onEvent) onEvent({ type: 'turn', entries: [entry] });
+
+    callState.transcript.push({ type: 'char', text: entry.text });
+    callState.roundCount += 1;
+
+    // Callee: the full exchange. placeId: null, same as texting (Phase 2)
+    // and for the same reason — they weren't physically anywhere.
+    recordTurn({
+      db: w.db, embedFn: embed, characterIds: [characterId], personaId: activePersonaId || null,
+      text: `${personaLabel}: ${latestUserEntry ? latestUserEntry.text : ''}\n${character.name}: ${entry.text}`,
+      placeId: null, entryIds: [latestUserEntry?.entryId, entry.id].filter(Boolean),
+      day: world.time.day, timeOfDay: world.time.timeOfDay,
+    }).catch((err) => logger.error('memory', `call recording (callee) failed: ${err.message}`));
+
+    // Bystanders: only the user's own words, tied to the real place — they
+    // really were physically there, even if they never heard the other end.
+    const bystanderIds = Object.keys(callState.bystanders);
+    if (bystanderIds.length && latestUserEntry) {
+      recordTurn({
+        db: w.db, embedFn: embed, characterIds: bystanderIds, personaId: activePersonaId || null,
+        text: `${personaLabel}: ${latestUserEntry.text}`,
+        placeId, entryIds: [latestUserEntry.entryId].filter(Boolean),
+        day: world.time.day, timeOfDay: world.time.timeOfDay,
+      }).catch((err) => logger.error('memory', `call recording (bystanders) failed: ${err.message}`));
+    }
+
+    // Ambient bystander narration — the same "present but not part of the
+    // conversation" case a normal round always narrates for background
+    // characters, just told this is a call so the wording doesn't treat
+    // them as part of it. The transcript strips the callee's own lines —
+    // bystanders can hear the user's half only, never what comes back.
+    if (bystanderIds.length && cfg.narratorEnabled !== false) {
+      const log = loadChatLog(w.chatDir, placeId);
+      const callVisibleLog = log.filter((e) => !(e.type === 'char' && e.call));
+      const narration = await attemptNarratorTurn({
+        w, cfg, place, presentIds: bystanderIds, backgroundIds: bystanderIds, charactersById, log: callVisibleLog,
+        callContext: { calleeName: character.name },
+      });
+      if (narration) {
+        const narratorEntry = { ...narration, call: true };
+        appendChatEntries(w.chatDir, placeId, [narratorEntry]);
+        if (onEvent) onEvent({ type: 'turn', entries: [narratorEntry] });
+      }
+    }
+
+    return { entries: [entry] };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+app.post('/api/calls/:characterId/say', async (req, res) => {
+  const w = req.world;
+  const { characterId } = req.params;
+  const { placeId, text } = req.body || {};
+  if (typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'text is required.' });
+  }
+
+  const calls = loadCalls(w);
+  const callState = calls[placeId];
+  if (!callState || callState.charId !== characterId) {
+    return res.status(400).json({ error: 'No active call with this character here.' });
+  }
+
+  const character = loadCharacters(w).find((c) => c.id === characterId);
+  if (!character) return res.status(404).json({ error: 'Character not found.' });
+  const place = loadPlaces(w).find((p) => p.id === placeId);
+  if (!place) return res.status(404).json({ error: 'Place not found.' });
+
+  const userEntry = { type: 'user', text: text.trim(), call: true };
+  appendChatEntries(w.chatDir, placeId, [userEntry]);
+  callState.transcript.push({ type: 'user', text: userEntry.text, entryId: userEntry.id });
+  saveCalls(w, calls);
+  logger.info('chat', `call say -> ${character.name}`);
+
+  const cfg = loadConfig();
+  if (cfg.streaming && cfg.apiKey) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    send({ type: 'ack', log: loadChatLog(w.chatDir, placeId) });
+
+    const result = await runCallReply({ w, cfg, placeId, place, characterId, character, callState, onEvent: send });
+    saveCalls(w, calls);
+    send({ type: 'done', log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
+    return res.end();
+  }
+
+  const result = await runCallReply({ w, cfg, placeId, place, characterId, character, callState });
+  saveCalls(w, calls);
+  res.json({ log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
+});
+
+app.post('/api/calls/:characterId/end', (req, res) => {
+  const w = req.world;
+  const { characterId } = req.params;
+  const { placeId } = req.body || {};
+
+  const calls = loadCalls(w);
+  const callState = calls[placeId];
+  if (!callState || callState.charId !== characterId) {
+    return res.status(400).json({ error: 'No active call with this character here.' });
+  }
+
+  const character = loadCharacters(w).find((c) => c.id === characterId);
+  const place = loadPlaces(w).find((p) => p.id === placeId);
+
+  const world = loadWorld(w);
+  Object.entries(callState.bystanders).forEach(([cid, snapshotValue]) => {
+    if (world.placements[cid]) restoreActiveFromCallSnapshot(world.placements[cid], snapshotValue);
+  });
+  saveWorld(w, world);
+
+  delete calls[placeId];
+  saveCalls(w, calls);
+
+  const calleeName = character ? character.name : callState.name;
+  appendChatEntries(w.chatDir, placeId, [{ type: 'system', text: `📞 Call with ${calleeName} ended.`, call: true }]);
+  logger.info('chat', `call ended: ${calleeName} @ ${place ? place.name : placeId}`);
+
+  res.json({ log: loadChatLog(w.chatDir, placeId), placements: world.placements });
+});
+
 // --- World / placement routes ------------------------------------------
+
+// Every character id that has ever spoken (a type:'char' entry) in any
+// place's chat log — used by the Phone contacts list to only surface
+// characters the user has actually met in a scene, rather than every
+// character that exists in the world (see PhoneContacts.vue).
+function metCharacterIds(w) {
+  const ids = new Set();
+  for (const place of loadPlaces(w)) {
+    for (const entry of loadChatLog(w.chatDir, place.id)) {
+      if (entry.type === 'char' && entry.charId) ids.add(entry.charId);
+    }
+  }
+  return [...ids];
+}
 
 app.get('/api/world', (req, res) => {
   const w = req.world;
   const world = loadWorld(w);
-  res.json({ places: loadPlaces(w), placements: world.placements, time: world.time, setting: world.setting });
+  res.json({
+    places: loadPlaces(w), placements: world.placements, time: world.time, setting: world.setting,
+    metCharacterIds: metCharacterIds(w),
+  });
 });
 
 // Place (or unplace, with placeId: null) a character, set which greeting
@@ -1952,7 +2349,7 @@ function recordRound(w, { placeId, presentIds, turnEntries, userLabel, activePer
 // a missing key, a failed request, or the model choosing NARRATOR_SILENCE
 // all just mean "no narration this round" (null) rather than an error, so
 // callers never let a narrator hiccup block or fail an otherwise-fine round.
-async function attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, charactersById, log }) {
+async function attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, charactersById, log, callContext = null }) {
   if (!cfg.apiKey) return null;
   try {
     const { personas, activePersonaId } = loadPersonas(w);
@@ -1975,6 +2372,7 @@ async function attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, c
       time: world.time,
       backgroundChars,
       transcript: buildHistoryTranscript(log, { userLabel, tokenBudget: 1200 }),
+      callContext,
     });
 
     const { text } = await callOpenRouter(cfg, messages, 150, `Narrator @ ${place.name}`);
@@ -2113,7 +2511,7 @@ app.get('/api/places/:placeId/chat', (req, res) => {
   const w = req.world;
   const { placeId } = req.params;
   if (!loadPlaces(w).some((p) => p.id === placeId)) return res.status(404).json({ error: 'Place not found.' });
-  res.json({ log: loadChatLog(w.chatDir, placeId) });
+  res.json({ log: loadChatLog(w.chatDir, placeId), activeCall: publicActiveCall(loadCalls(w)[placeId]) });
 });
 
 // Entering a place: on the first-ever arrival (empty log), persists the
@@ -2136,7 +2534,7 @@ app.post('/api/places/:placeId/enter', (req, res) => {
   const first = existingLog.length === 0;
 
   if (!first) {
-    return res.json({ log: existingLog, returnMarkerPending: true });
+    return res.json({ log: existingLog, returnMarkerPending: true, activeCall: publicActiveCall(loadCalls(w)[placeId]) });
   }
 
   const turnEntries = [{ type: 'system', text: `You arrive at ${place.name}.` }];
@@ -2174,7 +2572,7 @@ app.post('/api/places/:placeId/enter', (req, res) => {
     }).catch((err) => logger.error('memory', `greeting recording failed: ${err.message}`));
   }
 
-  res.json({ log: loadChatLog(w.chatDir, placeId), returnMarkerPending: false });
+  res.json({ log: loadChatLog(w.chatDir, placeId), returnMarkerPending: false, activeCall: null });
 });
 
 // Saying something: appends the user's line (preceded by the deferred
@@ -2192,6 +2590,7 @@ app.post('/api/places/:placeId/say', async (req, res) => {
 
   const place = loadPlaces(w).find((p) => p.id === placeId);
   if (!place) return res.status(404).json({ error: 'Place not found.' });
+  if (loadCalls(w)[placeId]) return res.status(409).json({ error: 'A call is in progress here — hang up first.' });
 
   const charactersById = {};
   loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
@@ -2252,6 +2651,7 @@ app.post('/api/places/:placeId/retry', async (req, res) => {
   const { placeId } = req.params;
   const place = loadPlaces(w).find((p) => p.id === placeId);
   if (!place) return res.status(404).json({ error: 'Place not found.' });
+  if (loadCalls(w)[placeId]) return res.status(409).json({ error: 'A call is in progress here — hang up first.' });
 
   const log = loadChatLog(w.chatDir, placeId);
   let lastUserIdx = -1;

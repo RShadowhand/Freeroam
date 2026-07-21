@@ -9,6 +9,7 @@ import {
   sayStreamRequest, retryStreamRequest, regenerateStreamRequest,
   updateMessage, deleteMessageApi,
 } from '../api/chat';
+import { startCallApi, callSayApi, callSayStreamRequest, endCallApi } from '../api/calls';
 
 // "Last place" is scoped per-world (each save slot resumes independently) —
 // reads getStoredWorldId() directly rather than the worlds Pinia store, to
@@ -35,6 +36,7 @@ export const useChatStore = defineStore('chat', {
     loading: false,
     entering: false, // synchronous re-entrancy guard for enterPlace
     streamingState: null, // { placeId, charId, name, text, reasoning } | null
+    activeCall: null, // { charId, name } | null — a phone call in progress at currentPlace (Phase 3)
     savedNpcNames: new Set(), // lowercased names already promoted to real characters this session
     pendingReturnMarker: new Set(), // places needing a "You return to X." marker once engaged
     bannerMessage: null, // the dismissable-free info banner (no API key / can't reach backend)
@@ -87,6 +89,13 @@ export const useChatStore = defineStore('chat', {
       const world = useWorldStore();
       if (this.entering || this.loading) return;
       if (id === this.currentPlace) return; // clicking the room you're already in is a no-op
+      // A call ties down the place it was placed from (its bystanders were
+      // demoted there, its transcript lives in that place's log) — walking
+      // away mid-call would strand that state with no way to restore it.
+      if (this.activeCall) {
+        useUiStore().showError('Hang up before going somewhere else.');
+        return;
+      }
       this.entering = true;
 
       try {
@@ -104,6 +113,7 @@ export const useChatStore = defineStore('chat', {
         if (!ok) throw new Error(data.error || 'request failed');
 
         this.logs[id] = data.log;
+        this.activeCall = data.activeCall || null;
         if (data.returnMarkerPending) this.pendingReturnMarker.add(id); else this.pendingReturnMarker.delete(id);
         localStorage.setItem(lastPlaceKey(), id);
       } catch (err) {
@@ -241,6 +251,9 @@ export const useChatStore = defineStore('chat', {
 
     async sendMessage(text) {
       if (!text || this.loading || this.entering || this.currentPlace === null) return;
+      // InputRow doesn't need to know whether a call is active — sendMessage
+      // is the one place that decides where a line actually goes.
+      if (this.activeCall) return this.sendCallMessage(text);
       const placeId = this.currentPlace;
       const announceArrival = this.pendingReturnMarker.has(placeId);
 
@@ -271,6 +284,80 @@ export const useChatStore = defineStore('chat', {
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
+        this.setLoading(false);
+      }
+    },
+
+    // Calls a character not physically present at the current place —
+    // everyone who is present becomes a silent bystander for the call's
+    // duration (see backend/server.js's call routes for the demote/restore
+    // and redacted-memory mechanics). The call's own back-and-forth still
+    // appears right here in the place's message list, tagged call:true.
+    async startCall(characterId) {
+      if (this.loading || this.entering || this.currentPlace === null || this.activeCall) return;
+      const placeId = this.currentPlace;
+      this.setLoading(true);
+      try {
+        const { ok, data } = await startCallApi(characterId, placeId);
+        if (!ok) throw new Error(data.error || 'request failed');
+        this.logs[placeId] = data.log;
+        this.activeCall = { charId: data.callee.id, name: data.callee.name };
+        if (data.placements) useWorldStore().placements = data.placements;
+      } catch (err) {
+        useUiStore().showError(`Could not start the call. (${err.message})`);
+      } finally {
+        this.setLoading(false);
+      }
+    },
+
+    // The call's own send path — sendMessage() routes here whenever
+    // activeCall is set, so InputRow never has to know a call is happening.
+    async sendCallMessage(text) {
+      const placeId = this.currentPlace;
+      const characterId = this.activeCall.charId;
+
+      this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'user', text, call: true }];
+      this.setLoading(true);
+
+      try {
+        const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
+        let result;
+        if (cfg.streaming) {
+          result = await this.consumeReactionSse(placeId, await callSayStreamRequest(characterId, { placeId, text }));
+        } else {
+          const { ok, data } = await callSayApi(characterId, { placeId, text });
+          if (!ok) throw new Error(data.error || 'request failed');
+          this.logs[placeId] = data.log;
+          result = { error: data.error };
+        }
+
+        if (result.error) {
+          this.logs[placeId] = [...this.logs[placeId], { type: 'error', text: `Something goes wrong on the call. (${result.error})` }];
+          useUiStore().showError(result.error);
+        }
+      } catch (err) {
+        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', text: `Something goes wrong on the call. (${err.message})` }];
+        useUiStore().showError(err.message);
+      } finally {
+        this.streamingState = null;
+        this.setLoading(false);
+      }
+    },
+
+    async endCall() {
+      if (!this.activeCall || this.currentPlace === null) return;
+      const placeId = this.currentPlace;
+      const characterId = this.activeCall.charId;
+      this.setLoading(true);
+      try {
+        const { ok, data } = await endCallApi(characterId, placeId);
+        if (!ok) throw new Error(data.error || 'request failed');
+        this.logs[placeId] = data.log;
+        if (data.placements) useWorldStore().placements = data.placements;
+      } catch (err) {
+        useUiStore().showError(`Could not end the call cleanly. (${err.message})`);
+      } finally {
+        this.activeCall = null;
         this.setLoading(false);
       }
     },

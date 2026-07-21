@@ -25,13 +25,13 @@ function onQuickMoveClick(e) {
 </script>
 
 <template>
-  <div class="msg char" :class="{ editing: isEditing }">
+  <div class="msg char" :class="{ editing: isEditing, call: message.call }">
     <EditRow v-if="isEditing" :message="message" />
     <template v-else>
       <div class="msg-avatar">
         <Avatar :char-id="message.charId" :size="38" />
         <button
-          v-if="message.id && message.charId" class="quick-move-trigger"
+          v-if="message.id && message.charId && !message.call" class="quick-move-trigger"
           :class="{ active: quickMove.openForMessageId.value === message.id }"
           title="Step back, send elsewhere, or go with them" @click="onQuickMoveClick"
         >⋯</button>
@@ -39,7 +39,7 @@ function onQuickMoveClick(e) {
       <div class="msg-body">
         <div class="speaker">
           {{ message.name }}
-          <button v-if="message.id && message.charId" class="regen-btn" title="Regenerate this message" @click="chat.regenerateMessage(message.id)">↻</button>
+          <button v-if="message.id && message.charId && !message.call" class="regen-btn" title="Regenerate this message" @click="chat.regenerateMessage(message.id)">↻</button>
           <MessageActions :message="message" />
         </div>
         <ReasoningBlock :message="message" />

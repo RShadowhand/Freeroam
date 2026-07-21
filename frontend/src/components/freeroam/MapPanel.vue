@@ -11,7 +11,7 @@ const groups = computed(() => groupedByArea(world.places));
 </script>
 
 <template>
-  <div class="map-col">
+  <div class="map-tab-content">
     <Brand />
     <AddPlaceForm />
     <div class="map">

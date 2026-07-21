@@ -45,9 +45,11 @@ export function isNarratorSilent(text) {
 //   worldSetting, time: { day, timeOfDay } | null,
 //   backgroundChars: [{ name, snippet }],  // present but not active
 //   transcript: string,                    // recent log, already budget-trimmed
+//   callContext: { calleeName } | null,     // set while the user is mid-call (Phase 3) — backgroundChars
+//     are then bystanders overhearing one side of it, not an ordinary background cast
 // }
 export function buildNarratorMessages(scene) {
-  const { place, worldSetting = '', time = null, backgroundChars = [], transcript = '' } = scene;
+  const { place, worldSetting = '', time = null, backgroundChars = [], transcript = '', callContext = null } = scene;
 
   const weekday = time ? weekdayFor(time.day) : null;
   const when = time ? `It is Day ${time.day}${weekday ? ` (${weekday})` : ''}, ${time.timeOfDay}.\n` : '';
@@ -55,10 +57,16 @@ export function buildNarratorMessages(scene) {
   const locationLine = place.type === 'private'
     ? `This is ${place.ownerName ? `${place.ownerName}'s` : "a resident's"} private place.`
     : 'This is a communal space, open to anyone.';
+  const castLabel = callContext ? 'Present, silently overhearing one side of a phone call' : 'Present but not currently part of the conversation';
   const castBlock = backgroundChars.length
-    ? `\n\nPresent but not currently part of the conversation:\n${backgroundChars.map((c) => `- ${c.name}${c.snippet ? `: ${c.snippet}` : ''}`).join('\n')}`
+    ? `\n\n${castLabel}:\n${backgroundChars.map((c) => `- ${c.name}${c.snippet ? `: ${c.snippet}` : ''}`).join('\n')}`
     : '';
   const settingBlock = worldSetting.trim() ? `\n\n${worldSetting.trim()}` : '';
+  const callBlock = callContext
+    ? `\n\nA phone call is in progress with ${callContext.calleeName}, who isn't physically here. `
+      + `The transcript below shows only this side of the call — anyone present can hear these words but not what `
+      + `${callContext.calleeName} is saying back. Narrate them as overhearing half a conversation, not as part of it.`
+    : '';
 
   const system = [
     'You are the narrator — the ambient voice of the world in a roleplay app, not a character in it. '
@@ -66,7 +74,7 @@ export function buildNarratorMessages(scene) {
       + 'Never speak, think, or act for anyone currently in the conversation, and never invent new named characters. '
       + 'Keep it to 1-3 sentences, grounded and understated — this is scene texture, not a plot twist.',
     `If genuinely nothing worth mentioning is happening right now, reply with exactly "${NARRATOR_SILENCE}" and nothing else.`,
-    `${when}${weather}Current place: ${place.name}${place.area ? ` (${place.area})` : ''}\n${place.desc || ''}\n${locationLine}${castBlock}${settingBlock}`,
+    `${when}${weather}Current place: ${place.name}${place.area ? ` (${place.area})` : ''}\n${place.desc || ''}\n${locationLine}${castBlock}${settingBlock}${callBlock}`,
   ].join('\n\n');
 
   const user = transcript.trim()

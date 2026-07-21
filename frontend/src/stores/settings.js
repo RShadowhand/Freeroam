@@ -29,6 +29,9 @@ export const useSettingsStore = defineStore('settings', {
     embeddingModel: '',
     embeddingsStale: false, // true when stored memory/relationship vectors were built with a different model
     narratorEnabled: true,
+    textingPromptTemplate: '', // the effective text (backend already falls back to its built-in default)
+    textingPromptTemplateIsCustom: false,
+    textingTypingIndicator: false,
   }),
   getters: {
     // Providers are an OpenRouter-only concept — a custom OpenAI-spec
@@ -52,6 +55,9 @@ export const useSettingsStore = defineStore('settings', {
       this.embeddingModel = data.embeddingModel || '';
       this.embeddingsStale = !!data.embeddingsStale;
       this.narratorEnabled = data.narratorEnabled !== false;
+      this.textingPromptTemplate = data.textingPromptTemplate || '';
+      this.textingPromptTemplateIsCustom = !!data.textingPromptTemplateIsCustom;
+      this.textingTypingIndicator = !!data.textingTypingIndicator;
       await this.loadAvailableProviders();
     },
     async loadModels() {
@@ -126,6 +132,18 @@ export const useSettingsStore = defineStore('settings', {
     async setNarratorEnabled(enabled) {
       this.narratorEnabled = enabled;
       await saveSettings({ narratorEnabled: enabled });
+    },
+    async setTextingPromptTemplate(text) {
+      const { data } = await saveSettings({ textingPromptTemplate: text });
+      this.textingPromptTemplate = data.textingPromptTemplate || '';
+      this.textingPromptTemplateIsCustom = !!data.textingPromptTemplateIsCustom;
+    },
+    async resetTextingPromptTemplate() {
+      await this.setTextingPromptTemplate('');
+    },
+    async setTextingTypingIndicator(enabled) {
+      this.textingTypingIndicator = enabled;
+      await saveSettings({ textingTypingIndicator: enabled });
     },
     async rebuildEmbeddings() {
       const { ok, data } = await rebuildEmbeddingsRequest();

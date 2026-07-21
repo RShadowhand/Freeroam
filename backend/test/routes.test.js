@@ -407,6 +407,35 @@ describe('Settings: draftPersonaPrompt', () => {
   });
 });
 
+describe('Settings: textingPromptTemplate + textingTypingIndicator', () => {
+  test('textingPromptTemplate defaults to the built-in text, reported as not customized', async () => {
+    const cfg = await (await fetch(`${baseUrl}/api/settings`)).json();
+    assert.match(cfg.textingPromptTemplate, /texting, not narrating/i);
+    assert.equal(cfg.textingPromptTemplateIsCustom, false);
+  });
+
+  test('round-trips a custom texting prompt, then resets to default on an empty string', async () => {
+    const custom = 'Reply only with emoji.';
+    const saved = await (await postJson('/api/settings', { textingPromptTemplate: custom })).json();
+    assert.equal(saved.textingPromptTemplate, custom);
+    assert.equal(saved.textingPromptTemplateIsCustom, true);
+
+    const reset = await (await postJson('/api/settings', { textingPromptTemplate: '' })).json();
+    assert.match(reset.textingPromptTemplate, /texting, not narrating/i);
+    assert.equal(reset.textingPromptTemplateIsCustom, false);
+  });
+
+  test('textingTypingIndicator defaults to false and round-trips', async () => {
+    const cfg = await (await fetch(`${baseUrl}/api/settings`)).json();
+    assert.equal(cfg.textingTypingIndicator, false);
+
+    const saved = await (await postJson('/api/settings', { textingTypingIndicator: true })).json();
+    assert.equal(saved.textingTypingIndicator, true);
+
+    await postJson('/api/settings', { textingTypingIndicator: false }); // leave settings clean for later tests
+  });
+});
+
 describe('POST/PUT /api/presets — memoryAsSeparateMessage', () => {
   test('defaults to false on create, and round-trips through PUT', async () => {
     const created = await (await postJson('/api/presets', { name: 'Stats Test Preset', prompts: [] })).json();
@@ -635,6 +664,61 @@ describe('Persisted chat: /api/places/:placeId/enter, /say, GET /chat', () => {
     const place = await makePlace('Identified Hall');
     const { log } = await (await postJson(`/api/places/${place.id}/enter`, {})).json();
     assert.ok(log[0].id);
+  });
+});
+
+describe('Texting: GET/POST /api/texts/:characterId (validation paths — no real OpenRouter call)', () => {
+  async function makeCharacter(name) {
+    const { character } = await (await postJson('/api/characters', { name, description: 'Texts sometimes.' })).json();
+    return character;
+  }
+
+  test('GET 404s for an unknown character', async () => {
+    assert.equal((await fetch(`${baseUrl}/api/texts/nope`)).status, 404);
+  });
+
+  test('a fresh conversation starts empty', async () => {
+    const character = await makeCharacter('Fresh Contact');
+    const { log } = await (await fetch(`${baseUrl}/api/texts/${character.id}`)).json();
+    assert.deepEqual(log, []);
+  });
+
+  test('send 404s for an unknown character', async () => {
+    assert.equal((await postJson('/api/texts/nope/send', { text: 'Hi?' })).status, 404);
+  });
+
+  test('send rejects empty text', async () => {
+    const character = await makeCharacter('Silent Contact');
+    assert.equal((await postJson(`/api/texts/${character.id}/send`, { text: '   ' })).status, 400);
+  });
+
+  test('sending with no API key persists the user line, reports the error, generates no reply', async () => {
+    const character = await makeCharacter('No Key Contact');
+    const { log, error } = await (await postJson(`/api/texts/${character.id}/send`, { text: 'You around?' })).json();
+    assert.match(error, /API key/i);
+    assert.equal(log.length, 1);
+    assert.equal(log[0].type, 'user');
+    assert.equal(log[0].text, 'You around?');
+  });
+
+  test('the user line persists across a GET after a failed send', async () => {
+    const character = await makeCharacter('Persisted Contact');
+    await postJson(`/api/texts/${character.id}/send`, { text: 'Ping.' });
+    const { log } = await (await fetch(`${baseUrl}/api/texts/${character.id}`)).json();
+    assert.equal(log.length, 1);
+    assert.equal(log[0].text, 'Ping.');
+    assert.ok(log[0].id);
+  });
+
+  test('two characters get independent conversation logs', async () => {
+    const a = await makeCharacter('Contact A');
+    const b = await makeCharacter('Contact B');
+    await postJson(`/api/texts/${a.id}/send`, { text: 'Message for A.' });
+
+    const logA = (await (await fetch(`${baseUrl}/api/texts/${a.id}`)).json()).log;
+    const logB = (await (await fetch(`${baseUrl}/api/texts/${b.id}`)).json()).log;
+    assert.equal(logA.length, 1);
+    assert.equal(logB.length, 0);
   });
 });
 

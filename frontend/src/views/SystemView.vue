@@ -7,6 +7,7 @@ import EmbeddingsCard from '../components/settings/EmbeddingsCard.vue';
 import SuggestedActionsCard from '../components/settings/SuggestedActionsCard.vue';
 import NarratorCard from '../components/settings/NarratorCard.vue';
 import DraftPersonaPromptCard from '../components/settings/DraftPersonaPromptCard.vue';
+import TextingCard from '../components/settings/TextingCard.vue';
 import MessageFormattingCard from '../components/settings/MessageFormattingCard.vue';
 import ThemeCard from '../components/settings/ThemeCard.vue';
 
@@ -22,6 +23,7 @@ const sections = [
   { id: 'suggested-actions', label: 'Suggested actions' },
   { id: 'narrator', label: 'Narrator' },
   { id: 'draft-persona-prompt', label: 'Draft persona prompt' },
+  { id: 'texting', label: 'Texting' },
   { id: 'message-formatting', label: 'Message formatting' },
   { id: 'theme', label: 'Theme' },
 ];
@@ -47,6 +49,7 @@ onMounted(async () => {
         <div id="suggested-actions" class="anchor-section"><SuggestedActionsCard /></div>
         <div id="narrator" class="anchor-section"><NarratorCard /></div>
         <div id="draft-persona-prompt" class="anchor-section"><DraftPersonaPromptCard /></div>
+        <div id="texting" class="anchor-section"><TextingCard /></div>
         <div id="message-formatting" class="anchor-section"><MessageFormattingCard /></div>
         <div id="theme" class="anchor-section"><ThemeCard /></div>
       </div>

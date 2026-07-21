@@ -3,6 +3,10 @@ import { computed, ref, watch } from 'vue';
 import { useWorldStore } from '../../stores/world';
 import { TIMES_OF_DAY, weekdayFor } from '../../utils/time';
 
+// showLabel:false is for PhoneHeader.vue, which already renders its own
+// bigger day/time display above this — only the retreat/advance/jump
+// controls are wanted there, not a second, smaller copy of the same text.
+const props = defineProps({ showLabel: { type: Boolean, default: true } });
 const world = useWorldStore();
 const jumpOpen = ref(false);
 const jumpDay = ref(world.time.day);
@@ -30,7 +34,7 @@ async function jump() {
 
 <template>
   <span class="time-widget">
-    Day {{ world.time.day }}<template v-if="weekday"> ({{ weekday }})</template> · {{ world.time.timeOfDay }}
+    <template v-if="showLabel">Day {{ world.time.day }}<template v-if="weekday"> ({{ weekday }})</template> · {{ world.time.timeOfDay }}</template>
     <button type="button" title="Step back to the previous time of day" @click="retreat">◀</button>
     <button type="button" title="Advance to the next time of day" @click="advance">▶</button>
     <button type="button" title="Jump to any day/time — including the past, for time-travel scenarios" @click="jumpOpen = !jumpOpen">🕐</button>

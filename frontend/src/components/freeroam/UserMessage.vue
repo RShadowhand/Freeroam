@@ -22,7 +22,7 @@ const showRetry = computed(() => props.isLast && !chat.streamingState);
 </script>
 
 <template>
-  <div class="msg user" :class="{ editing: isEditing }">
+  <div class="msg user" :class="{ editing: isEditing, call: message.call }">
     <EditRow v-if="isEditing" :message="message" />
     <template v-else>
       <div class="bubble" v-html="html"></div>
