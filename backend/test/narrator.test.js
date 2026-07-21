@@ -123,4 +123,14 @@ describe('buildNarratorMessages', () => {
     const [system] = buildNarratorMessages({ place: basePlace, transcript: '', worldSetting: 'A rain-soaked port city.' });
     assert.ok(system.content.includes('A rain-soaked port city.'));
   });
+
+  test('includes a weather line when the place carries one', () => {
+    const [system] = buildNarratorMessages({ place: { ...basePlace, weather: 'foggy' }, transcript: '' });
+    assert.ok(system.content.includes('Weather: foggy.'));
+  });
+
+  test('omits the weather line entirely when the place has none', () => {
+    const [system] = buildNarratorMessages({ place: basePlace, transcript: '' });
+    assert.ok(!system.content.includes('Weather:'));
+  });
 });

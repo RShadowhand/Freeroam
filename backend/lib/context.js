@@ -336,7 +336,7 @@ export function scheduledPlaceFor(character, day, timeOfDay, placesById) {
 // scene = {
 //   chars: [{ name, description, personality, scenario, exampleDialogue }], // the character(s) whose turn is being generated
 //   othersPresent: string[],                           // names of other characters in the room (context only)
-//   place: { name, area, desc, type, ownerName },      // ownerName resolved by the caller, or null
+//   place: { name, area, desc, type, ownerName, weather }, // ownerName/weather resolved by the caller, or null
 //   persona: { name, description } | null,             // active user persona, or null
 //   memories: string[],                                // relevant memory snippets, already retrieved by the caller
 //   time: { day, timeOfDay } | null,                   // in-world clock (user-advanced, never automatic)
@@ -347,8 +347,9 @@ export function scheduledPlaceFor(character, day, timeOfDay, placesById) {
 function scenarioBlock(place, othersPresent = [], time = null) {
   const weekday = time ? weekdayFor(time.day) : null;
   const when = time ? `It is Day ${time.day}${weekday ? ` (${weekday})` : ''}, ${time.timeOfDay}.\n` : '';
+  const weather = place.weather ? `Weather: ${place.weather}.\n` : '';
   const others = othersPresent.length ? `\nAlso present: ${othersPresent.join(', ')}.` : '';
-  return `${when}Current place: ${place.name}${place.area ? ` (${place.area})` : ''}\n${place.desc}${others}`;
+  return `${when}${weather}Current place: ${place.name}${place.area ? ` (${place.area})` : ''}\n${place.desc}${others}`;
 }
 
 function relationshipsBlock(chars, relationships) {

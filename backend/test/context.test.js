@@ -649,6 +649,17 @@ describe('defaultSystemPrompt', () => {
     const prompt = defaultSystemPrompt(baseScene);
     assert.ok(!prompt.includes("What's remembered so far:"));
   });
+
+  test('includes a weather line when the place carries one', () => {
+    const scene = { ...baseScene, place: { ...baseScene.place, weather: 'rainy' } };
+    const prompt = defaultSystemPrompt(scene);
+    assert.ok(prompt.includes('Weather: rainy.'));
+  });
+
+  test('omits the weather line entirely when the place has none', () => {
+    const prompt = defaultSystemPrompt(baseScene);
+    assert.ok(!prompt.includes('Weather:'));
+  });
 });
 
 describe('buildSystemPrompt', () => {

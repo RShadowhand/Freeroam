@@ -158,6 +158,7 @@ export function createWorldRegistry({ rootDir }) {
         world: path.join(dataDir, 'world.json'),
         personas: path.join(dataDir, 'personas.json'),
         presets: path.join(dataDir, 'presets.json'),
+        weather: path.join(dataDir, 'weather.json'),
       },
       _db: null,
       get db() {

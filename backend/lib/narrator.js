@@ -51,6 +51,7 @@ export function buildNarratorMessages(scene) {
 
   const weekday = time ? weekdayFor(time.day) : null;
   const when = time ? `It is Day ${time.day}${weekday ? ` (${weekday})` : ''}, ${time.timeOfDay}.\n` : '';
+  const weather = place.weather ? `Weather: ${place.weather}.\n` : '';
   const locationLine = place.type === 'private'
     ? `This is ${place.ownerName ? `${place.ownerName}'s` : "a resident's"} private place.`
     : 'This is a communal space, open to anyone.';
@@ -65,7 +66,7 @@ export function buildNarratorMessages(scene) {
       + 'Never speak, think, or act for anyone currently in the conversation, and never invent new named characters. '
       + 'Keep it to 1-3 sentences, grounded and understated — this is scene texture, not a plot twist.',
     `If genuinely nothing worth mentioning is happening right now, reply with exactly "${NARRATOR_SILENCE}" and nothing else.`,
-    `${when}Current place: ${place.name}${place.area ? ` (${place.area})` : ''}\n${place.desc || ''}\n${locationLine}${castBlock}${settingBlock}`,
+    `${when}${weather}Current place: ${place.name}${place.area ? ` (${place.area})` : ''}\n${place.desc || ''}\n${locationLine}${castBlock}${settingBlock}`,
   ].join('\n\n');
 
   const user = transcript.trim()

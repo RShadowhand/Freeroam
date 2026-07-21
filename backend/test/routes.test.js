@@ -1133,6 +1133,79 @@ describe('World time & setting', () => {
   });
 });
 
+describe('Weather', () => {
+  async function makeAreaPlace(name, area) {
+    const res = await postJson('/api/places', { name, type: 'communal', area });
+    return (await res.json()).place;
+  }
+
+  test('GET /api/weather lists known areas and conditions, with no entry for an area that has never rolled', async () => {
+    const area = 'Weather Test Area ' + Math.random();
+    await makeAreaPlace('Weather Cafe', area);
+    const { areas, conditions, weather } = await (await fetch(`${baseUrl}/api/weather`)).json();
+    assert.ok(areas.includes(area));
+    assert.ok(Array.isArray(conditions) && conditions.length > 0);
+    assert.equal(weather[area], undefined);
+  });
+
+  test('setting an area to manual pins a condition; day changes never overwrite it', async () => {
+    const area = 'Manual Area ' + Math.random();
+    await makeAreaPlace('Manual Place', area);
+
+    const res = await postJson(`/api/weather/${encodeURIComponent(area)}`, { mode: 'manual', condition: 'stormy' });
+    assert.equal(res.status, 200);
+    const { weather: first } = await res.json();
+    assert.equal(first[area].mode, 'manual');
+    assert.equal(first[area].condition, 'stormy');
+
+    const { time: before } = await (await fetch(`${baseUrl}/api/world`)).json();
+    await postJson('/api/world/time', { day: before.day + 10 });
+
+    const { weather: after } = await (await fetch(`${baseUrl}/api/weather`)).json();
+    assert.equal(after[area].mode, 'manual');
+    assert.equal(after[area].condition, 'stormy');
+  });
+
+  test('an auto area rolls to match the day after an explicit day change, and does not re-roll for a repeat of the same day', async () => {
+    const area = 'Auto Area ' + Math.random();
+    await makeAreaPlace('Auto Place', area);
+
+    const { time: before } = await (await fetch(`${baseUrl}/api/world`)).json();
+    const targetDay = before.day + 5;
+
+    await postJson('/api/world/time', { day: targetDay });
+    let { weather } = await (await fetch(`${baseUrl}/api/weather`)).json();
+    assert.equal(weather[area].mode, 'auto');
+    assert.equal(weather[area].updatedDay, targetDay);
+    const firstCondition = weather[area].condition;
+
+    await postJson('/api/world/time', { day: targetDay }); // same day again — no-op for weather
+    ({ weather } = await (await fetch(`${baseUrl}/api/weather`)).json());
+    assert.equal(weather[area].condition, firstCondition);
+    assert.equal(weather[area].updatedDay, targetDay);
+  });
+
+  test('switching an area back to auto keeps its current condition immediately (no surprise change on the switch itself)', async () => {
+    const area = 'Switch Area ' + Math.random();
+    await makeAreaPlace('Switch Place', area);
+    await postJson(`/api/weather/${encodeURIComponent(area)}`, { mode: 'manual', condition: 'snowy' });
+
+    const res = await postJson(`/api/weather/${encodeURIComponent(area)}`, { mode: 'auto' });
+    const { weather } = await res.json();
+    assert.equal(weather[area].mode, 'auto');
+    assert.equal(weather[area].condition, 'snowy');
+  });
+
+  test('rejects an unknown area, an invalid condition, and an unrecognized mode', async () => {
+    const area = 'Validation Area ' + Math.random();
+    await makeAreaPlace('Validation Place', area);
+
+    assert.equal((await postJson('/api/weather/definitely-not-a-real-area', { mode: 'auto' })).status, 404);
+    assert.equal((await postJson(`/api/weather/${encodeURIComponent(area)}`, { mode: 'manual', condition: 'apocalyptic' })).status, 400);
+    assert.equal((await postJson(`/api/weather/${encodeURIComponent(area)}`, { mode: 'whatever' })).status, 400);
+  });
+});
+
 describe('Character schedules', () => {
   async function makePlace(name) {
     const res = await postJson('/api/places', { name, type: 'communal' });

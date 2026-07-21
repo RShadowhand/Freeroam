@@ -178,6 +178,7 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 .toolbar h2{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.3rem; margin:0; }
 
 .area-group{ display:flex; flex-direction:column; gap:6px; margin-bottom:18px; }
+.area-label-row{ display:flex; align-items:center; gap:10px; }
 .area-label{
   font-family:'IBM Plex Mono',monospace;
   font-size:0.7rem;
@@ -188,8 +189,13 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   display:flex;
   align-items:center;
   gap:8px;
+  flex:1;
+  min-width:0;
 }
 .area-label::after{ content:''; flex:1; height:1px; background:var(--border); }
+.area-weather{ display:flex; align-items:center; gap:6px; flex-shrink:0; }
+.area-weather .weather-current{ font-size:0.78rem; color:var(--parchment); }
+.area-weather select{ width:auto; font-size:0.72rem; padding:3px 6px; }
 
 .type-badge{
   font-family:'IBM Plex Mono',monospace;

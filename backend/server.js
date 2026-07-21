@@ -75,6 +75,7 @@ import {
 } from './lib/context.js';
 import { loadChatLog, saveChatLog, appendChatEntries, deleteChatLog } from './lib/chatStore.js';
 import { createWorldRegistry } from './lib/worldRegistry.js';
+import { CONDITIONS as WEATHER_CONDITIONS, loadWeather, saveWeather, rollAutoWeather, setManualWeather, setAutoWeather } from './lib/weather.js';
 import { logger } from './lib/log.js';
 logger.setLevel("debug")
 
@@ -1097,6 +1098,36 @@ app.delete('/api/places/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Weather routes ------------------------------------------------------
+
+app.get('/api/weather', (req, res) => {
+  const w = req.world;
+  res.json({ weather: loadWeather(w), areas: knownAreas(w), conditions: WEATHER_CONDITIONS });
+});
+
+app.post('/api/weather/:area', (req, res) => {
+  const w = req.world;
+  const { area } = req.params;
+  const { mode, condition } = req.body || {};
+  if (!knownAreas(w).includes(area)) return res.status(404).json({ error: 'Unknown area.' });
+
+  const day = loadWorld(w).time.day;
+  const weather = loadWeather(w);
+  let updated;
+  if (mode === 'manual') {
+    if (!WEATHER_CONDITIONS.includes(condition)) {
+      return res.status(400).json({ error: `condition must be one of: ${WEATHER_CONDITIONS.join(', ')}` });
+    }
+    updated = setManualWeather(weather, area, condition, day);
+  } else if (mode === 'auto') {
+    updated = setAutoWeather(weather, area, day);
+  } else {
+    return res.status(400).json({ error: "mode must be 'auto' or 'manual'." });
+  }
+  saveWeather(w, updated);
+  res.json({ weather: updated });
+});
+
 // --- World / placement routes ------------------------------------------
 
 app.get('/api/world', (req, res) => {
@@ -1199,10 +1230,17 @@ function applyScheduledPlacements(world, characters) {
   });
 }
 
+// Every distinct non-blank area currently in use by a place — the roll
+// target set for weather's daily auto-reroll.
+function knownAreas(w) {
+  return [...new Set(loadPlaces(w).map((p) => p.area).filter(Boolean))];
+}
+
 app.post('/api/world/time', (req, res) => {
   const w = req.world;
   const { advance, retreat, day, timeOfDay } = req.body || {};
   const world = loadWorld(w);
+  const dayBefore = world.time.day;
 
   if (advance) {
     const idx = TIMES_OF_DAY.indexOf(world.time.timeOfDay);
@@ -1226,6 +1264,10 @@ app.post('/api/world/time', (req, res) => {
     const n = Number(day);
     if (!Number.isInteger(n) || n < 1) return res.status(400).json({ error: 'day must be a positive integer.' });
     world.time.day = n;
+  }
+
+  if (world.time.day !== dayBefore) {
+    saveWeather(w, rollAutoWeather(loadWeather(w), knownAreas(w), world.time.day));
   }
 
   applyScheduledPlacements(world, loadCharacters(w));
@@ -1778,6 +1820,7 @@ async function buildTurnRequest({ w, place, speakerId, presentIds, charactersByI
       desc: place.desc,
       type: place.type,
       ownerName: place.ownerId && charactersById[place.ownerId] ? charactersById[place.ownerId].name : null,
+      weather: place.area ? loadWeather(w)[place.area]?.condition || null : null,
     },
     persona: activePersona ? { name: activePersona.name, description: activePersona.description } : null,
     memories,
@@ -1926,6 +1969,7 @@ async function attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, c
       place: {
         name: place.name, area: place.area, desc: place.desc, type: place.type,
         ownerName: place.ownerId && charactersById[place.ownerId] ? charactersById[place.ownerId].name : null,
+        weather: place.area ? loadWeather(w)[place.area]?.condition || null : null,
       },
       worldSetting: world.setting,
       time: world.time,
