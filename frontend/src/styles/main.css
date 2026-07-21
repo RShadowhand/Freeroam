@@ -1168,6 +1168,16 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   .regen-btn{ opacity:0.55; }
 }
 
+.phone-header{
+  text-align:center; padding:12px 0; border-bottom:1px solid var(--border-subtle); flex-shrink:0;
+}
+.phone-time{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.8rem; }
+.phone-date{
+  font-family:'IBM Plex Mono',monospace; font-size:0.76rem; color:var(--dim);
+  letter-spacing:0.04em; margin-top:2px;
+}
+.phone-time-controls{ display:flex; justify-content:center; margin-top:8px; }
+
 @media (max-width:820px){
   /* Chat-first, like a messaging app: the map/phone side panels hide
      behind toggles, and picking a room returns to the chat automatically.
@@ -1242,7 +1252,7 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
      of box overflow:hidden needs — which is what produced the mangled,
      clipped-mid-word rendering this replaces. */
   .phone-info{ display:flex; align-items:baseline; gap:4px; min-width:0; overflow:hidden; }
-  .phone-time{ font-size:0.78rem; font-family:'IBM Plex Mono',monospace; letter-spacing:0.04em; flex-shrink:0; }
+  .phone-time{ font-size:0.66rem; font-family:'IBM Plex Mono',monospace; letter-spacing:0.04em; flex-shrink:0; }
   .phone-time::after{ content:'·'; margin-left:4px; color:var(--dim); }
   .phone-date{
     font-size:0.78rem; margin-top:0; min-width:0;
@@ -1300,16 +1310,12 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
    .app.freeroam-view block) — now that it's a real column in .layout
    instead of a standalone routed view, .phone-thread .messages can just
    flex:1 within that bounded height like .map does, instead of the
-   max-height guess the old standalone Phone view needed. */
-.phone-header{
-  text-align:center; padding:12px 0; border-bottom:1px solid var(--border-subtle); flex-shrink:0;
-}
-.phone-time{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.8rem; }
-.phone-date{
-  font-family:'IBM Plex Mono',monospace; font-size:0.76rem; color:var(--dim);
-  letter-spacing:0.04em; margin-top:2px;
-}
-.phone-time-controls{ display:flex; justify-content:center; margin-top:8px; }
+   max-height guess the old standalone Phone view needed.
+   The header/time/date base rules themselves live further up, right
+   before the @media(max-width:820px) block that overrides them — same
+   selectors, equal specificity, so whichever comes LAST in the cascade
+   wins regardless of viewport; keeping the base declaration textually
+   before its override is what lets the override actually take effect. */
 
 .phone-contacts{
   flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:2px;
