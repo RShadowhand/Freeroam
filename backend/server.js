@@ -76,8 +76,13 @@ import {
 import { loadChatLog, saveChatLog, appendChatEntries, deleteChatLog } from './lib/chatStore.js';
 import { createWorldRegistry } from './lib/worldRegistry.js';
 import { CONDITIONS as WEATHER_CONDITIONS, loadWeather, saveWeather, rollAutoWeather, setManualWeather, setAutoWeather } from './lib/weather.js';
-import { buildTextingMessages, historyFromLog } from './lib/texting.js';
+import { buildTextingMessages, historyFromLog, groupHistoryFromLog } from './lib/texting.js';
 import { loadCalls, saveCalls } from './lib/calls.js';
+import { loadGroups, saveGroups, createGroup } from './lib/groups.js';
+import {
+  DEFAULT_CASCADE_BASE_CHANCE, DEFAULT_CASCADE_DECAY_RATE, DEFAULT_CASCADE_PER_CHARACTER_CAP, MAX_CASCADE_REPLIES,
+  nextCascadeChance, rollContinues, eligibleReplierIds, pickReplier,
+} from './lib/textCascade.js';
 import { logger } from './lib/log.js';
 logger.setLevel("debug")
 
@@ -130,6 +135,9 @@ const DEFAULT_CONFIG = {
   narratorEnabled: true,                // ambient world-voice for empty/solo/background scenes — see lib/narrator.js
   textingPromptTemplate: '',            // '' = use DEFAULT_TEXTING_PROMPT_TEMPLATE; see lib/texting.js
   textingTypingIndicator: false,        // opt-in; only does anything when streaming is also on
+  cascadeBaseChance: DEFAULT_CASCADE_BASE_CHANCE,       // Phase 4 — see lib/textCascade.js
+  cascadeDecayRate: DEFAULT_CASCADE_DECAY_RATE,
+  cascadePerCharacterCap: DEFAULT_CASCADE_PER_CHARACTER_CAP,
 };
 
 // The model in use before embeddingModelVersion existed — configs saved
@@ -426,6 +434,9 @@ function publicConfig(cfg) {
     textingPromptTemplate: (cfg.textingPromptTemplate || '').trim() || DEFAULT_TEXTING_PROMPT_TEMPLATE,
     textingPromptTemplateIsCustom: !!(cfg.textingPromptTemplate || '').trim(),
     textingTypingIndicator: !!cfg.textingTypingIndicator,
+    cascadeBaseChance: Number.isFinite(cfg.cascadeBaseChance) ? cfg.cascadeBaseChance : DEFAULT_CASCADE_BASE_CHANCE,
+    cascadeDecayRate: Number.isFinite(cfg.cascadeDecayRate) ? cfg.cascadeDecayRate : DEFAULT_CASCADE_DECAY_RATE,
+    cascadePerCharacterCap: Number.isInteger(cfg.cascadePerCharacterCap) ? cfg.cascadePerCharacterCap : DEFAULT_CASCADE_PER_CHARACTER_CAP,
   };
 }
 
@@ -438,6 +449,7 @@ app.post('/api/settings', (req, res) => {
   const {
     apiKey, model, apiBase, streaming, reasoning, providers, memoryMinScore, suggestedActionsMode,
     draftPersonaPrompt, narratorEnabled, textingPromptTemplate, textingTypingIndicator,
+    cascadeBaseChance, cascadeDecayRate, cascadePerCharacterCap,
   } = req.body || {};
   if (typeof apiKey === 'string' && apiKey.trim()) cfg.apiKey = apiKey.trim();
   if (typeof model === 'string' && model.trim()) cfg.model = model.trim();
@@ -457,6 +469,15 @@ app.post('/api/settings', (req, res) => {
   if (typeof draftPersonaPrompt === 'string') cfg.draftPersonaPrompt = draftPersonaPrompt.trim();
   if (typeof textingPromptTemplate === 'string') cfg.textingPromptTemplate = textingPromptTemplate.trim();
   if (typeof textingTypingIndicator === 'boolean') cfg.textingTypingIndicator = textingTypingIndicator;
+  if (typeof cascadeBaseChance === 'number' && Number.isFinite(cascadeBaseChance)) {
+    cfg.cascadeBaseChance = Math.max(0, Math.min(1, cascadeBaseChance));
+  }
+  if (typeof cascadeDecayRate === 'number' && Number.isFinite(cascadeDecayRate)) {
+    cfg.cascadeDecayRate = Math.max(0, Math.min(1, cascadeDecayRate));
+  }
+  if (typeof cascadePerCharacterCap === 'number' && Number.isInteger(cascadePerCharacterCap)) {
+    cfg.cascadePerCharacterCap = Math.max(1, cascadePerCharacterCap);
+  }
   saveConfig(cfg);
   res.json(publicConfig(cfg));
 });
@@ -1263,6 +1284,209 @@ app.post('/api/texts/:characterId/send', async (req, res) => {
 
   const result = await runTextingReply({ w, cfg, characterId, character });
   res.json({ log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error } : {}) });
+});
+
+// --- Group texting routes ------------------------------------------------
+// A group conversation is the same stored-log shape 1-on-1 texting already
+// uses (w.textsDir/<id>.json), just keyed by a group id instead of a
+// character id, with participantIds/name tracked separately in
+// groups.json. Sending a message runs the reply cascade — see
+// lib/textCascade.js for the decay math this is built on.
+
+app.get('/api/groups', (req, res) => {
+  res.json({ groups: loadGroups(req.world) });
+});
+
+app.post('/api/groups', (req, res) => {
+  const w = req.world;
+  const { name, participantIds } = req.body || {};
+  if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'A group name is required.' });
+  if (!Array.isArray(participantIds) || new Set(participantIds).size < 2) {
+    return res.status(400).json({ error: 'At least 2 participants are required.' });
+  }
+  const characters = loadCharacters(w);
+  const unknown = participantIds.filter((id) => !characters.some((c) => c.id === id));
+  if (unknown.length) return res.status(400).json({ error: `Unknown character id(s): ${unknown.join(', ')}` });
+
+  const { groups, group } = createGroup(loadGroups(w), { name, participantIds });
+  saveGroups(w, groups);
+  logger.info('chat', `group created: ${group.name} (${group.participantIds.length} participants)`);
+  res.status(201).json({ group });
+});
+
+app.get('/api/groups/:groupId', (req, res) => {
+  const w = req.world;
+  const group = loadGroups(w).find((g) => g.id === req.params.groupId);
+  if (!group) return res.status(404).json({ error: 'Group not found.' });
+  res.json({ group, log: loadChatLog(w.textsDir, group.id) });
+});
+
+app.delete('/api/groups/:groupId', (req, res) => {
+  const w = req.world;
+  const groups = loadGroups(w);
+  const group = groups.find((g) => g.id === req.params.groupId);
+  if (!group) return res.status(404).json({ error: 'Group not found.' });
+  saveGroups(w, groups.filter((g) => g.id !== group.id));
+  deleteChatLog(w.textsDir, group.id);
+  res.json({ ok: true });
+});
+
+// One cascade reply, generation-wise close to runTextingReply but scoped to
+// whichever member is replying within the group — see groupHistoryFromLog
+// for why the history shaping differs from 1-on-1 (a plain chat-completion
+// API has no "third party" role, so everyone else's lines, including the
+// user's, fold into 'user' turns; only the replying character's own past
+// lines come back as 'assistant').
+async function generateGroupReply({ w, cfg, group, replierId, character, charactersById, onEvent = null }) {
+  const { personas, activePersonaId } = loadPersonas(w);
+  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+  const personaLabel = activePersona ? activePersona.name : 'Visitor';
+  const world = loadWorld(w);
+  const log = loadChatLog(w.textsDir, group.id);
+
+  const latestEntry = [...log].reverse().find((m) => m.type === 'user' || m.type === 'char');
+  const memoryQuery = latestEntry ? latestEntry.text : `${personaLabel} texts the group.`;
+
+  let memories = [];
+  try {
+    memories = await retrieveMemories({ db: w.db, embedFn: embed, characterIds: [replierId], query: memoryQuery, minScore: cfg.memoryMinScore });
+  } catch (err) {
+    logger.warn('memory', `group retrieval failed, continuing without memories: ${err.message}`);
+  }
+
+  const placesById = {};
+  loadPlaces(w).forEach((p) => { placesById[p.id] = p; });
+  const relationships = await relationshipKnowledge(w, replierId, charactersById, placesById, world, activePersona ? activePersona.name : null, memoryQuery);
+  const groupMembers = group.participantIds.filter((id) => id !== replierId).map((id) => charactersById[id]?.name).filter(Boolean);
+
+  const messages = buildTextingMessages({
+    char: character,
+    persona: activePersona ? { name: activePersona.name, description: activePersona.description } : null,
+    memories, relationships, time: world.time, groupMembers,
+    textingPromptTemplate: publicConfig(cfg).textingPromptTemplate,
+  }, groupHistoryFromLog(log, replierId, personaLabel));
+
+  if (onEvent) onEvent({ type: 'speaker', charId: replierId, name: character.name });
+
+  let text, usage, timing;
+  if (onEvent && cfg.streaming) {
+    ({ text, usage, timing } = await streamOpenRouter(cfg, messages, undefined, `${character.name} (group)`,
+      (delta) => onEvent({ type: 'delta', ...delta })));
+  } else {
+    ({ text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (group)`));
+  }
+
+  const entry = { type: 'char', charId: replierId, name: character.name, text: (text || '').trim() };
+  const stats = buildGenerationStats(usage, timing);
+  if (stats) entry.stats = stats;
+  appendChatEntries(w.textsDir, group.id, [entry]);
+  if (onEvent) onEvent({ type: 'turn', entries: [entry] });
+  return entry;
+}
+
+// Runs the reply cascade after any message lands in a group text — the
+// user's own message today, or (once Phase 5 exists) a character's
+// proactive one, which is why triggerSpeakerId isn't hardcoded to 'user'.
+// Each additional reply is an independent roll whose odds decay with every
+// reply already landed this cascade (nextCascadeChance); who replies is
+// picked at random from group members not currently at the consecutive-
+// reply cap (eligibleReplierIds). Stops on the first failed roll, on
+// running out of eligible repliers, or at MAX_CASCADE_REPLIES regardless
+// of how the dice keep landing.
+async function runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId, onEvent = null }) {
+  if (!cfg.apiKey) return { entries: [], error: 'No API key configured. Add one in Settings.' };
+
+  const cascadeEntries = [];
+  let lastSpeakerId = charactersById[triggerSpeakerId] ? triggerSpeakerId : null;
+  let lastSpeakerStreak = lastSpeakerId ? 1 : 0;
+  let repliesSoFar = 0;
+
+  while (repliesSoFar < MAX_CASCADE_REPLIES) {
+    const chance = nextCascadeChance(cfg.cascadeBaseChance, cfg.cascadeDecayRate, repliesSoFar);
+    if (!rollContinues(chance)) break;
+
+    const eligible = eligibleReplierIds(group.participantIds, lastSpeakerId, lastSpeakerStreak, cfg.cascadePerCharacterCap);
+    if (!eligible.length) break;
+    const replierId = pickReplier(eligible);
+    const character = charactersById[replierId];
+    if (!character) break; // shouldn't happen — participantIds are validated at creation
+
+    let entry;
+    try {
+      entry = await generateGroupReply({ w, cfg, group, replierId, character, charactersById, onEvent });
+    } catch (err) {
+      logger.warn('chat', `group cascade reply failed, stopping the cascade here: ${err.message}`);
+      break;
+    }
+    cascadeEntries.push(entry);
+
+    lastSpeakerStreak = replierId === lastSpeakerId ? lastSpeakerStreak + 1 : 1;
+    lastSpeakerId = replierId;
+    repliesSoFar += 1;
+  }
+
+  return { entries: cascadeEntries };
+}
+
+// One shared memory row for the whole round (trigger + every cascade
+// reply), same "one row, many participants" pattern recordRound uses for a
+// physical-scene round — everyone in a group text conversation sees every
+// message in it, so unlike Phase 3's call bystanders there's no redaction
+// to do here.
+function recordGroupRound(w, { group, triggerEntry, cascadeEntries, userLabel, activePersonaId, time }) {
+  const relevant = [triggerEntry, ...cascadeEntries].filter(Boolean);
+  const text = relevant.map((e) => (e.type === 'user' ? `${userLabel}: ${e.text}` : `${e.name}: ${e.text}`)).join('\n');
+  if (!text.trim()) return;
+  recordTurn({
+    db: w.db, embedFn: embed, characterIds: group.participantIds, personaId: activePersonaId || null,
+    text, placeId: null, entryIds: relevant.map((e) => e.id).filter(Boolean),
+    day: time?.day ?? null, timeOfDay: time?.timeOfDay ?? null,
+  }).catch((err) => logger.error('memory', `group round recording failed: ${err.message}`));
+}
+
+app.post('/api/groups/:groupId/send', async (req, res) => {
+  const w = req.world;
+  const { groupId } = req.params;
+  const { text } = req.body || {};
+  if (typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'text is required.' });
+
+  const group = loadGroups(w).find((g) => g.id === groupId);
+  if (!group) return res.status(404).json({ error: 'Group not found.' });
+
+  const charactersById = {};
+  loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+
+  const userEntry = { type: 'user', text: text.trim() };
+  appendChatEntries(w.textsDir, groupId, [userEntry]);
+  logger.info('chat', `group text -> ${group.name}`);
+
+  const cfg = loadConfig();
+  const { personas, activePersonaId } = loadPersonas(w);
+  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+  const userLabel = activePersona ? activePersona.name : 'Visitor';
+  const time = loadWorld(w).time;
+
+  const finish = (result) => recordGroupRound(w, {
+    group, triggerEntry: userEntry, cascadeEntries: result.entries, userLabel, activePersonaId, time,
+  });
+
+  if (cfg.streaming && cfg.apiKey) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    send({ type: 'ack', log: loadChatLog(w.textsDir, groupId) });
+
+    const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user', onEvent: send });
+    finish(result);
+    send({ type: 'done', log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error } : {}) });
+    return res.end();
+  }
+
+  const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user' });
+  finish(result);
+  res.json({ log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error } : {}) });
 });
 
 // --- Call routes -------------------------------------------------------

@@ -11,7 +11,7 @@ import { logger } from './log.js';
 // (an X-World-Id header), never via a server-side "current world" pointer,
 // so different browsers/users can be in different worlds at the same time.
 
-const WORLD_JSON_FILES = ['characters.json', 'places.json', 'world.json', 'personas.json', 'presets.json'];
+const WORLD_JSON_FILES = ['characters.json', 'places.json', 'world.json', 'personas.json', 'presets.json', 'groups.json'];
 
 function httpError(message, status) {
   return Object.assign(new Error(message), { status });
@@ -163,6 +163,7 @@ export function createWorldRegistry({ rootDir }) {
         presets: path.join(dataDir, 'presets.json'),
         weather: path.join(dataDir, 'weather.json'),
         calls: path.join(dataDir, 'calls.json'),
+        groups: path.join(dataDir, 'groups.json'),
       },
       _db: null,
       get db() {

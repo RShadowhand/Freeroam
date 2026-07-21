@@ -20,6 +20,25 @@ async function reset() {
   await settings.resetTextingPromptTemplate();
   status.value = 'Reset to default.';
 }
+
+// Local drafts so typing in the number fields doesn't save on every
+// keystroke — same idea as the prompt textarea's own Save button.
+const cascadeBaseChance = ref(settings.cascadeBaseChance);
+const cascadeDecayRate = ref(settings.cascadeDecayRate);
+const cascadePerCharacterCap = ref(settings.cascadePerCharacterCap);
+const cascadeStatus = ref('');
+watch(() => [settings.cascadeBaseChance, settings.cascadeDecayRate, settings.cascadePerCharacterCap], ([b, d, c]) => {
+  cascadeBaseChance.value = b; cascadeDecayRate.value = d; cascadePerCharacterCap.value = c;
+});
+
+async function saveCascade() {
+  await settings.setCascadeSettings({
+    cascadeBaseChance: Number(cascadeBaseChance.value),
+    cascadeDecayRate: Number(cascadeDecayRate.value),
+    cascadePerCharacterCap: Number(cascadePerCharacterCap.value),
+  });
+  cascadeStatus.value = 'Saved.';
+}
 </script>
 
 <template>
@@ -48,5 +67,29 @@ async function reset() {
       This needs <router-link to="/settings/connection">Streaming</router-link> turned on to do anything — it'll stay
       quietly off until then.
     </p>
+
+    <h3 style="margin-top:18px;">Group text reply cascade</h3>
+    <p class="hint">
+      When someone sends a group text, other members have a chance to jump in too — each additional reply is less
+      likely than the last, so a big group can't run forever. Tune it here; the shipped defaults are already
+      calibrated (a 3-person group tends to bounce 3-5 messages total; a 6-person group averages ~0.7-0.8 replies per
+      character), so most worlds shouldn't need to touch this.
+    </p>
+    <div class="endpoint-row">
+      <label style="flex-shrink:0;">Base chance (0-1)</label>
+      <input type="number" v-model="cascadeBaseChance" min="0" max="1" step="0.01" style="width:90px;">
+    </div>
+    <div class="endpoint-row">
+      <label style="flex-shrink:0;">Decay rate per reply (0-1)</label>
+      <input type="number" v-model="cascadeDecayRate" min="0" max="1" step="0.01" style="width:90px;">
+    </div>
+    <div class="endpoint-row">
+      <label style="flex-shrink:0;">Max replies in a row per character</label>
+      <input type="number" v-model="cascadePerCharacterCap" min="1" step="1" style="width:90px;">
+    </div>
+    <div class="form-actions">
+      <button class="btn small" @click="saveCascade">Save</button>
+      <span class="form-status">{{ cascadeStatus }}</span>
+    </div>
   </div>
 </template>

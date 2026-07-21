@@ -32,6 +32,9 @@ export const useSettingsStore = defineStore('settings', {
     textingPromptTemplate: '', // the effective text (backend already falls back to its built-in default)
     textingPromptTemplateIsCustom: false,
     textingTypingIndicator: false,
+    cascadeBaseChance: 0.85,
+    cascadeDecayRate: 0.98,
+    cascadePerCharacterCap: 2,
   }),
   getters: {
     // Providers are an OpenRouter-only concept — a custom OpenAI-spec
@@ -58,6 +61,9 @@ export const useSettingsStore = defineStore('settings', {
       this.textingPromptTemplate = data.textingPromptTemplate || '';
       this.textingPromptTemplateIsCustom = !!data.textingPromptTemplateIsCustom;
       this.textingTypingIndicator = !!data.textingTypingIndicator;
+      this.cascadeBaseChance = Number.isFinite(data.cascadeBaseChance) ? data.cascadeBaseChance : 0.85;
+      this.cascadeDecayRate = Number.isFinite(data.cascadeDecayRate) ? data.cascadeDecayRate : 0.98;
+      this.cascadePerCharacterCap = Number.isInteger(data.cascadePerCharacterCap) ? data.cascadePerCharacterCap : 2;
       await this.loadAvailableProviders();
     },
     async loadModels() {
@@ -144,6 +150,12 @@ export const useSettingsStore = defineStore('settings', {
     async setTextingTypingIndicator(enabled) {
       this.textingTypingIndicator = enabled;
       await saveSettings({ textingTypingIndicator: enabled });
+    },
+    async setCascadeSettings({ cascadeBaseChance, cascadeDecayRate, cascadePerCharacterCap }) {
+      const { data } = await saveSettings({ cascadeBaseChance, cascadeDecayRate, cascadePerCharacterCap });
+      this.cascadeBaseChance = data.cascadeBaseChance;
+      this.cascadeDecayRate = data.cascadeDecayRate;
+      this.cascadePerCharacterCap = data.cascadePerCharacterCap;
     },
     async rebuildEmbeddings() {
       const { ok, data } = await rebuildEmbeddingsRequest();

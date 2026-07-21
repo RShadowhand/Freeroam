@@ -1274,6 +1274,13 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 }
 .phone-contact-row:hover{ background:var(--panel-raised); }
 .phone-contact-name{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1rem; }
+.group-icon{
+  width:44px; height:44px; border-radius:var(--avatar-radius); flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--panel-raised); border:1px solid var(--border); font-size:1.2rem;
+}
+.new-group-row .group-icon{ color:var(--accent); border-style:dashed; }
+.new-group-row .phone-contact-name{ color:var(--accent); }
 
 .phone-thread{ flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; }
 .phone-thread-header{ display:flex; align-items:center; gap:10px; padding-bottom:8px; border-bottom:1px solid var(--border-subtle); flex-shrink:0; }
@@ -1290,6 +1297,33 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 .phone-call-btn:disabled{ opacity:0.4; cursor:not-allowed; border-color:var(--border); color:var(--dim); }
 .phone-thread .messages{ flex:1; min-height:0; border:1px solid var(--border); border-radius:10px; }
 .typing-bubble{ font-style:italic; color:var(--dim); }
+
+/* ---- Group texting (Phase 4) ---- */
+.group-char{ display:flex; align-items:flex-start; gap:8px; align-self:flex-start; max-width:85%; }
+.group-char .avatar, .group-char .avatar-fallback{ width:30px; height:30px; font-size:0.8rem; }
+.group-char-body{ min-width:0; }
+.group-char-body .speaker{
+  font-family:'IBM Plex Mono',monospace; font-size:0.64rem; letter-spacing:0.05em;
+  text-transform:uppercase; color:var(--dim); margin-bottom:2px;
+}
+
+.new-group-form{ flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; }
+.new-group-name{
+  background:var(--panel-raised); border:1px solid var(--border); border-radius:8px;
+  color:var(--parchment); padding:8px 10px; font-family:'Work Sans',sans-serif; font-size:0.88rem;
+}
+.new-group-picker{
+  flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:2px;
+  background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:6px;
+}
+.new-group-option{
+  display:flex; align-items:center; gap:10px; padding:8px 6px; cursor:pointer;
+  border-bottom:1px solid var(--border-soft);
+}
+.new-group-option .avatar, .new-group-option .avatar-fallback{ width:28px; height:28px; font-size:0.74rem; }
+.new-group-option input[type=checkbox]{ width:auto; flex-shrink:0; }
+.new-group-actions{ display:flex; align-items:center; justify-content:space-between; gap:10px; flex-shrink:0; }
+.new-group-error{ color:var(--rose); font-size:0.78rem; }
 
 /* ---- Phone strip (mobile-only collapsed/back toggle) ----
    No `display` here on purpose: this class always co-occurs with
