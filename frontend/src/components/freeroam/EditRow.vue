@@ -7,11 +7,13 @@ const chat = useChatStore();
 const text = ref(props.message.text);
 const textareaEl = ref(null);
 
-// field-sizing:content (see main.css) handles auto-grow natively where
-// supported; this only does anything on browsers without it yet.
-const supportsFieldSizing = typeof CSS !== 'undefined' && CSS.supports?.('field-sizing', 'content');
+// Plain scrollHeight measurement rather than relying on the CSS
+// field-sizing:content property — that's brand new and inconsistently
+// supported (SillyTavern itself only uses it behind a CSS.supports()
+// check, with this same JS as its own fallback), where this technique
+// has worked identically in every browser for well over a decade.
 function autoResize() {
-  if (supportsFieldSizing || !textareaEl.value) return;
+  if (!textareaEl.value) return;
   textareaEl.value.style.height = 'auto';
   textareaEl.value.style.height = `${textareaEl.value.scrollHeight}px`;
 }

@@ -375,8 +375,18 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
    this one rule covers desktop and the mobile override at line ~1178
    without needing to touch the media query separately, since a plain
    class selector wins over both by specificity regardless of source
-   order or browser. */
+   order or browser.
+   max-width alone raises the ceiling but doesn't reach it: .msg.user/
+   .msg.char/.msg.narrator each set their own align-self (flex-end/
+   flex-start/center), which shrink-to-fit the bubble to its own content
+   width in .messages' cross axis — a textarea's default intrinsic width
+   (~20 columns) is what it shrinks to, regardless of how high max-width
+   allows it to go. align-self:stretch is the piece that actually makes
+   it claim that width; the three-class selectors below (not just
+   .msg.editing) are needed to out-specificity .msg.user/.msg.char/
+   .msg.narrator's own align-self rather than relying on file order. */
 .msg.editing{ max-width:100%; }
+.msg.user.editing, .msg.char.editing, .msg.narrator.editing{ align-self:stretch; }
 .msg.user{align-self:flex-end;}
 .msg.char{ align-self:flex-start; display:flex; align-items:flex-start; gap:9px; }
 .msg-avatar{ flex-shrink:0; margin-top:2px; display:flex; flex-direction:column; align-items:center; gap:2px; }
@@ -1044,14 +1054,15 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
    the box narrow. flex:1 then lets it actually claim that row's width;
    width:100% covers .msg.user, which isn't a flex container at all. */
 .msg-edit-wrap{ flex:1; min-width:0; width:100%; }
-/* field-sizing:content (SillyTavern uses the same property) grows the box
-   to fit what's actually typed instead of a fixed height nobody can read
-   past — min-height is just the floor for browsers that don't support it
-   yet, where EditRow.vue's own scrollHeight fallback takes over. Save/
-   Cancel appear above AND below the box so they're reachable either way,
-   however tall it grows. */
+/* Grows to fit what's actually typed instead of a fixed height nobody
+   can read past — EditRow.vue's own scrollHeight-based autoResize() does
+   the actual growing (see the comment there for why field-sizing:content
+   isn't used); min-height/max-height here just bound it. resize:none
+   since autoResize would immediately overwrite a manual drag anyway.
+   Save/Cancel appear above AND below the box so they're reachable
+   either way, however tall it grows. */
 .msg-edit-textarea{
-  field-sizing:content; min-height:110px; max-height:50vh; width:100%;
+  min-height:110px; max-height:50vh; width:100%; resize:none; overflow-y:auto;
   font-size:0.92rem; line-height:1.42;
 }
 .msg-edit-actions{ display:flex; gap:8px; margin:6px 0; }
