@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import { useWorldStore } from '../../stores/world';
 import { useCharacterModal } from '../../composables/useCharacterModal';
 import { createCharacter, updateCharacter, deleteCharacter, exportCharacter } from '../../api/characters';
+import { apiBlobGet } from '../../api/http';
 import CardAvatar from '../shared/CardAvatar.vue';
 import RelationshipsSection from './RelationshipsSection.vue';
 import MemoriesSection from './MemoriesSection.vue';
@@ -82,6 +83,24 @@ async function exportJson() {
   const a = document.createElement('a');
   a.href = url;
   a.download = `${character.value?.name || 'character'}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// TavernCard-style PNG export — embeds the same data exportJson downloads
+// as JSON into a chunk on the character's own avatar (or a generated
+// placeholder), via GET /api/characters/:id/card.png.
+async function exportPng() {
+  const id = characterModal.editingId.value;
+  if (!id) return;
+  const { ok, data, blob } = await apiBlobGet(`/api/characters/${id}/card.png`);
+  if (!ok) { status.value = data.error || 'Could not export this character as a card.'; return; }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${character.value?.name || 'character'}.png`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -175,6 +194,7 @@ async function remove() {
         <button class="btn" @click="save">Save</button>
         <button class="btn secondary" @click="characterModal.close()">Cancel</button>
         <button class="btn secondary" v-if="character" @click="exportJson">Export</button>
+        <button class="btn secondary" v-if="character" @click="exportPng">Export as PNG</button>
         <button class="btn danger" v-if="character && character.source !== 'builtin'" @click="remove">Remove character</button>
         <span class="form-status">{{ status }}</span>
       </div>

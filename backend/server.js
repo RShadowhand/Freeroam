@@ -5,7 +5,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { extractCharacterCard } from './lib/tavernCard.js';
+import { extractCharacterCard, extractPersonaCard, extractPlaceCard } from './lib/tavernCard.js';
+import { buildCharacterCardPng, buildPersonaCardPng, buildPlaceCardPng } from './lib/pngCard.js';
 import {
   normalizePromptList,
   normalizeContextNumber,
@@ -78,6 +79,7 @@ import { createWorldRegistry } from './lib/worldRegistry.js';
 import { buildWorldExportBundle, importWorldBundle, peekManifest } from './lib/worldExport.js';
 import { CONDITIONS as WEATHER_CONDITIONS, loadWeather, saveWeather, rollAutoWeather, setManualWeather, setAutoWeather } from './lib/weather.js';
 import { buildTextingMessages, historyFromLog, groupHistoryFromLog } from './lib/texting.js';
+import { colorForId } from './lib/textUtils.js';
 import { loadCalls, saveCalls } from './lib/calls.js';
 import { loadGroups, saveGroups, createGroup } from './lib/groups.js';
 import {
@@ -318,18 +320,6 @@ function saveWorld(w, world) {
   fs.writeFileSync(w.paths.world, JSON.stringify(world, null, 2));
 }
 
-// Deterministic-ish color, spread around the wheel — keyed by the
-// character/persona's own unique id, not their name. Two characters can
-// share a name with no surname to tell them apart (nothing stops it, and
-// it happens); hashing the name would give them the identical color too,
-// defeating the one thing that's still supposed to disambiguate them at a
-// glance (the Cast grid, relationship rows, chat avatars, ...).
-function colorForId(id) {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) % 360;
-  return `hsl(${hash}, 55%, 62%)`;
-}
-
 // --- Personas ---------------------------------------------------------
 // A persona is the user's own in-world identity — the "{{user}}" side of
 // the chat. Optional description gets folded into the system prompt the
@@ -444,6 +434,27 @@ const uploadWorldBundle = multer({
     if (!ZIP_MIMETYPES.includes(file.mimetype) && !/\.zip$/i.test(file.originalname || '')) {
       return cb(new Error('A world bundle must be a .zip file.'));
     }
+    cb(null, true);
+  },
+});
+
+// PNG-only, same fileFilter shape as `upload` (character cards) above —
+// personas and places each get their own new PNG card spec (see pngCard.js/
+// tavernCard.js), imported via these two rather than reusing `upload`
+// itself, so a wrong-resource upload 400s with a specific message.
+const uploadPersonaCard = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype !== 'image/png') return cb(new Error('A persona card must be a PNG file.'));
+    cb(null, true);
+  },
+});
+const uploadPlaceCard = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype !== 'image/png') return cb(new Error('A place card must be a PNG file.'));
     cb(null, true);
   },
 });
@@ -778,6 +789,22 @@ app.get('/api/characters/export', (req, res) => {
   res.json({ characters: loadCharacters(req.world) });
 });
 
+// TavernCard-style PNG export — embeds the same JSON shape /export produces
+// into a chunk on the character's own avatar (always literally <id>.png,
+// the only upload path that ever sets avatarUrl), or a generated
+// placeholder tinted with their color if they have none.
+app.get('/api/characters/:id/card.png', (req, res) => {
+  const w = req.world;
+  const character = loadCharacters(w).find((c) => c.id === req.params.id);
+  if (!character) return res.status(404).json({ error: 'Character not found.' });
+  const avatarPath = path.join(w.avatarDir, `${character.id}.png`);
+  const baseImageBuffer = character.avatarUrl && fs.existsSync(avatarPath) ? fs.readFileSync(avatarPath) : null;
+  const png = buildCharacterCardPng({ character, baseImageBuffer });
+  res.set('Content-Type', 'image/png');
+  res.set('Content-Disposition', `attachment; filename="${character.name.replace(/[^a-z0-9-_ ]/gi, '_')}.png"`);
+  res.send(png);
+});
+
 // Imported rows always get a fresh id and no avatar (plain JSON carries no
 // image bytes) — same normalization loadCharacters applies to every row, so
 // an imported character round-trips through the same defaults as a native one.
@@ -1027,13 +1054,49 @@ app.get('/api/personas/export', (req, res) => {
   res.json({ personas: loadPersonas(req.world).personas });
 });
 
-app.post('/api/personas/import', (req, res) => {
+// New minimal PNG spec (tavernroam_persona_v1 — see pngCard.js/tavernCard.js).
+// A persona's avatar can be jpg/webp, unlike a character's (always png) —
+// embedding a chunk needs an existing PNG to embed it into, so a non-PNG
+// avatar falls back to a generated placeholder rather than attempting an
+// image-format conversion this app has no dependency for.
+app.get('/api/personas/:id/card.png', (req, res) => {
   const w = req.world;
+  const persona = loadPersonas(w).personas.find((p) => p.id === req.params.id);
+  if (!persona) return res.status(404).json({ error: 'Persona not found.' });
+  const avatarPath = persona.avatarUrl && /\.png$/i.test(persona.avatarUrl) ? path.join(w.personaAvatarDir, `${persona.id}.png`) : null;
+  const baseImageBuffer = avatarPath && fs.existsSync(avatarPath) ? fs.readFileSync(avatarPath) : null;
+  const png = buildPersonaCardPng({ persona, baseImageBuffer });
+  res.set('Content-Type', 'image/png');
+  res.set('Content-Disposition', `attachment; filename="${persona.name.replace(/[^a-z0-9-_ ]/gi, '_')}.png"`);
+  res.send(png);
+});
+
+// Accepts either a multipart persona-card PNG upload (field "card") or a
+// plain JSON { personas: [...] } body — multer no-ops for a non-multipart
+// request, so both branch cleanly off the same route, same pattern as
+// POST /api/characters.
+app.post('/api/personas/import', uploadPersonaCard.single('card'), (req, res) => {
+  const w = req.world;
+  const data = loadPersonas(w);
+
+  if (req.file) {
+    let card;
+    try {
+      card = extractPersonaCard(req.file.buffer);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+    const id = crypto.randomUUID();
+    const persona = { id, name: card.name, description: card.description, avatarUrl: null, color: colorForId(id) };
+    data.personas.push(persona);
+    savePersonas(w, data);
+    return res.status(201).json({ personas: [persona] });
+  }
+
   const { personas: incoming } = req.body || {};
   if (!Array.isArray(incoming) || !incoming.length) {
     return res.status(400).json({ error: 'A personas array is required.' });
   }
-  const data = loadPersonas(w);
   const imported = incoming.map((p) => {
     const id = crypto.randomUUID();
     return { id, name: (p.name || '').trim(), description: (p.description || '').trim(), avatarUrl: null, color: colorForId(id) };
@@ -1228,18 +1291,55 @@ app.get('/api/places/export', (req, res) => {
   res.json({ places: area ? places.filter((p) => p.area === area) : places });
 });
 
+// New minimal PNG spec (tavernroam_place_card_v1 — see pngCard.js/
+// tavernCard.js). Places have no avatar concept at all, so this always
+// generates a placeholder. Carries ownerNames (resolved display strings),
+// not ownerIds — a place card is meant to be shareable into an arbitrary
+// world where the original character ids won't resolve.
+app.get('/api/places/:id/card.png', (req, res) => {
+  const w = req.world;
+  const place = loadPlaces(w).find((p) => p.id === req.params.id);
+  if (!place) return res.status(404).json({ error: 'Place not found.' });
+  const charactersById = {};
+  loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+  const ownerNames = place.ownerIds.map((id) => charactersById[id]?.name).filter(Boolean);
+  const png = buildPlaceCardPng({ place, ownerNames });
+  res.set('Content-Type', 'image/png');
+  res.set('Content-Disposition', `attachment; filename="${place.name.replace(/[^a-z0-9-_ ]/gi, '_')}.png"`);
+  res.send(png);
+});
+
 // Fresh ids via uniquePlaceId (same slugify/dedupe as native place creation);
 // any ownerIds entry that doesn't resolve against the TARGET world's
 // characters is dropped and surfaced as a warning rather than invented as a
 // stub character — matches how ownerIds already tolerates unknown ids nowhere
-// else in the app (they just wouldn't render a name).
-app.post('/api/places/import', (req, res) => {
+// else in the app (they just wouldn't render a name). Also accepts a
+// multipart place-card PNG (field "card") — that card only ever carries
+// ownerNames (display strings, not ids), so a PNG-imported place always
+// lands with no owners, same as any other unresolvable-ownerIds case.
+app.post('/api/places/import', uploadPlaceCard.single('card'), (req, res) => {
   const w = req.world;
+  const places = loadPlaces(w);
+
+  if (req.file) {
+    let card;
+    try {
+      card = extractPlaceCard(req.file.buffer);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+    const place = {
+      id: uniquePlaceId(card.name, places), name: card.name, desc: card.desc, type: card.type, ownerIds: [], area: card.area,
+    };
+    places.push(place);
+    savePlaces(w, places);
+    return res.status(201).json({ places: [place], warnings: [] });
+  }
+
   const { places: incoming } = req.body || {};
   if (!Array.isArray(incoming) || !incoming.length) {
     return res.status(400).json({ error: 'A places array is required.' });
   }
-  const places = loadPlaces(w);
   const characterIds = new Set(loadCharacters(w).map((c) => c.id));
   const warnings = [];
   const imported = incoming.map((p) => {

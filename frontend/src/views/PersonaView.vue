@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, ref } from 'vue';
 import { useWorldStore } from '../stores/world';
-import { setActivePersona, importPersonas } from '../api/personas';
+import { setActivePersona, importPersonas, importPersonaCard } from '../api/personas';
 import AddPersonaForm from '../components/persona/AddPersonaForm.vue';
 import PersonaCard from '../components/persona/PersonaCard.vue';
 
@@ -18,15 +18,23 @@ async function clearActive() {
   if (ok) world.activePersonaId = data.activePersonaId;
 }
 
-// Accepts the { personas: [...] } shape PersonaCard's Export button produces
-// (a JSON file, client-parsed here — same file.text()+JSON.parse pattern as
-// PresetUploadZone.vue), not a zip — this is per-persona, not a whole world.
+// Accepts either the { personas: [...] } shape PersonaCard's Export button
+// produces (a JSON file, client-parsed here — same file.text()+JSON.parse
+// pattern as PresetUploadZone.vue) or a tavernroam_persona_v1 PNG card
+// (PersonaCard's Export as PNG button) — not a zip, this is per-persona,
+// not a whole world.
 async function importFile(file) {
   importStatus.value = '';
   try {
-    const raw = JSON.parse(await file.text());
-    const personas = Array.isArray(raw.personas) ? raw.personas : [raw];
-    const { ok, data } = await importPersonas(personas);
+    const isPng = file.type === 'image/png' || /\.png$/i.test(file.name);
+    let ok, data;
+    if (isPng) {
+      ({ ok, data } = await importPersonaCard(file));
+    } else {
+      const raw = JSON.parse(await file.text());
+      const personas = Array.isArray(raw.personas) ? raw.personas : [raw];
+      ({ ok, data } = await importPersonas(personas));
+    }
     if (!ok) throw new Error(data.error || 'import failed');
     world.personasList.push(...data.personas);
     importStatus.value = `Imported ${data.personas.length} persona(s).`;
@@ -48,8 +56,8 @@ function onImportFileChange() {
     <div class="toolbar">
       <h2>Your personas</h2>
       <div class="toolbar-actions">
-        <button class="btn secondary small" @click="importFileInput.click()">Import persona (.json)</button>
-        <input type="file" ref="importFileInput" accept="application/json,.json" style="display:none;" @change="onImportFileChange">
+        <button class="btn secondary small" @click="importFileInput.click()">Import persona (.json or .png)</button>
+        <input type="file" ref="importFileInput" accept="application/json,.json,image/png,.png" style="display:none;" @change="onImportFileChange">
         <button class="btn secondary small" v-if="world.activePersonaId" @click="clearActive">Clear active persona</button>
       </div>
     </div>

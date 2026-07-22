@@ -14,3 +14,8 @@ export const setActivePersona = (id) => apiJson('/api/personas/active', 'POST', 
 export const exportPersona = (id) => apiGet(`/api/personas/${id}/export`);
 export const exportAllPersonas = () => apiGet('/api/personas/export');
 export const importPersonas = (personas) => apiJson('/api/personas/import', 'POST', { personas });
+export const importPersonaCard = (file) => {
+  const form = new FormData();
+  form.append('card', file);
+  return apiForm('/api/personas/import', form);
+};

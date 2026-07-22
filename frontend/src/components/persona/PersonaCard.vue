@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import { useWorldStore } from '../../stores/world';
 import { updatePersona, deletePersona, setActivePersona, exportPersona } from '../../api/personas';
+import { apiBlobGet } from '../../api/http';
 import CardAvatar from '../shared/CardAvatar.vue';
 import ExpandableTextarea from '../shared/ExpandableTextarea.vue';
 
@@ -48,6 +49,21 @@ async function exportJson() {
   const a = document.createElement('a');
   a.href = url;
   a.download = `${props.persona.name || 'persona'}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// New tavernroam_persona_v1 PNG spec — same data as exportJson, embedded in
+// a chunk on the persona's avatar (if it's already PNG) or a placeholder.
+async function exportPng() {
+  const { ok, data, blob } = await apiBlobGet(`/api/personas/${props.persona.id}/card.png`);
+  if (!ok) { alert(data.error || 'Could not export this persona as a card.'); return; }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${props.persona.name || 'persona'}.png`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -101,6 +117,7 @@ async function remove() {
         <span style="display:flex;gap:10px;">
           <button @click="startEdit">Edit</button>
           <button @click="exportJson">Export</button>
+          <button @click="exportPng">Export as PNG</button>
           <button class="delete-btn" @click="remove">Remove</button>
         </span>
       </div>

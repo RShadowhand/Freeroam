@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useWorldStore } from '../stores/world';
 import { groupedByArea } from '../utils/format';
 import { getWeather, setAreaWeather } from '../api/weather';
-import { exportAllPlaces, exportPlacesByArea, importPlaces } from '../api/places';
+import { exportAllPlaces, exportPlacesByArea, importPlaces, importPlaceCard } from '../api/places';
 import WorldSettingForm from '../components/world/WorldSettingForm.vue';
 import AddPlaceFormFull from '../components/world/AddPlaceFormFull.vue';
 import PlaceEditRow from '../components/world/PlaceEditRow.vue';
@@ -47,14 +47,20 @@ async function exportArea(area) {
   downloadPlacesJson(data, `${area}.json`);
 }
 
-// Accepts the { places: [...] } shape all three export granularities
-// (single/area/all) produce — same file for any of them, one import path.
+// Accepts either the { places: [...] } shape all three export granularities
+// (single/area/all) produce, or a tavernroam_place_card_v1 PNG card.
 async function importFile(file) {
   importStatus.value = '';
   try {
-    const raw = JSON.parse(await file.text());
-    const places = Array.isArray(raw.places) ? raw.places : [raw];
-    const { ok, data } = await importPlaces(places);
+    const isPng = file.type === 'image/png' || /\.png$/i.test(file.name);
+    let ok, data;
+    if (isPng) {
+      ({ ok, data } = await importPlaceCard(file));
+    } else {
+      const raw = JSON.parse(await file.text());
+      const places = Array.isArray(raw.places) ? raw.places : [raw];
+      ({ ok, data } = await importPlaces(places));
+    }
     if (!ok) throw new Error(data.error || 'import failed');
     world.places.push(...data.places);
     importStatus.value = `Imported ${data.places.length} place(s).${data.warnings?.length ? ' ' + data.warnings.join(' ') : ''}`;
@@ -114,8 +120,8 @@ onMounted(async () => {
     <div class="toolbar">
       <h2>The map</h2>
       <div class="toolbar-actions">
-        <button class="btn secondary small" @click="importFileInput.click()">Import (.json)</button>
-        <input type="file" ref="importFileInput" accept="application/json,.json" style="display:none;" @change="onImportFileChange">
+        <button class="btn secondary small" @click="importFileInput.click()">Import (.json or .png)</button>
+        <input type="file" ref="importFileInput" accept="application/json,.json,image/png,.png" style="display:none;" @change="onImportFileChange">
         <button class="btn secondary small" @click="exportAll">Export all places</button>
       </div>
     </div>

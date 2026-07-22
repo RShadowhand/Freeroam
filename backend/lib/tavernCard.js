@@ -2,7 +2,7 @@ import zlib from 'zlib';
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-function readChunks(buffer) {
+export function readChunks(buffer) {
   if (buffer.length < 8 || !buffer.subarray(0, 8).equals(PNG_SIGNATURE)) {
     throw new Error('Not a PNG file.');
   }
@@ -21,7 +21,7 @@ function readChunks(buffer) {
 }
 
 // Reads tEXt / zTXt / iTXt chunks into a { keyword: text } map.
-function readTextChunks(buffer) {
+export function readTextChunks(buffer) {
   const result = {};
   for (const chunk of readChunks(buffer)) {
     try {
@@ -103,5 +103,49 @@ export function extractCharacterCard(buffer) {
     tags: Array.isArray(data.tags) ? data.tags : [],
     creator: data.creator || '',
     spec: parsed.spec || 'v1',
+  };
+}
+
+// Decodes a card produced by pngCard.js's buildPersonaCardPng — same
+// wrap-in-`.data` convention as chara cards, keyword `persona` instead of
+// `chara`/`ccv3`. New, minimal spec: just the Step 2 plain-JSON export shape
+// embedded in a PNG chunk, not a new payload format.
+export function extractPersonaCard(buffer) {
+  const texts = readTextChunks(buffer);
+  const raw = texts['persona'];
+  if (!raw) throw new Error('No persona data found in this PNG — is it a tavernroam persona card?');
+
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.from(raw, 'base64').toString('utf8'));
+  } catch {
+    throw new Error('Persona data in this PNG could not be decoded as JSON.');
+  }
+  const data = parsed.data && typeof parsed.data === 'object' ? parsed.data : parsed;
+  return { name: (data.name || 'Unnamed').trim(), description: (data.description || '').trim() };
+}
+
+// Decodes a card produced by pngCard.js's buildPlaceCardPng, keyword
+// `freeroam_place`. ownerNames are display strings only (see pngCard.js) —
+// there's no character id to resolve them back to in an arbitrary target
+// world, so an imported place card always lands with no owners, same as any
+// other unresolvable ownerIds on place import (server.js's /api/places/import).
+export function extractPlaceCard(buffer) {
+  const texts = readTextChunks(buffer);
+  const raw = texts['freeroam_place'];
+  if (!raw) throw new Error('No place data found in this PNG — is it a tavernroam place card?');
+
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.from(raw, 'base64').toString('utf8'));
+  } catch {
+    throw new Error('Place data in this PNG could not be decoded as JSON.');
+  }
+  const data = parsed.data && typeof parsed.data === 'object' ? parsed.data : parsed;
+  return {
+    name: (data.name || 'Unnamed place').trim(),
+    desc: (data.desc || '').trim(),
+    type: data.type === 'private' ? 'private' : 'communal',
+    area: (data.area || '').trim(),
   };
 }

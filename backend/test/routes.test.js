@@ -785,6 +785,88 @@ describe('World export/import (whole-world zip bundle)', () => {
   });
 });
 
+describe('PNG card export/import (characters, personas, places)', () => {
+  test('GET /api/characters/:id/card.png downloads a re-importable PNG card', async () => {
+    const { character } = await (await postJson('/api/characters', {
+      name: 'Card Char ' + Math.random(), description: 'A test character for card export.', personality: 'Curious.',
+    })).json();
+
+    const res = await fetch(`${baseUrl}/api/characters/${character.id}/card.png`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'image/png');
+    const buffer = Buffer.from(await res.arrayBuffer());
+    assert.ok(buffer.length > 0);
+    assert.equal(buffer.subarray(0, 8).toString('hex'), '89504e470d0a1a0a'); // PNG signature
+
+    const form = new FormData();
+    form.append('card', new Blob([buffer], { type: 'image/png' }), 'card.png');
+    const importRes = await fetch(`${baseUrl}/api/characters`, { method: 'POST', body: form });
+    assert.equal(importRes.status, 201);
+    const { character: reimported } = await importRes.json();
+    assert.equal(reimported.name, character.name);
+    assert.equal(reimported.description, character.description);
+    assert.equal(reimported.personality, character.personality);
+  });
+
+  test('GET /api/characters/:id/card.png 404s for an unknown id', async () => {
+    assert.equal((await fetch(`${baseUrl}/api/characters/not-a-real-id/card.png`)).status, 404);
+  });
+
+  test('GET /api/personas/:id/card.png downloads a re-importable PNG card', async () => {
+    const { persona } = await (await postJson('/api/personas', { name: 'Card Persona ' + Math.random(), description: 'Test persona.' })).json();
+
+    const res = await fetch(`${baseUrl}/api/personas/${persona.id}/card.png`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'image/png');
+    const buffer = Buffer.from(await res.arrayBuffer());
+
+    const form = new FormData();
+    form.append('card', new Blob([buffer], { type: 'image/png' }), 'card.png');
+    const importRes = await fetch(`${baseUrl}/api/personas/import`, { method: 'POST', body: form });
+    assert.equal(importRes.status, 201);
+    const { personas: reimported } = await importRes.json();
+    assert.equal(reimported.length, 1);
+    assert.equal(reimported[0].name, persona.name);
+    assert.equal(reimported[0].description, persona.description);
+    assert.notEqual(reimported[0].id, persona.id);
+  });
+
+  test('GET /api/places/:id/card.png downloads a re-importable PNG card, dropping ownerIds (only names travel)', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Card Owner ' + Math.random(), description: 'Test.' })).json();
+    const { place } = await (await postJson('/api/places', {
+      name: 'Card Place ' + Math.random(), type: 'private', ownerIds: [character.id], area: 'Card Test Area',
+    })).json();
+
+    const res = await fetch(`${baseUrl}/api/places/${place.id}/card.png`);
+    assert.equal(res.status, 200);
+    const buffer = Buffer.from(await res.arrayBuffer());
+
+    const form = new FormData();
+    form.append('card', new Blob([buffer], { type: 'image/png' }), 'card.png');
+    const importRes = await fetch(`${baseUrl}/api/places/import`, { method: 'POST', body: form });
+    assert.equal(importRes.status, 201);
+    const { places: reimported, warnings } = await importRes.json();
+    assert.equal(reimported.length, 1);
+    assert.equal(reimported[0].name, place.name);
+    assert.equal(reimported[0].type, 'private');
+    assert.equal(reimported[0].area, place.area);
+    assert.deepEqual(reimported[0].ownerIds, []); // card carries display names only, not resolvable ids
+    assert.deepEqual(warnings, []);
+  });
+
+  test('POST /api/personas/import and /api/places/import reject a non-PNG file upload', async () => {
+    const badForm = () => {
+      const form = new FormData();
+      form.append('card', new Blob([Buffer.from('not a png')], { type: 'image/png' }), 'card.png');
+      return form;
+    };
+    const personaRes = await fetch(`${baseUrl}/api/personas/import`, { method: 'POST', body: badForm() });
+    assert.equal(personaRes.status, 400);
+    const placeRes = await fetch(`${baseUrl}/api/places/import`, { method: 'POST', body: badForm() });
+    assert.equal(placeRes.status, 400);
+  });
+});
+
 describe('Persisted chat: /api/places/:placeId/enter, /say, GET /chat', () => {
   async function makePlace(name) {
     const res = await postJson('/api/places', { name, type: 'communal' });

@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import { useWorldStore } from '../../stores/world';
 import { updatePlace, deletePlace, exportPlace } from '../../api/places';
+import { apiBlobGet } from '../../api/http';
 import { joinNames } from '../../utils/format';
 
 const props = defineProps({ place: { type: Object, required: true }, editing: { type: Boolean, default: false } });
@@ -50,6 +51,21 @@ async function exportJson() {
   const a = document.createElement('a');
   a.href = url;
   a.download = `${props.place.name || 'place'}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// New tavernroam_place_card_v1 PNG spec — same data as exportJson, embedded
+// in a generated placeholder image (places have no avatar concept).
+async function exportPng() {
+  const { ok, data, blob } = await apiBlobGet(`/api/places/${props.place.id}/card.png`);
+  if (!ok) { alert(data.error || 'Could not export this place as a card.'); return; }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${props.place.name || 'place'}.png`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -117,6 +133,7 @@ async function remove() {
       <div class="row-actions">
         <button @click="startEdit">Edit</button>
         <button @click="exportJson">Export</button>
+        <button @click="exportPng">Export as PNG</button>
         <button class="danger" @click="remove">Remove</button>
       </div>
     </div>
