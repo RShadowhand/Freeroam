@@ -256,6 +256,70 @@ export function queryMemoryVectorIndex(db, characterId, queryEmbeddingBuffer, k)
   `).all(characterId, queryEmbeddingBuffer, k);
 }
 
+// --- World export/import (see worldExport.js) ------------------------------
+// A whole-world export needs the memories/memory_participants/memory_entries
+// data to survive the round trip without re-running the embedding model — a
+// long-running world can have thousands of memory rows, and re-embedding all
+// of them at import time (one local-model call per chunk) would be slow.
+// Raw memory_vectors rows are dumped too (confirmed via a live spike that an
+// unfiltered `SELECT * FROM memory_vectors` works against sqlite-vec, no
+// `MATCH` required) so the vec0 index can be rebuilt without re-chunking.
+// relationships/character_embeddings are deliberately NOT dumped with their
+// embeddings — both are cheap to rebuild from text (rebuildAllRelationship
+// Embeddings in relationshipStore.js, rebuildAllCharacterEmbeddings in
+// characterEmbeddings.js), so only relationships' logical (non-blob) shape
+// needs to survive; character_embeddings needs nothing at all, since it's
+// fully rebuildable from the character list already in the export.
+function encodeBlobColumns(row, keys) {
+  const out = { ...row };
+  keys.forEach((k) => { if (out[k] != null) out[k] = out[k].toString('base64'); });
+  return out;
+}
+
+export function dumpMemoriesForExport(db) {
+  return {
+    memories: db.prepare('SELECT * FROM memories').all().map((r) => encodeBlobColumns(r, ['embedding'])),
+    memoryParticipants: db.prepare('SELECT * FROM memory_participants').all(),
+    memoryEntries: db.prepare('SELECT * FROM memory_entries').all(),
+    memoryVectors: memoryVectorsDim(db) !== null
+      ? db.prepare('SELECT character_id, embedding, memory_id FROM memory_vectors').all().map((r) => encodeBlobColumns(r, ['embedding']))
+      : [],
+    relationships: db.prepare('SELECT character_id, target_id, labels FROM relationships').all(),
+  };
+}
+
+// Restores a dump built by dumpMemoriesForExport into a fresh world's db
+// (always empty of these tables beforehand — this is an import target, not
+// a merge). One transaction, so a crash partway through never leaves
+// memory_entries/memory_vectors referencing memories that don't exist.
+export function restoreMemoriesFromExport(db, dump) {
+  const decode = (b64) => Buffer.from(b64, 'base64');
+  const restore = db.transaction(() => {
+    const insertMemory = db.prepare(`
+      INSERT INTO memories (id, persona_key, text, embedding, place_id, day, time_of_day, timestamp)
+      VALUES (@id, @persona_key, @text, @embedding, @place_id, @day, @time_of_day, @timestamp)
+    `);
+    (dump.memories || []).forEach((r) => insertMemory.run({ ...r, embedding: decode(r.embedding) }));
+
+    const insertParticipant = db.prepare('INSERT INTO memory_participants (memory_id, character_id) VALUES (?, ?)');
+    (dump.memoryParticipants || []).forEach((r) => insertParticipant.run(r.memory_id, r.character_id));
+
+    const insertEntry = db.prepare('INSERT INTO memory_entries (memory_id, entry_id) VALUES (?, ?)');
+    (dump.memoryEntries || []).forEach((r) => insertEntry.run(r.memory_id, r.entry_id));
+
+    const vectors = dump.memoryVectors || [];
+    if (vectors.length) {
+      ensureMemoryVectorsTable(db, decode(vectors[0].embedding).length / 4);
+      const insertVector = db.prepare('INSERT INTO memory_vectors (character_id, embedding, memory_id) VALUES (?, ?, ?)');
+      vectors.forEach((r) => insertVector.run(r.character_id, decode(r.embedding), r.memory_id));
+    }
+
+    const insertRelationship = db.prepare('INSERT INTO relationships (character_id, target_id, labels) VALUES (?, ?, ?)');
+    (dump.relationships || []).forEach((r) => insertRelationship.run(r.character_id, r.target_id, r.labels));
+  });
+  restore();
+}
+
 // One-time backfill for databases that already have memories rows but no
 // vector index yet (i.e. every db that existed before this feature).
 // Skipped once memory_vectors exists — from then on it's kept in sync

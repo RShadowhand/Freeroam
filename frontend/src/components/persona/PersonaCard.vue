@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue';
 import { useWorldStore } from '../../stores/world';
-import { updatePersona, deletePersona, setActivePersona } from '../../api/personas';
+import { updatePersona, deletePersona, setActivePersona, exportPersona } from '../../api/personas';
 import CardAvatar from '../shared/CardAvatar.vue';
 import ExpandableTextarea from '../shared/ExpandableTextarea.vue';
 
@@ -37,6 +37,23 @@ async function deactivate() {
   const { ok, data } = await setActivePersona(null);
   if (ok) world.activePersonaId = data.activePersonaId;
 }
+// Downloads the same { personas: [...] } wire shape /api/personas/import
+// expects, so the file that comes out of this button can be dropped
+// straight back in — same Blob-download pattern as PresetCard.vue's exportJson.
+async function exportJson() {
+  const { ok, data } = await exportPersona(props.persona.id);
+  if (!ok) { alert(data.error || 'Could not export this persona.'); return; }
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${props.persona.name || 'persona'}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 async function remove() {
   if (!confirm(`Remove persona "${props.persona.name}"?`)) return;
   const { ok } = await deletePersona(props.persona.id);
@@ -83,6 +100,7 @@ async function remove() {
         <button class="btn secondary small" v-else @click="activate">Set active</button>
         <span style="display:flex;gap:10px;">
           <button @click="startEdit">Edit</button>
+          <button @click="exportJson">Export</button>
           <button class="delete-btn" @click="remove">Remove</button>
         </span>
       </div>

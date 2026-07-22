@@ -47,3 +47,31 @@ export function apiDelete(path) {
 export function apiForm(path, formData, method = 'POST') {
   return request(path, { method, body: formData });
 }
+
+// For downloads that aren't JSON (a zip/PNG file) — request() unconditionally
+// calls res.json(), which would fail on a binary body. Returns the raw Blob
+// plus whatever filename the server suggested via Content-Disposition, so a
+// caller can hand both straight to the Blob-download pattern (see
+// PresetCard.vue's exportJson) without re-deriving a name itself.
+async function requestBlob(path, options) {
+  const worldId = getStoredWorldId();
+  const finalOptions = worldId
+    ? { ...options, headers: { ...(options?.headers || {}), 'X-World-Id': worldId } }
+    : options;
+  const res = await fetch(path, finalOptions);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    return { ok: false, status: res.status, data };
+  }
+  const blob = await res.blob();
+  const match = (res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/);
+  return { ok: true, status: res.status, blob, filename: match ? match[1] : null };
+}
+
+export function apiBlobGet(path) {
+  return requestBlob(path);
+}
+
+export function apiBlobPost(path, body) {
+  return requestBlob(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+}

@@ -75,6 +75,7 @@ import {
 } from './lib/context.js';
 import { loadChatLog, saveChatLog, appendChatEntries, deleteChatLog } from './lib/chatStore.js';
 import { createWorldRegistry } from './lib/worldRegistry.js';
+import { buildWorldExportBundle, importWorldBundle, peekManifest } from './lib/worldExport.js';
 import { CONDITIONS as WEATHER_CONDITIONS, loadWeather, saveWeather, rollAutoWeather, setManualWeather, setAutoWeather } from './lib/weather.js';
 import { buildTextingMessages, historyFromLog, groupHistoryFromLog } from './lib/texting.js';
 import { loadCalls, saveCalls } from './lib/calls.js';
@@ -379,7 +380,10 @@ function savePresets(w, data) {
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Default 100kb is too small for a bulk export/import payload (e.g. every
+// character or place in a world at once) — this is a local single-user app,
+// not a hardened public API, so a blanket bump is simpler than per-route limits.
+app.use(express.json({ limit: '5mb' }));
 // The frontend is now a Vue/Vite project (frontend/src) — this serves its
 // production build (frontend/dist, built via `npm run build` in frontend/),
 // not the source. For local development with hot-reload, run Vite's own
@@ -424,6 +428,22 @@ const uploadPersonaAvatar = multer({
   limits: { fileSize: 15 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (!EXT_FOR_MIME[file.mimetype]) return cb(new Error('Avatar must be a PNG, JPEG, or WebP image.'));
+    cb(null, true);
+  },
+});
+
+const ZIP_MIMETYPES = ['application/zip', 'application/x-zip-compressed', 'application/octet-stream'];
+const uploadWorldBundle = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 200 * 1024 * 1024 }, // chat history + avatars across a whole world can add up
+  fileFilter: (req, file, cb) => {
+    // Zip MIME-type reporting is inconsistent across browsers/OSes (some
+    // report application/octet-stream for any unrecognized-by-sniffing
+    // file) — fall back to the filename extension rather than mimetype
+    // alone, or a legitimate .zip upload can get rejected on some clients.
+    if (!ZIP_MIMETYPES.includes(file.mimetype) && !/\.zip$/i.test(file.originalname || '')) {
+      return cb(new Error('A world bundle must be a .zip file.'));
+    }
     cb(null, true);
   },
 });
@@ -622,6 +642,60 @@ app.post('/api/worlds/:id/duplicate', async (req, res) => {
   }
 });
 
+// POST (not GET) so it can take { includeHistory } in the body, symmetric
+// with /duplicate above — a full-fidelity backup/restore zip, distinct from
+// /duplicate's in-app "branch a variant" (see worldExport.js).
+app.post('/api/worlds/:id/export', async (req, res) => {
+  const w = registry.get(req.params.id);
+  if (!w) return res.status(404).json({ error: 'Unknown world id.' });
+  const { includeHistory = true } = req.body || {};
+  const entry = registry.list().worlds.find((e) => e.id === w.id);
+  const cfg = loadConfig();
+  try {
+    const buffer = await buildWorldExportBundle(w, {
+      includeHistory,
+      worldName: entry?.name || '',
+      embeddingModel: cfg.embeddingModelVersion || EMBEDDING_MODEL_ID,
+    });
+    const filename = `${(entry?.name || 'world').replace(/[^a-z0-9-_ ]/gi, '_')}.zip`;
+    res.set('Content-Type', 'application/zip');
+    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Creates a brand-new world from an uploaded bundle. relationships/
+// character_embeddings are re-embedded from their (always-included) text
+// rather than exported/imported as blobs — cheap to recompute, and avoids
+// ever needing the embedding model during the zip-extraction step itself.
+app.post('/api/worlds/import', uploadWorldBundle.single('bundle'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'A world bundle (.zip) file is required.' });
+  try {
+    const manifest = await peekManifest(req.file.buffer);
+    const name = (req.body?.name || '').trim() || manifest.worldName || 'Imported World';
+    const entry = await registry.create({ name, mode: 'empty' });
+    const dest = registry.get(entry.id);
+
+    const { warnings } = await importWorldBundle(req.file.buffer, dest);
+    if (manifest.embeddingModel && manifest.embeddingModel !== EMBEDDING_MODEL_ID) {
+      warnings.push(
+        `This world was exported using a different embedding model (${manifest.embeddingModel}) than this install `
+        + `is currently using (${EMBEDDING_MODEL_ID}) — memory/relationship retrieval may be degraded until you `
+        + 'rebuild embeddings in Settings.',
+      );
+    }
+
+    await rebuildAllRelationshipEmbeddings({ db: dest.db, embedFn: embed });
+    await rebuildAllCharacterEmbeddings({ db: dest.db, embedFn: embed, characters: loadCharacters(dest) });
+
+    res.status(201).json({ world: entry, warnings });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 // --- Character routes -------------------------------------------------
 
 app.get('/api/characters', (req, res) => {
@@ -690,6 +764,37 @@ app.post('/api/characters', upload.single('card'), (req, res) => {
   characters.push(character);
   saveCharacters(w, characters);
   res.status(201).json({ character });
+});
+
+// Export/import always use the plural wire shape ({ characters: [...] }),
+// even for a single character — one shape for import to handle, not two.
+app.get('/api/characters/:id/export', (req, res) => {
+  const character = loadCharacters(req.world).find((c) => c.id === req.params.id);
+  if (!character) return res.status(404).json({ error: 'Character not found.' });
+  res.json({ characters: [character] });
+});
+
+app.get('/api/characters/export', (req, res) => {
+  res.json({ characters: loadCharacters(req.world) });
+});
+
+// Imported rows always get a fresh id and no avatar (plain JSON carries no
+// image bytes) — same normalization loadCharacters applies to every row, so
+// an imported character round-trips through the same defaults as a native one.
+app.post('/api/characters/import', (req, res) => {
+  const w = req.world;
+  const { characters: incoming } = req.body || {};
+  if (!Array.isArray(incoming) || !incoming.length) {
+    return res.status(400).json({ error: 'A characters array is required.' });
+  }
+  const characters = loadCharacters(w);
+  const imported = incoming.map((c) => {
+    const id = crypto.randomUUID();
+    return normalizeCharacter({ ...c, id, avatarUrl: null, color: colorForId(id), source: c.source || 'upload' });
+  });
+  characters.push(...imported);
+  saveCharacters(w, characters);
+  res.status(201).json({ characters: imported });
 });
 
 // Drafts a persona description for a new character from recent scene
@@ -907,6 +1012,37 @@ app.post('/api/personas', uploadPersonaAvatar.single('avatar'), (req, res) => {
   res.status(201).json({ persona });
 });
 
+// Export/import always use the plural wire shape ({ personas: [...] }), same
+// convention as characters — one shape for import to handle, not two. Note
+// this is just the persona array, not the { personas, activePersonaId }
+// shape GET /api/personas returns — activePersonaId is world-specific and
+// meaningless across an import boundary.
+app.get('/api/personas/:id/export', (req, res) => {
+  const persona = loadPersonas(req.world).personas.find((p) => p.id === req.params.id);
+  if (!persona) return res.status(404).json({ error: 'Persona not found.' });
+  res.json({ personas: [persona] });
+});
+
+app.get('/api/personas/export', (req, res) => {
+  res.json({ personas: loadPersonas(req.world).personas });
+});
+
+app.post('/api/personas/import', (req, res) => {
+  const w = req.world;
+  const { personas: incoming } = req.body || {};
+  if (!Array.isArray(incoming) || !incoming.length) {
+    return res.status(400).json({ error: 'A personas array is required.' });
+  }
+  const data = loadPersonas(w);
+  const imported = incoming.map((p) => {
+    const id = crypto.randomUUID();
+    return { id, name: (p.name || '').trim(), description: (p.description || '').trim(), avatarUrl: null, color: colorForId(id) };
+  });
+  data.personas.push(...imported);
+  savePersonas(w, data);
+  res.status(201).json({ personas: imported });
+});
+
 app.put('/api/personas/:id', uploadPersonaAvatar.single('avatar'), (req, res) => {
   const w = req.world;
   const { id } = req.params;
@@ -1076,6 +1212,57 @@ app.post('/api/presets/active', (req, res) => {
 
 app.get('/api/places', (req, res) => {
   res.json({ places: loadPlaces(req.world) });
+});
+
+// Three export granularities, one wire shape ({ places: [...] }) — a single
+// place, a whole area (same filter idea as knownAreas below), or everything.
+app.get('/api/places/:id/export', (req, res) => {
+  const place = loadPlaces(req.world).find((p) => p.id === req.params.id);
+  if (!place) return res.status(404).json({ error: 'Place not found.' });
+  res.json({ places: [place] });
+});
+
+app.get('/api/places/export', (req, res) => {
+  const { area } = req.query;
+  const places = loadPlaces(req.world);
+  res.json({ places: area ? places.filter((p) => p.area === area) : places });
+});
+
+// Fresh ids via uniquePlaceId (same slugify/dedupe as native place creation);
+// any ownerIds entry that doesn't resolve against the TARGET world's
+// characters is dropped and surfaced as a warning rather than invented as a
+// stub character — matches how ownerIds already tolerates unknown ids nowhere
+// else in the app (they just wouldn't render a name).
+app.post('/api/places/import', (req, res) => {
+  const w = req.world;
+  const { places: incoming } = req.body || {};
+  if (!Array.isArray(incoming) || !incoming.length) {
+    return res.status(400).json({ error: 'A places array is required.' });
+  }
+  const places = loadPlaces(w);
+  const characterIds = new Set(loadCharacters(w).map((c) => c.id));
+  const warnings = [];
+  const imported = incoming.map((p) => {
+    const name = (p.name || '').trim() || 'Imported place';
+    const type = p.type === 'private' ? 'private' : 'communal';
+    const requestedOwnerIds = Array.isArray(p.ownerIds) ? [...new Set(p.ownerIds)] : [];
+    const ownerIds = type === 'private' ? requestedOwnerIds.filter((id) => characterIds.has(id)) : [];
+    if (requestedOwnerIds.length > ownerIds.length) {
+      warnings.push(`"${name}": ${requestedOwnerIds.length - ownerIds.length} owner(s) don't exist in this world and were dropped.`);
+    }
+    const place = {
+      id: uniquePlaceId(name, places),
+      name,
+      desc: (p.desc || '').trim(),
+      type,
+      ownerIds,
+      area: (p.area || '').trim(),
+    };
+    places.push(place);
+    return place;
+  });
+  savePlaces(w, places);
+  res.status(201).json({ places: imported, warnings });
 });
 
 app.post('/api/places', (req, res) => {

@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { useWorldStore } from '../../stores/world';
 import { useCharacterModal } from '../../composables/useCharacterModal';
-import { createCharacter, updateCharacter, deleteCharacter } from '../../api/characters';
+import { createCharacter, updateCharacter, deleteCharacter, exportCharacter } from '../../api/characters';
 import CardAvatar from '../shared/CardAvatar.vue';
 import RelationshipsSection from './RelationshipsSection.vue';
 import MemoriesSection from './MemoriesSection.vue';
@@ -68,6 +68,24 @@ async function save() {
     world.charactersById[characterModal.editingId.value] = data.character;
   }
   characterModal.close();
+}
+
+// Same { characters: [...] } wire shape /api/characters/import expects —
+// see PresetCard.vue's exportJson for the Blob-download pattern this mirrors.
+async function exportJson() {
+  const id = characterModal.editingId.value;
+  if (!id) return;
+  const { ok, data } = await exportCharacter(id);
+  if (!ok) { status.value = data.error || 'Could not export this character.'; return; }
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${character.value?.name || 'character'}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 async function remove() {
@@ -156,6 +174,7 @@ async function remove() {
       <div class="modal-tab-foot">
         <button class="btn" @click="save">Save</button>
         <button class="btn secondary" @click="characterModal.close()">Cancel</button>
+        <button class="btn secondary" v-if="character" @click="exportJson">Export</button>
         <button class="btn danger" v-if="character && character.source !== 'builtin'" @click="remove">Remove character</button>
         <span class="form-status">{{ status }}</span>
       </div>

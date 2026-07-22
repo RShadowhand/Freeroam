@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { encodeEmbedding, upsertMemoryVectors } from '../lib/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -576,6 +577,211 @@ describe('Places: multi-owner (ownerIds)', () => {
     const { places } = await (await fetch(`${baseUrl}/api/places`)).json();
     const place = places.find((p) => p.id === created.place.id);
     assert.deepEqual(place.ownerIds, [b.id]);
+  });
+});
+
+describe('Export/import: characters, personas, places', () => {
+  test('GET /api/characters/:id/export and /export return the plural wire shape', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Export Me ' + Math.random(), description: 'Test.' })).json();
+    // Compare against the normalized shape (GET /api/characters), not POST's
+    // raw response — loadCharacters applies normalizeCharacter (adds e.g.
+    // schedule: {}), same as /export does, so this is the fair comparison.
+    const { characters: allChars } = await (await fetch(`${baseUrl}/api/characters`)).json();
+    const normalized = allChars.find((c) => c.id === character.id);
+
+    const single = await (await fetch(`${baseUrl}/api/characters/${character.id}/export`)).json();
+    assert.deepEqual(single.characters, [normalized]);
+
+    const all = await (await fetch(`${baseUrl}/api/characters/export`)).json();
+    assert.ok(all.characters.some((c) => c.id === character.id));
+  });
+
+  test('GET /api/characters/:id/export 404s for an unknown id', async () => {
+    const res = await fetch(`${baseUrl}/api/characters/not-a-real-id/export`);
+    assert.equal(res.status, 404);
+  });
+
+  test('POST /api/characters/import mints fresh ids and clears avatarUrl', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Original ' + Math.random(), description: 'Has some description.' })).json();
+    const { characters: exported } = await (await fetch(`${baseUrl}/api/characters/${character.id}/export`)).json();
+
+    const res = await postJson('/api/characters/import', { characters: exported });
+    assert.equal(res.status, 201);
+    const { characters: imported } = await res.json();
+    assert.equal(imported.length, 1);
+    assert.notEqual(imported[0].id, character.id);
+    assert.equal(imported[0].name, character.name);
+    assert.equal(imported[0].description, character.description);
+    assert.equal(imported[0].avatarUrl, null);
+  });
+
+  test('POST /api/characters/import rejects an empty/missing array', async () => {
+    assert.equal((await postJson('/api/characters/import', {})).status, 400);
+    assert.equal((await postJson('/api/characters/import', { characters: [] })).status, 400);
+  });
+
+  test('GET /api/personas/:id/export and /export round-trip; import clears avatarUrl', async () => {
+    const { persona } = await (await postJson('/api/personas', { name: 'Export Persona ' + Math.random(), description: 'A test persona.' })).json();
+
+    const single = await (await fetch(`${baseUrl}/api/personas/${persona.id}/export`)).json();
+    assert.deepEqual(single.personas, [persona]);
+
+    const res = await postJson('/api/personas/import', { personas: single.personas });
+    assert.equal(res.status, 201);
+    const { personas: imported } = await res.json();
+    assert.notEqual(imported[0].id, persona.id);
+    assert.equal(imported[0].name, persona.name);
+    assert.equal(imported[0].avatarUrl, null);
+  });
+
+  test('GET /api/places/export supports single/area/all granularities', async () => {
+    const area = 'Export Test Area ' + Math.random();
+    const p1 = await (await postJson('/api/places', { name: 'Place One ' + Math.random(), type: 'communal', area })).json();
+    const p2 = await (await postJson('/api/places', { name: 'Place Two ' + Math.random(), type: 'communal', area })).json();
+    await postJson('/api/places', { name: 'Elsewhere ' + Math.random(), type: 'communal', area: 'Somewhere Else ' + Math.random() });
+
+    const single = await (await fetch(`${baseUrl}/api/places/${p1.place.id}/export`)).json();
+    assert.deepEqual(single.places, [p1.place]);
+
+    const byArea = await (await fetch(`${baseUrl}/api/places/export?area=${encodeURIComponent(area)}`)).json();
+    const byAreaIds = byArea.places.map((p) => p.id).sort();
+    assert.deepEqual(byAreaIds, [p1.place.id, p2.place.id].sort());
+
+    const all = await (await fetch(`${baseUrl}/api/places/export`)).json();
+    assert.ok(all.places.some((p) => p.id === p1.place.id) && all.places.some((p) => p.id === p2.place.id));
+  });
+
+  test('POST /api/places/import drops ownerIds unknown to the target world, with a warning', async () => {
+    // Owner exists in the SOURCE world; import targets a different, fresh
+    // world where that character was never created — the real scenario this
+    // warning is for (a place exported from one world, imported into another).
+    const { character } = await (await postJson('/api/characters', { name: 'Source Owner ' + Math.random(), description: 'Test.' })).json();
+    const { place } = await (await postJson('/api/places', {
+      name: 'Owned Elsewhere ' + Math.random(), type: 'private', ownerIds: [character.id],
+    })).json();
+    const { world: otherWorld } = await (await postJson('/api/worlds', { name: 'Import Target ' + Math.random(), mode: 'empty' })).json();
+
+    const res = await fetch(`${baseUrl}/api/places/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-World-Id': otherWorld.id },
+      body: JSON.stringify({ places: [place] }),
+    });
+    assert.equal(res.status, 201);
+    const { places: imported, warnings } = await res.json();
+    assert.equal(imported.length, 1);
+    assert.deepEqual(imported[0].ownerIds, []);
+    assert.equal(warnings.length, 1);
+  });
+
+  test('POST /api/places/import disambiguates an id that collides with an existing place in the target world', async () => {
+    const sameName = 'Collision House ' + Math.random();
+    const { place: existing } = await (await postJson('/api/places', { name: sameName, type: 'communal' })).json();
+
+    const { places: imported } = await (await postJson('/api/places/import', {
+      places: [{ name: sameName, type: 'communal' }],
+    })).json();
+    assert.notEqual(imported[0].id, existing.id);
+    assert.ok(imported[0].id.startsWith(existing.id));
+  });
+
+  test('POST /api/places/import keeps ownerIds that DO resolve in the target world', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Real Owner ' + Math.random(), description: 'Test.' })).json();
+    const { places: imported, warnings } = await (await postJson('/api/places/import', {
+      places: [{ name: 'Reimportable House ' + Math.random(), type: 'private', ownerIds: [character.id] }],
+    })).json();
+    assert.deepEqual(imported[0].ownerIds, [character.id]);
+    assert.deepEqual(warnings, []);
+  });
+});
+
+describe('World export/import (whole-world zip bundle)', () => {
+  function worldHeaders(id, extra = {}) {
+    return { ...extra, headers: { ...(extra.headers || {}), 'X-World-Id': id } };
+  }
+
+  test('round-trips characters/places/chat/memories through export -> import as a new world', async () => {
+    const { world: src } = await (await postJson('/api/worlds', { name: 'Export Source ' + Math.random(), mode: 'empty' })).json();
+
+    const { character } = await (await fetch(`${baseUrl}/api/characters`, worldHeaders(src.id, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Export Char', description: 'Test.' }),
+    }))).json();
+    const { place } = await (await fetch(`${baseUrl}/api/places`, worldHeaders(src.id, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Export Place', type: 'communal' }),
+    }))).json();
+    await fetch(`${baseUrl}/api/places/${place.id}/enter`, worldHeaders(src.id, { method: 'POST' }));
+
+    // A memory row inserted directly (bypasses the OpenRouter-dependent
+    // reply pipeline this test suite otherwise avoids) — isolates the
+    // export/import zip mechanism from real generation.
+    const srcWorld = registry.get(src.id);
+    const memoryId = 'export-test-mem-1';
+    const embedding = encodeEmbedding([0.1, 0.2, 0.3, 0.4]);
+    srcWorld.db.prepare(`
+      INSERT INTO memories (id, persona_key, text, embedding, place_id, day, time_of_day, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(memoryId, 'none', 'Something memorable happened.', embedding, place.id, 1, 'noon', new Date().toISOString());
+    srcWorld.db.prepare('INSERT INTO memory_participants (memory_id, character_id) VALUES (?, ?)').run(memoryId, character.id);
+    upsertMemoryVectors(srcWorld.db, memoryId, [character.id], [embedding]);
+
+    const exportRes = await fetch(`${baseUrl}/api/worlds/${src.id}/export`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ includeHistory: true }),
+    });
+    assert.equal(exportRes.status, 200);
+    assert.equal(exportRes.headers.get('content-type'), 'application/zip');
+    const zipBuffer = Buffer.from(await exportRes.arrayBuffer());
+    assert.ok(zipBuffer.length > 0);
+
+    const form = new FormData();
+    form.append('bundle', new Blob([zipBuffer], { type: 'application/zip' }), 'world.zip');
+    form.append('name', 'Imported World ' + Math.random());
+    const importRes = await fetch(`${baseUrl}/api/worlds/import`, { method: 'POST', body: form });
+    assert.equal(importRes.status, 201);
+    const { world: imported, warnings } = await importRes.json();
+    assert.deepEqual(warnings, []);
+
+    const { characters: destChars } = await (await fetch(`${baseUrl}/api/characters`, worldHeaders(imported.id))).json();
+    assert.ok(destChars.some((c) => c.name === 'Export Char'));
+
+    const { places: destPlaces } = await (await fetch(`${baseUrl}/api/places`, worldHeaders(imported.id))).json();
+    // A whole-world import preserves original ids (raw file copy, not a
+    // re-slugified merge like /api/places/import) — chat logs are keyed by
+    // placeId filename, so ids must survive unchanged for chat history to
+    // still resolve to the right place after import.
+    assert.ok(destPlaces.some((p) => p.id === place.id && p.name === 'Export Place'));
+
+    const destWorld = registry.get(imported.id);
+    assert.equal(destWorld.db.prepare('SELECT COUNT(*) AS n FROM memories').get().n, 1);
+    assert.equal(destWorld.db.prepare('SELECT text FROM memories WHERE id = ?').get(memoryId)?.text, 'Something memorable happened.');
+    assert.equal(destWorld.db.prepare('SELECT COUNT(*) AS n FROM memory_vectors').get().n, 1);
+
+    const { log } = await (await fetch(`${baseUrl}/api/places/${place.id}/chat`, worldHeaders(imported.id))).json();
+    assert.ok(log.length > 0);
+  });
+
+  test('includeHistory:false excludes chat logs from the export', async () => {
+    const { world: src } = await (await postJson('/api/worlds', { name: 'No History Source ' + Math.random(), mode: 'empty' })).json();
+    const { place } = await (await fetch(`${baseUrl}/api/places`, worldHeaders(src.id, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'History Place', type: 'communal' }),
+    }))).json();
+    await fetch(`${baseUrl}/api/places/${place.id}/enter`, worldHeaders(src.id, { method: 'POST' }));
+
+    const exportRes = await fetch(`${baseUrl}/api/worlds/${src.id}/export`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ includeHistory: false }),
+    });
+    const zipBuffer = Buffer.from(await exportRes.arrayBuffer());
+
+    const form = new FormData();
+    form.append('bundle', new Blob([zipBuffer], { type: 'application/zip' }), 'world.zip');
+    const { world: imported } = await (await fetch(`${baseUrl}/api/worlds/import`, { method: 'POST', body: form })).json();
+
+    const { log } = await (await fetch(`${baseUrl}/api/places/${place.id}/chat`, worldHeaders(imported.id))).json();
+    assert.equal(log.length, 0);
+  });
+
+  test('POST /api/worlds/import 400s without a file', async () => {
+    const form = new FormData();
+    const res = await fetch(`${baseUrl}/api/worlds/import`, { method: 'POST', body: form });
+    assert.equal(res.status, 400);
   });
 });
 

@@ -13,9 +13,29 @@ const cloneIncludeHistory = ref(true);
 const createError = ref('');
 const creatingBusy = ref(false);
 
+const importFileInput = ref(null);
+const importBusy = ref(false);
+const importStatus = ref('');
+
 onMounted(async () => {
   await worlds.refresh();
 });
+
+async function importWorldFile(file) {
+  importBusy.value = true;
+  importStatus.value = '';
+  const { ok, data } = await worlds.importWorld(file, file.name.replace(/\.zip$/i, ''));
+  importBusy.value = false;
+  if (!ok) { importStatus.value = data.error || 'Could not import world.'; return; }
+  const warnings = data.warnings || [];
+  importStatus.value = `Imported "${data.world.name}"${warnings.length ? ` — ${warnings.join(' ')}` : '.'}`;
+}
+
+function onImportFileChange() {
+  const [file] = importFileInput.value.files;
+  if (file) importWorldFile(file);
+  importFileInput.value.value = '';
+}
 
 function openCreate() {
   newName.value = '';
@@ -47,8 +67,13 @@ async function create() {
         <h2>Worlds</h2>
         <p class="hint" style="margin:2px 0 0;">Save slots — switch, duplicate, or start fresh.</p>
       </div>
-      <button class="btn secondary small" @click="openCreate">+ New world</button>
+      <div class="toolbar-actions">
+        <button class="btn secondary small" :disabled="importBusy" @click="importFileInput.click()">Import world (.zip)</button>
+        <input type="file" ref="importFileInput" accept="application/zip,.zip" style="display:none;" @change="onImportFileChange">
+        <button class="btn secondary small" @click="openCreate">+ New world</button>
+      </div>
     </div>
+    <div class="form-status" v-if="importStatus">{{ importStatus }}</div>
 
     <div class="world-grid">
       <WorldCard v-for="w in worlds.list" :key="w.id" :world="w" />

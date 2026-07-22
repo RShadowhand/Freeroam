@@ -41,6 +41,32 @@ async function confirmDuplicate() {
   duplicating.value = false;
 }
 
+const exporting = ref(false);
+const exportIncludeHistory = ref(true);
+function startExport() {
+  exportIncludeHistory.value = true;
+  exporting.value = true;
+  error.value = '';
+}
+async function confirmExport() {
+  busy.value = true;
+  const { ok, data, blob, filename } = await worlds.exportWorld(props.world.id, exportIncludeHistory.value);
+  busy.value = false;
+  if (!ok) { error.value = data.error || 'Could not export.'; return; }
+  // Same Blob-download pattern as PresetCard.vue's exportJson, but the
+  // filename comes from the server's Content-Disposition (this is a zip,
+  // not JSON we're formatting ourselves).
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || `${props.world.name}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  exporting.value = false;
+}
+
 async function switchTo() {
   busy.value = true;
   await worlds.switchWorld(props.world.id);
@@ -83,6 +109,15 @@ function formatDate(iso) {
       </div>
     </template>
 
+    <template v-else-if="exporting">
+      <div class="world-card-header"><h3>{{ world.name }}</h3></div>
+      <label class="world-card-checkbox"><input type="checkbox" v-model="exportIncludeHistory"> Include chat history &amp; memories</label>
+      <div class="form-actions">
+        <button class="btn small" :disabled="busy" @click="confirmExport">Download .zip</button>
+        <button class="btn secondary small" @click="exporting = false">Cancel</button>
+      </div>
+    </template>
+
     <template v-else>
       <div class="world-card-header">
         <h3>{{ world.name }}</h3>
@@ -93,6 +128,7 @@ function formatDate(iso) {
         <button class="btn small" :disabled="busy || isCurrent" @click="switchTo">{{ isCurrent ? 'Current' : 'Switch' }}</button>
         <button class="btn secondary small" :disabled="busy" @click="startRename">Rename</button>
         <button class="btn secondary small" :disabled="busy" @click="startDuplicate">Duplicate</button>
+        <button class="btn secondary small" :disabled="busy" @click="startExport">Export</button>
         <button
           class="btn danger small" :disabled="busy || worlds.list.length <= 1"
           :title="worlds.list.length <= 1 ? 'Cannot delete the only world' : 'Delete this world'" @click="remove"

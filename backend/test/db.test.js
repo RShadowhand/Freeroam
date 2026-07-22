@@ -8,6 +8,7 @@ import {
   openDb, encodeEmbedding, decodeEmbedding,
   upsertMemoryVectors, removeMemoryVectorParticipant, deleteMemoryVectors,
   deleteMemoryVectorsForCharacter, queryMemoryVectorIndex,
+  dumpMemoriesForExport, restoreMemoriesFromExport,
 } from '../lib/db.js';
 import { logger } from '../lib/log.js';
 
@@ -312,6 +313,75 @@ describe('memory_vectors write/delete helpers', () => {
     // A later upsert (delete + reinsert) fully replaces the chunk set, not just appends.
     upsertMemoryVectors(db, 'mem-1', ['ezra', 'mireille'], [encodeEmbedding([1, 1, 1])]);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_vectors').get().n, 2);
+  });
+});
+
+describe('dumpMemoriesForExport / restoreMemoriesFromExport', () => {
+  function seedMemory(db, { id, entryId, participants, embedding }) {
+    db.prepare(`
+      INSERT INTO memories (id, persona_key, text, embedding, place_id, day, time_of_day, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, 'p1', `Text for ${id}`, encodeEmbedding(embedding), 'square', 1, 'noon', '2026-01-01T00:00:00.000Z');
+    participants.forEach((cid) => db.prepare('INSERT INTO memory_participants (memory_id, character_id) VALUES (?, ?)').run(id, cid));
+    db.prepare('INSERT INTO memory_entries (memory_id, entry_id) VALUES (?, ?)').run(id, entryId);
+    upsertMemoryVectors(db, id, participants, [encodeEmbedding(embedding)]);
+  }
+
+  test('dumps memories/participants/entries/vectors/relationships with embeddings base64-encoded', () => {
+    const db = openDb(':memory:');
+    seedMemory(db, { id: 'mem-1', entryId: 'entry-1', participants: ['ezra', 'mireille'], embedding: [1, 0, 0] });
+    db.prepare('INSERT INTO relationships (character_id, target_id, labels) VALUES (?, ?, ?)').run('ezra', 'mireille', JSON.stringify(['friend']));
+
+    const dump = dumpMemoriesForExport(db);
+    assert.equal(dump.memories.length, 1);
+    assert.equal(typeof dump.memories[0].embedding, 'string'); // base64, not a raw Buffer
+    assert.deepEqual(decodeEmbedding(Buffer.from(dump.memories[0].embedding, 'base64')), [1, 0, 0]);
+    assert.equal(dump.memoryParticipants.length, 2);
+    assert.equal(dump.memoryEntries.length, 1);
+    assert.equal(dump.memoryVectors.length, 2); // one per participant
+    assert.equal(typeof dump.memoryVectors[0].embedding, 'string');
+    assert.equal(dump.relationships.length, 1);
+    assert.equal(dump.relationships[0].labels, JSON.stringify(['friend']));
+    assert.equal('embedding' in dump.relationships[0], false); // logical row only, no blob
+
+    db.close();
+  });
+
+  test('dumps an empty memoryVectors array when the vec0 table was never created', () => {
+    const db = openDb(':memory:');
+    const dump = dumpMemoriesForExport(db);
+    assert.deepEqual(dump.memoryVectors, []);
+    db.close();
+  });
+
+  test('restores a dump into a fresh db, reproducing every table and a working vector index', () => {
+    const src = openDb(':memory:');
+    seedMemory(src, { id: 'mem-1', entryId: 'entry-1', participants: ['ezra', 'mireille'], embedding: [1, 0, 0] });
+    src.prepare('INSERT INTO relationships (character_id, target_id, labels) VALUES (?, ?, ?)').run('ezra', 'mireille', JSON.stringify(['friend']));
+    const dump = dumpMemoriesForExport(src);
+    src.close();
+
+    const dest = openDb(':memory:');
+    restoreMemoriesFromExport(dest, dump);
+
+    assert.equal(dest.prepare('SELECT COUNT(*) AS n FROM memories').get().n, 1);
+    assert.equal(dest.prepare('SELECT text FROM memories WHERE id = ?').get('mem-1').text, 'Text for mem-1');
+    assert.equal(dest.prepare('SELECT COUNT(*) AS n FROM memory_participants').get().n, 2);
+    assert.equal(dest.prepare('SELECT COUNT(*) AS n FROM memory_entries').get().n, 1);
+    assert.equal(dest.prepare('SELECT labels FROM relationships WHERE character_id = ?').get('ezra').labels, JSON.stringify(['friend']));
+
+    const ezra = queryMemoryVectorIndex(dest, 'ezra', encodeEmbedding([1, 0, 0]), 5);
+    assert.equal(ezra.length, 1);
+    assert.equal(ezra[0].memory_id, 'mem-1');
+
+    dest.close();
+  });
+
+  test('restoring an empty dump into a fresh db does not throw', () => {
+    const dest = openDb(':memory:');
+    assert.doesNotThrow(() => restoreMemoriesFromExport(dest, dumpMemoriesForExport(openDb(':memory:'))));
+    assert.equal(dest.prepare('SELECT COUNT(*) AS n FROM memories').get().n, 0);
+    dest.close();
   });
 });
 

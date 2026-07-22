@@ -11,3 +11,6 @@ export const createPersona = ({ name, description, avatarFile }) => {
 export const updatePersona = (id, body) => apiJson(`/api/personas/${id}`, 'PUT', body);
 export const deletePersona = (id) => apiDelete(`/api/personas/${id}`);
 export const setActivePersona = (id) => apiJson('/api/personas/active', 'POST', { id });
+export const exportPersona = (id) => apiGet(`/api/personas/${id}/export`);
+export const exportAllPersonas = () => apiGet('/api/personas/export');
+export const importPersonas = (personas) => apiJson('/api/personas/import', 'POST', { personas });

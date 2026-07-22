@@ -1,7 +1,7 @@
 <script setup>
 import { ref } from 'vue';
 import { useWorldStore } from '../../stores/world';
-import { updatePlace, deletePlace } from '../../api/places';
+import { updatePlace, deletePlace, exportPlace } from '../../api/places';
 import { joinNames } from '../../utils/format';
 
 const props = defineProps({ place: { type: Object, required: true }, editing: { type: Boolean, default: false } });
@@ -39,6 +39,21 @@ async function save() {
 
 function ownerNames(place) {
   return place.ownerIds.map((id) => world.charName(id)).filter(Boolean);
+}
+
+// Same { places: [...] } wire shape /api/places/import expects.
+async function exportJson() {
+  const { ok, data } = await exportPlace(props.place.id);
+  if (!ok) { alert(data.error || 'Could not export this place.'); return; }
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${props.place.name || 'place'}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 async function remove() {
@@ -101,6 +116,7 @@ async function remove() {
       </div>
       <div class="row-actions">
         <button @click="startEdit">Edit</button>
+        <button @click="exportJson">Export</button>
         <button class="danger" @click="remove">Remove</button>
       </div>
     </div>

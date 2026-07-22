@@ -2,7 +2,7 @@ import { defineStore } from 'pinia';
 import router from '../router';
 import { useChatStore } from './chat';
 import { useWorldStore } from './world';
-import { getWorlds, createWorld, renameWorld, deleteWorld, duplicateWorld } from '../api/worlds';
+import { getWorlds, createWorld, renameWorld, deleteWorld, duplicateWorld, exportWorld, importWorld } from '../api/worlds';
 import { getStoredWorldId, setStoredWorldId } from '../api/worldId';
 
 // Worlds are save slots — separate casts/places/chat history/memory, never
@@ -80,6 +80,16 @@ export const useWorldsStore = defineStore('worlds', {
 
     async duplicate(id, opts) {
       const { ok, data } = await duplicateWorld(id, opts);
+      if (ok) await this.refresh();
+      return { ok, data };
+    },
+
+    async exportWorld(id, includeHistory) {
+      return exportWorld(id, includeHistory);
+    },
+
+    async importWorld(file, name) {
+      const { ok, data } = await importWorld(file, name);
       if (ok) await this.refresh();
       return { ok, data };
     },

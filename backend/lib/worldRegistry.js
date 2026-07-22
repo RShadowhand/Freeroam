@@ -11,7 +11,15 @@ import { logger } from './log.js';
 // (an X-World-Id header), never via a server-side "current world" pointer,
 // so different browsers/users can be in different worlds at the same time.
 
-const WORLD_JSON_FILES = ['characters.json', 'places.json', 'world.json', 'personas.json', 'presets.json', 'groups.json'];
+export const WORLD_JSON_FILES = ['characters.json', 'places.json', 'world.json', 'personas.json', 'presets.json', 'groups.json'];
+
+// A whole-world export/import (see worldExport.js) is a full-fidelity
+// backup/restore, a different intent from clone's "branch a variant" —
+// weather.json/calls.json are deliberately excluded from WORLD_JSON_FILES
+// (they're runtime state, not curated world data — see calls.js/groups.js),
+// but a backup should still capture them rather than silently drop them.
+// Kept as a separate constant so changing this never changes what clone copies.
+export const WORLD_EXPORT_FILES = [...WORLD_JSON_FILES, 'weather.json', 'calls.json'];
 
 function httpError(message, status) {
   return Object.assign(new Error(message), { status });
@@ -31,14 +39,14 @@ const AVATAR_URL_RE = new RegExp(`^/avatars/(?:${UUID_SEGMENT}/)?(.*)$`, 'i');
 // rather than prepending onto it. Idempotent — a URL already scoped to
 // this exact worldId round-trips unchanged, so this is safe to call on
 // every clone/migration without double-nesting the path.
-function rewriteOneAvatarUrl(url, worldId) {
+export function rewriteOneAvatarUrl(url, worldId) {
   if (typeof url !== 'string' || !url) return url;
   const match = url.match(AVATAR_URL_RE);
   if (!match) return url;
   return `/avatars/${worldId}/${match[1]}`;
 }
 
-function rewriteAvatarUrls(dataDir, worldId) {
+export function rewriteAvatarUrls(dataDir, worldId) {
   const charsPath = path.join(dataDir, 'characters.json');
   try {
     const chars = JSON.parse(fs.readFileSync(charsPath, 'utf-8'));

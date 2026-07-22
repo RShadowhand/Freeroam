@@ -13,3 +13,6 @@ export const placeCharacter = (id, body) => apiJson(`/api/characters/${id}/place
 export const saveScheduleSlot = (id, day, timeOfDay, body) =>
   apiJson(`/api/characters/${id}/schedule/${day}/${timeOfDay}`, 'PUT', body);
 export const draftCharacterDescription = (body) => apiJson('/api/characters/draft', 'POST', body);
+export const exportCharacter = (id) => apiGet(`/api/characters/${id}/export`);
+export const exportAllCharacters = () => apiGet('/api/characters/export');
+export const importCharacters = (characters) => apiJson('/api/characters/import', 'POST', { characters });
