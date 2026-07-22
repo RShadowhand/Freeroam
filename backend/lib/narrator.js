@@ -1,4 +1,5 @@
 import { weekdayFor } from './context.js';
+import { joinNames } from './textUtils.js';
 
 // How many rounds (user messages) must pass since the last narrator turn
 // before an ambiance-only narration is worth another API call — applies
@@ -41,7 +42,7 @@ export function isNarratorSilent(text) {
 }
 
 // scene = {
-//   place: { name, area, desc, type, ownerName },
+//   place: { name, area, desc, type, ownerNames },
 //   worldSetting, time: { day, timeOfDay } | null,
 //   backgroundChars: [{ name, snippet }],  // present but not active
 //   transcript: string,                    // recent log, already budget-trimmed
@@ -55,7 +56,7 @@ export function buildNarratorMessages(scene) {
   const when = time ? `It is Day ${time.day}${weekday ? ` (${weekday})` : ''}, ${time.timeOfDay}.\n` : '';
   const weather = place.weather ? `Weather: ${place.weather}.\n` : '';
   const locationLine = place.type === 'private'
-    ? `This is ${place.ownerName ? `${place.ownerName}'s` : "a resident's"} private place.`
+    ? `This is ${place.ownerNames?.length ? `${joinNames(place.ownerNames)}'s` : "a resident's"} private place.`
     : 'This is a communal space, open to anyone.';
   const castLabel = callContext ? 'Present, silently overhearing one side of a phone call' : 'Present but not currently part of the conversation';
   const castBlock = backgroundChars.length

@@ -67,7 +67,7 @@ describe('isNarratorSilent', () => {
 });
 
 describe('buildNarratorMessages', () => {
-  const basePlace = { name: 'Town Square', area: 'Old Quarter', desc: 'A cobbled plaza.', type: 'communal', ownerName: null };
+  const basePlace = { name: 'Town Square', area: 'Old Quarter', desc: 'A cobbled plaza.', type: 'communal', ownerNames: [] };
 
   test('returns a two-message [system, user] array', () => {
     const messages = buildNarratorMessages({ place: basePlace, transcript: '' });
@@ -87,9 +87,15 @@ describe('buildNarratorMessages', () => {
     const [communal] = buildNarratorMessages({ place: basePlace, transcript: '' });
     assert.match(communal.content, /communal space/i);
 
-    const privatePlace = { ...basePlace, type: 'private', ownerName: 'Mireille' };
+    const privatePlace = { ...basePlace, type: 'private', ownerNames: ['Mireille'] };
     const [private_] = buildNarratorMessages({ place: privatePlace, transcript: '' });
     assert.match(private_.content, /Mireille's private place/i);
+  });
+
+  test('joins multiple owner names for a private place', () => {
+    const privatePlace = { ...basePlace, type: 'private', ownerNames: ['Mireille', 'Soot'] };
+    const [private_] = buildNarratorMessages({ place: privatePlace, transcript: '' });
+    assert.match(private_.content, /Mireille and Soot's private place/i);
   });
 
   test('lists background characters with their snippets when given', () => {

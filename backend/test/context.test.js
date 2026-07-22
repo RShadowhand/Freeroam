@@ -609,7 +609,7 @@ describe('assemblePresetSections', () => {
 describe('defaultSystemPrompt', () => {
   const baseScene = {
     chars: [{ name: 'Ezra Vane', description: 'Precise, dry-witted archivist.' }],
-    place: { name: 'Town Square', area: 'Downtown', desc: 'The open square.', type: 'communal', ownerName: null },
+    place: { name: 'Town Square', area: 'Downtown', desc: 'The open square.', type: 'communal', ownerNames: [] },
     persona: null,
   };
 
@@ -628,9 +628,15 @@ describe('defaultSystemPrompt', () => {
   });
 
   test('private place mentions the owner by name', () => {
-    const scene = { ...baseScene, place: { ...baseScene.place, type: 'private', ownerName: 'Ezra Vane' } };
+    const scene = { ...baseScene, place: { ...baseScene.place, type: 'private', ownerNames: ['Ezra Vane'] } };
     const prompt = defaultSystemPrompt(scene);
     assert.ok(prompt.includes("This is Ezra Vane's private place"));
+  });
+
+  test('private place with multiple owners joins their names', () => {
+    const scene = { ...baseScene, place: { ...baseScene.place, type: 'private', ownerNames: ['Ezra Vane', 'Mireille', 'Soot'] } };
+    const prompt = defaultSystemPrompt(scene);
+    assert.ok(prompt.includes("This is Ezra Vane, Mireille, and Soot's private place"));
   });
 
   test('communal place uses generic wording', () => {
@@ -665,7 +671,7 @@ describe('defaultSystemPrompt', () => {
 describe('buildSystemPrompt', () => {
   const scene = {
     chars: [{ name: 'Ezra Vane', description: 'Precise, dry-witted archivist.' }],
-    place: { name: 'Town Square', area: 'Downtown', desc: 'The open square.', type: 'communal', ownerName: null },
+    place: { name: 'Town Square', area: 'Downtown', desc: 'The open square.', type: 'communal', ownerNames: [] },
     persona: null,
   };
 

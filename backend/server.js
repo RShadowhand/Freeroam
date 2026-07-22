@@ -177,35 +177,47 @@ if (!fs.existsSync(CONFIG_PATH)) saveConfig(DEFAULT_CONFIG);
 // a place uses one. None of this is hardcoded into the app's logic — it's
 // just the starting data, fully editable through /api/places.
 const SEED_PLACES = [
-  { id: 'town-square', name: 'Town Square', type: 'communal', ownerId: null, area: 'Downtown',
+  { id: 'town-square', name: 'Town Square', type: 'communal', ownerIds: [], area: 'Downtown',
     desc: 'The open square where every path in the neighborhood eventually crosses.' },
-  { id: 'archive-house', name: 'The Archive House', type: 'communal', ownerId: null, area: 'Downtown',
+  { id: 'archive-house', name: 'The Archive House', type: 'communal', ownerIds: [], area: 'Downtown',
     desc: 'A public reading room, shelves stacked floor to ceiling with old records.' },
-  { id: 'ezras-apartment', name: "Ezra's Apartment", type: 'private', ownerId: 'ezra', area: 'Downtown',
+  { id: 'ezras-apartment', name: "Ezra's Apartment", type: 'private', ownerIds: ['ezra'], area: 'Downtown',
     desc: 'A cramped, meticulously organized apartment above the Archive House.' },
 
-  { id: 'greenhouse-park', name: 'The Greenhouse', type: 'communal', ownerId: null, area: 'Garden District',
+  { id: 'greenhouse-park', name: 'The Greenhouse', type: 'communal', ownerIds: [], area: 'Garden District',
     desc: 'A public greenhouse gone half-wild, permanently smelling of autumn leaves.' },
-  { id: 'mireilles-cottage', name: "Mireille's Cottage", type: 'private', ownerId: 'mireille', area: 'Garden District',
+  { id: 'mireilles-cottage', name: "Mireille's Cottage", type: 'private', ownerIds: ['mireille'], area: 'Garden District',
     desc: 'A small cottage tucked just behind the greenhouse ferns.' },
-  { id: 'soots-alley', name: "Soot's Alley", type: 'private', ownerId: 'soot', area: 'Garden District',
+  { id: 'soots-alley', name: "Soot's Alley", type: 'private', ownerIds: ['soot'], area: 'Garden District',
     desc: 'A narrow alley that one particular cat has claimed as entirely his own.' },
 
-  { id: 'old-ballroom', name: 'The Old Ballroom', type: 'communal', ownerId: null, area: 'Uptown',
+  { id: 'old-ballroom', name: 'The Old Ballroom', type: 'communal', ownerIds: [], area: 'Uptown',
     desc: 'A dusty, disused hall that still hosts the occasional gathering.' },
-  { id: 'clocktower-roof', name: 'The Clocktower Roof', type: 'communal', ownerId: null, area: 'Uptown',
+  { id: 'clocktower-roof', name: 'The Clocktower Roof', type: 'communal', ownerIds: [], area: 'Uptown',
     desc: 'A rooftop lookout beside the neighborhood\'s old, stopped clocktower.' },
-  { id: 'custodians-workshop', name: "The Custodian's Workshop", type: 'private', ownerId: 'custodian', area: 'Uptown',
+  { id: 'custodians-workshop', name: "The Custodian's Workshop", type: 'private', ownerIds: ['custodian'], area: 'Uptown',
     desc: "A locked workshop where the neighborhood's clockwork gets quietly repaired." },
 ];
 
+// Older places.json files predate multi-owner support and store a single
+// `ownerId: string|null` — folded into `ownerIds: string[]` on read, same
+// lazy-migration approach normalizeCharacter uses for the persona->description
+// rename above. No rewrite happens until the next save.
+function normalizePlace(p) {
+  if (Array.isArray(p.ownerIds)) return p;
+  const { ownerId, ...rest } = p;
+  return { ...rest, ownerIds: ownerId ? [ownerId] : [] };
+}
+
 function loadPlaces(w) {
+  let raw;
   try {
-    return JSON.parse(fs.readFileSync(w.paths.places, 'utf-8'));
+    raw = JSON.parse(fs.readFileSync(w.paths.places, 'utf-8'));
   } catch {
-    savePlaces(w, SEED_PLACES);
-    return SEED_PLACES;
+    raw = SEED_PLACES;
+    savePlaces(w, raw);
   }
+  return raw.map(normalizePlace);
 }
 function savePlaces(w, list) {
   fs.writeFileSync(w.paths.places, JSON.stringify(list, null, 2));
@@ -780,7 +792,8 @@ app.delete('/api/characters/:id', (req, res) => {
   const places = loadPlaces(w);
   let placesChanged = false;
   places.forEach((p) => {
-    if (p.ownerId === id) { p.ownerId = null; placesChanged = true; }
+    const idx = p.ownerIds.indexOf(id);
+    if (idx !== -1) { p.ownerIds.splice(idx, 1); placesChanged = true; }
   });
   if (placesChanged) savePlaces(w, places);
 
@@ -1067,14 +1080,15 @@ app.get('/api/places', (req, res) => {
 
 app.post('/api/places', (req, res) => {
   const w = req.world;
-  const { name, desc, type, ownerId, area } = req.body || {};
+  const { name, desc, type, ownerIds, area } = req.body || {};
   if (typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'A place name is required.' });
   }
   const placeType = type === 'private' ? 'private' : 'communal';
-  if (placeType === 'private' && ownerId) {
+  const uniqueOwnerIds = Array.isArray(ownerIds) ? [...new Set(ownerIds)] : [];
+  if (placeType === 'private' && uniqueOwnerIds.length) {
     const characters = loadCharacters(w);
-    if (!characters.some((c) => c.id === ownerId)) {
+    if (!uniqueOwnerIds.every((oid) => characters.some((c) => c.id === oid))) {
       return res.status(400).json({ error: 'Unknown owner character id.' });
     }
   }
@@ -1085,7 +1099,7 @@ app.post('/api/places', (req, res) => {
     name: name.trim(),
     desc: (desc || '').trim(),
     type: placeType,
-    ownerId: placeType === 'private' ? (ownerId || null) : null,
+    ownerIds: placeType === 'private' ? uniqueOwnerIds : [],
     area: (area || '').trim(),
   };
   places.push(place);
@@ -1100,23 +1114,24 @@ app.put('/api/places/:id', (req, res) => {
   const place = places.find((p) => p.id === id);
   if (!place) return res.status(404).json({ error: 'Place not found.' });
 
-  const { name, desc, type, ownerId, area } = req.body || {};
+  const { name, desc, type, ownerIds, area } = req.body || {};
   if (typeof name === 'string' && name.trim()) place.name = name.trim();
   if (typeof desc === 'string') place.desc = desc.trim();
   if (type === 'private' || type === 'communal') place.type = type;
   if (typeof area === 'string') place.area = area.trim();
   if (place.type === 'private') {
-    if (ownerId !== undefined) {
-      if (ownerId) {
+    if (ownerIds !== undefined) {
+      const uniqueOwnerIds = Array.isArray(ownerIds) ? [...new Set(ownerIds)] : [];
+      if (uniqueOwnerIds.length) {
         const characters = loadCharacters(w);
-        if (!characters.some((c) => c.id === ownerId)) {
+        if (!uniqueOwnerIds.every((oid) => characters.some((c) => c.id === oid))) {
           return res.status(400).json({ error: 'Unknown owner character id.' });
         }
       }
-      place.ownerId = ownerId || null;
+      place.ownerIds = uniqueOwnerIds;
     }
   } else {
-    place.ownerId = null;
+    place.ownerIds = [];
   }
 
   savePlaces(w, places);
@@ -2767,7 +2782,7 @@ async function buildTurnRequest({ w, place, speakerId, presentIds, charactersByI
       area: place.area,
       desc: place.desc,
       type: place.type,
-      ownerName: place.ownerId && charactersById[place.ownerId] ? charactersById[place.ownerId].name : null,
+      ownerNames: place.ownerIds.map((oid) => charactersById[oid]?.name).filter(Boolean),
       weather: place.area ? loadWeather(w)[place.area]?.condition || null : null,
     },
     persona: activePersona ? { name: activePersona.name, description: activePersona.description } : null,
@@ -2916,7 +2931,7 @@ async function attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, c
     const messages = buildNarratorMessages({
       place: {
         name: place.name, area: place.area, desc: place.desc, type: place.type,
-        ownerName: place.ownerId && charactersById[place.ownerId] ? charactersById[place.ownerId].name : null,
+        ownerNames: place.ownerIds.map((oid) => charactersById[oid]?.name).filter(Boolean),
         weather: place.area ? loadWeather(w)[place.area]?.condition || null : null,
       },
       worldSetting: world.setting,

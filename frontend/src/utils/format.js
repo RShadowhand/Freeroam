@@ -45,6 +45,15 @@ export function castPreview(text, max) {
   return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
 }
 
+// "A" / "A and B" / "A, B, and C" — small deliberate duplication of the
+// backend's own joinNames (backend/lib/textUtils.js); separate processes,
+// not worth sharing a module for four lines.
+export function joinNames(names) {
+  if (names.length <= 1) return names.join('');
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+}
+
 export function groupedByArea(list) {
   const groups = {};
   list.forEach((p) => {

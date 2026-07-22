@@ -1,4 +1,5 @@
 import { weekdayFor } from './context.js';
+import { joinNames } from './textUtils.js';
 
 // Texting gets its own small, self-contained prompt builder rather than
 // being squeezed through the physical-scene pipeline (scenarioBlock/
@@ -8,13 +9,6 @@ import { weekdayFor } from './context.js';
 // reasoning narrator.js already followed for its own dedicated
 // buildNarratorMessages rather than reusing defaultSystemPrompt.
 //
-// "A" / "A and B" / "A, B, and C" — used for the group-text roster line.
-function joinNames(names) {
-  if (names.length <= 1) return names.join('');
-  if (names.length === 2) return `${names[0]} and ${names[1]}`;
-  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
-}
-
 // scene = {
 //   char: { name, description, personality },   // the character replying
 //   persona: { name, description } | null,      // active user persona, or null

@@ -4,6 +4,7 @@ import { useWorldStore } from '../../stores/world';
 import { useChatStore } from '../../stores/chat';
 import { useNpcModal } from '../../composables/useNpcModal';
 import PresentChip from './PresentChip.vue';
+import { joinNames } from '../../utils/format';
 
 // The old ChatHeader.vue "Details" content, minus the time widget (moved
 // to the Phone panel) and the expand/collapse mechanic (the Map/Current
@@ -18,8 +19,8 @@ const presentIds = computed(() => (place.value ? world.charsInPlace(place.value.
 const typeLabel = computed(() => {
   if (!place.value) return '';
   if (place.value.type !== 'private') return 'Communal space';
-  const owner = place.value.ownerId && world.charactersById[place.value.ownerId];
-  return `Private place${owner ? ' — ' + owner.name : ''}`;
+  const owners = (place.value.ownerIds || []).map((id) => world.charName(id)).filter(Boolean);
+  return `Private place${owners.length ? ' — ' + joinNames(owners) : ''}`;
 });
 const absentCharacters = computed(() => world.charactersList.filter((c) => !presentIds.value.includes(c.id)));
 

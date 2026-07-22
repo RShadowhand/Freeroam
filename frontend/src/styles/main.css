@@ -1003,6 +1003,7 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
    levels down), forcing it to refuse to shrink/wrap in its own flex
    container and overflow the page on narrow screens. */
 .endpoint-row > label{ margin:0; flex-shrink:0; }
+.checkbox-list{ display:flex; flex-direction:column; gap:6px; max-height:160px; overflow-y:auto; }
 .checkbox-field{ display:flex; align-items:center; gap:8px; }
 .checkbox-field input[type=checkbox]{ width:auto; }
 .checkbox-field label{ margin:0; text-transform:none; letter-spacing:0; font-size:0.82rem; color:var(--parchment); font-family:'Work Sans',sans-serif; }

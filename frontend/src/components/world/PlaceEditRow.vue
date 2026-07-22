@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import { useWorldStore } from '../../stores/world';
 import { updatePlace, deletePlace } from '../../api/places';
+import { joinNames } from '../../utils/format';
 
 const props = defineProps({ place: { type: Object, required: true }, editing: { type: Boolean, default: false } });
 const emit = defineEmits(['edit', 'cancel']);
@@ -11,7 +12,7 @@ const name = ref(props.place.name);
 const area = ref(props.place.area || '');
 const desc = ref(props.place.desc || '');
 const type = ref(props.place.type);
-const ownerId = ref(props.place.ownerId || '');
+const ownerIds = ref([...(props.place.ownerIds || [])]);
 const status = ref('');
 
 function startEdit() {
@@ -19,7 +20,7 @@ function startEdit() {
   area.value = props.place.area || '';
   desc.value = props.place.desc || '';
   type.value = props.place.type;
-  ownerId.value = props.place.ownerId || '';
+  ownerIds.value = [...(props.place.ownerIds || [])];
   status.value = '';
   emit('edit');
 }
@@ -27,13 +28,17 @@ function startEdit() {
 async function save() {
   const body = {
     name: name.value.trim(), area: area.value.trim(), desc: desc.value.trim(),
-    type: type.value, ownerId: ownerId.value || null,
+    type: type.value, ownerIds: ownerIds.value,
   };
   const { ok, data } = await updatePlace(props.place.id, body);
   if (!ok) { status.value = data.error || 'Could not save changes.'; return; }
   const idx = world.places.findIndex((p) => p.id === props.place.id);
   world.places[idx] = data.place;
   emit('cancel');
+}
+
+function ownerNames(place) {
+  return place.ownerIds.map((id) => world.charName(id)).filter(Boolean);
 }
 
 async function remove() {
@@ -66,12 +71,14 @@ async function remove() {
             <option value="private">Private</option>
           </select>
         </div>
-        <div v-if="type === 'private'">
-          <label>Resident</label>
-          <select v-model="ownerId">
-            <option value="">— unassigned —</option>
-            <option v-for="c in world.charactersList" :key="c.id" :value="c.id">{{ c.name }}</option>
-          </select>
+        <div class="span2" v-if="type === 'private'">
+          <label>Residents</label>
+          <div class="checkbox-list">
+            <div class="checkbox-field" v-for="c in world.charactersList" :key="c.id">
+              <input type="checkbox" :id="`edit-place-owner-${place.id}-${c.id}`" :value="c.id" v-model="ownerIds">
+              <label :for="`edit-place-owner-${place.id}-${c.id}`">{{ c.name }}</label>
+            </div>
+          </div>
         </div>
       </div>
       <div class="form-actions">
@@ -85,7 +92,7 @@ async function remove() {
         <div class="row-title">
           {{ place.name }}
           <span class="type-badge private" v-if="place.type === 'private'">
-            private<template v-if="place.ownerId"> · {{ world.charName(place.ownerId) || '?' }}</template>
+            private<template v-if="ownerNames(place).length"> · {{ joinNames(ownerNames(place)) }}</template>
           </span>
           <span class="type-badge" v-else>communal</span>
         </div>

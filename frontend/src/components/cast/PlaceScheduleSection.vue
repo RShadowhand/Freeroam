@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { useWorldStore } from '../../stores/world';
 import { placeCharacter, saveScheduleSlot as apiSaveScheduleSlot } from '../../api/characters';
-import { groupedByArea, castPreview } from '../../utils/format';
+import { groupedByArea, castPreview, joinNames } from '../../utils/format';
 import { TIMES_OF_DAY, WEEKDAYS, weekdayFor } from '../../utils/time';
 import ScheduleTable from './ScheduleTable.vue';
 
@@ -19,6 +19,12 @@ const character = computed(() => world.charactersById[props.characterId] || null
 const placement = computed(() => world.placements[props.characterId] || null);
 const placeGroups = computed(() => groupedByArea(world.places));
 const greetings = computed(() => character.value?.greetings || []);
+
+function placeTypeLabel(p) {
+  if (p.type !== 'private') return 'communal';
+  const owners = (p.ownerIds || []).map((id) => world.charName(id)).filter(Boolean);
+  return `private${owners.length ? ' · ' + joinNames(owners) : ''}`;
+}
 
 const placeId = ref('');
 const greetingIndex = ref('');
@@ -120,7 +126,7 @@ async function copyFrom() {
           <option value="">— not placed —</option>
           <optgroup v-for="(list, area) in placeGroups" :key="area" :label="area">
             <option v-for="p in list" :key="p.id" :value="p.id">
-              {{ p.name }} ({{ p.type === 'private' ? `private${p.ownerId ? ' · ' + (world.charName(p.ownerId) || '') : ''}` : 'communal' }})
+              {{ p.name }} ({{ placeTypeLabel(p) }})
             </option>
           </optgroup>
         </select>

@@ -4,6 +4,7 @@
 // text, with no say in what goes into the request. Kept pure/DOM-free (no
 // fetch/express here) so it stays directly unit-testable.
 import { DEFAULT_CONTEXT_LENGTH, DEFAULT_MAX_REPLY_TOKENS } from './presets.js';
+import { joinNames } from './textUtils.js';
 
 export { DEFAULT_CONTEXT_LENGTH, DEFAULT_MAX_REPLY_TOKENS };
 
@@ -336,7 +337,7 @@ export function scheduledPlaceFor(character, day, timeOfDay, placesById) {
 // scene = {
 //   chars: [{ name, description, personality, scenario, exampleDialogue }], // the character(s) whose turn is being generated
 //   othersPresent: string[],                           // names of other characters in the room (context only)
-//   place: { name, area, desc, type, ownerName, weather }, // ownerName/weather resolved by the caller, or null
+//   place: { name, area, desc, type, ownerNames, weather }, // ownerNames/weather resolved by the caller; ownerNames is [] if none
 //   persona: { name, description } | null,             // active user persona, or null
 //   memories: string[],                                // relevant memory snippets, already retrieved by the caller
 //   time: { day, timeOfDay } | null,                   // in-world clock (user-advanced, never automatic)
@@ -492,7 +493,7 @@ export function defaultSystemPrompt(scene) {
   const settingBlock = worldSetting && worldSetting.trim() ? `\n\n${worldSetting.trim()}` : '';
 
   const locationLine = place.type === 'private'
-    ? `This is ${place.ownerName ? place.ownerName + "'s" : 'a resident\'s'} private place — treat ${visitorLabel} as a guest here, not someone who belongs by default.`
+    ? `This is ${place.ownerNames?.length ? joinNames(place.ownerNames) + "'s" : 'a resident\'s'} private place — treat ${visitorLabel} as a guest here, not someone who belongs by default.`
     : `This is a communal space, open to anyone.`;
 
   const sceneBlock = `\n\n${scenarioBlock(place, othersPresent, time)}\n${locationLine}`;

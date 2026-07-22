@@ -8,7 +8,7 @@ const name = ref('');
 const area = ref('');
 const desc = ref('');
 const type = ref('communal');
-const ownerId = ref('');
+const ownerIds = ref([]);
 const status = ref('');
 
 async function submit() {
@@ -19,7 +19,7 @@ async function submit() {
     area: area.value.trim(),
     desc: desc.value.trim(),
     type: type.value,
-    ownerId: ownerId.value || null,
+    ownerIds: ownerIds.value,
   };
   const { ok, data } = await addPlace(body);
   if (!ok) { status.value = data.error || 'Could not add place.'; return; }
@@ -28,7 +28,7 @@ async function submit() {
   area.value = '';
   desc.value = '';
   type.value = 'communal';
-  ownerId.value = '';
+  ownerIds.value = [];
 }
 </script>
 
@@ -55,12 +55,14 @@ async function submit() {
           <option value="private">Private — belongs to a resident</option>
         </select>
       </div>
-      <div v-if="type === 'private'">
-        <label>Resident</label>
-        <select v-model="ownerId">
-          <option value="">— unassigned —</option>
-          <option v-for="c in world.charactersList" :key="c.id" :value="c.id">{{ c.name }}</option>
-        </select>
+      <div class="span2" v-if="type === 'private'">
+        <label>Residents</label>
+        <div class="checkbox-list">
+          <div class="checkbox-field" v-for="c in world.charactersList" :key="c.id">
+            <input type="checkbox" :id="`new-place-owner-${c.id}`" :value="c.id" v-model="ownerIds">
+            <label :for="`new-place-owner-${c.id}`">{{ c.name }}</label>
+          </div>
+        </div>
       </div>
     </div>
     <div class="form-actions">

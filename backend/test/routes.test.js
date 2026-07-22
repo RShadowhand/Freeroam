@@ -517,6 +517,68 @@ describe('POST /api/presets/import + /api/presets/export', () => {
   });
 });
 
+describe('Places: multi-owner (ownerIds)', () => {
+  async function makeCharacter(name) {
+    const res = await postJson('/api/characters', { name, description: 'A test character.' });
+    return (await res.json()).character;
+  }
+
+  test('POST /api/places accepts multiple ownerIds, deduped, only when private', async () => {
+    const a = await makeCharacter('Owner A ' + Math.random());
+    const b = await makeCharacter('Owner B ' + Math.random());
+    const res = await postJson('/api/places', {
+      name: 'Shared House ' + Math.random(), type: 'private', ownerIds: [a.id, b.id, a.id],
+    });
+    assert.equal(res.status, 201);
+    const { place } = await res.json();
+    assert.deepEqual(place.ownerIds, [a.id, b.id]);
+  });
+
+  test('POST /api/places rejects an unknown owner id', async () => {
+    const res = await postJson('/api/places', {
+      name: 'Bad Owner House ' + Math.random(), type: 'private', ownerIds: ['not-a-real-character'],
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('POST /api/places drops ownerIds for a communal place', async () => {
+    const a = await makeCharacter('Owner C ' + Math.random());
+    const res = await postJson('/api/places', {
+      name: 'Communal Hall ' + Math.random(), type: 'communal', ownerIds: [a.id],
+    });
+    const { place } = await res.json();
+    assert.deepEqual(place.ownerIds, []);
+  });
+
+  test('PUT /api/places/:id replaces the whole ownerIds array', async () => {
+    const a = await makeCharacter('Owner D ' + Math.random());
+    const b = await makeCharacter('Owner E ' + Math.random());
+    const created = await (await postJson('/api/places', {
+      name: 'Edit House ' + Math.random(), type: 'private', ownerIds: [a.id],
+    })).json();
+
+    const put = await fetch(`${baseUrl}/api/places/${created.place.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ownerIds: [b.id] }),
+    });
+    assert.equal(put.status, 200);
+    assert.deepEqual((await put.json()).place.ownerIds, [b.id]);
+  });
+
+  test('deleting a character removes just that owner from a multi-owner place, keeping the rest', async () => {
+    const a = await makeCharacter('Owner F ' + Math.random());
+    const b = await makeCharacter('Owner G ' + Math.random());
+    const created = await (await postJson('/api/places', {
+      name: 'Twin Owned House ' + Math.random(), type: 'private', ownerIds: [a.id, b.id],
+    })).json();
+
+    await fetch(`${baseUrl}/api/characters/${a.id}`, { method: 'DELETE' });
+
+    const { places } = await (await fetch(`${baseUrl}/api/places`)).json();
+    const place = places.find((p) => p.id === created.place.id);
+    assert.deepEqual(place.ownerIds, [b.id]);
+  });
+});
+
 describe('Persisted chat: /api/places/:placeId/enter, /say, GET /chat', () => {
   async function makePlace(name) {
     const res = await postJson('/api/places', { name, type: 'communal' });
