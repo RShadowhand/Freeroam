@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createWorldRegistry } from '../lib/worldRegistry.js';
+import { encodeEmbedding, upsertMemoryVectors } from '../lib/db.js';
+import { deleteAllCharacterMemories } from '../lib/memoryStore.js';
 import { logger } from '../lib/log.js';
 
 logger.setLevel('error'); // keep test output clean
@@ -148,6 +150,55 @@ describe('createWorldRegistry — create()', () => {
     const chars = JSON.parse(fs.readFileSync(cloneWorld.paths.characters, 'utf-8'));
     assert.equal(chars[0].avatarUrl, `/avatars/${clone.id}/a.png`); // rewritten to the NEW world's id
     assert.equal(fs.existsSync(path.join(cloneWorld.avatarDir, 'a.png')), true);
+
+    registry.closeAll();
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  });
+
+  test('mode "clone" with includeHistory:false also wipes memory_vectors AND its sqlite-vec shadow tables', async () => {
+    const rootDir = tempRoot();
+    const registry = createWorldRegistry({ rootDir });
+    await registry.init();
+
+    const src = await registry.create({ name: 'Source', mode: 'empty' });
+    const srcWorld = registry.get(src.id);
+
+    const memoryId = 'mem-1';
+    const embedding = encodeEmbedding([0.1, 0.2, 0.3, 0.4]);
+    srcWorld.db.prepare(`
+      INSERT INTO memories (id, persona_key, text, embedding, place_id, day, time_of_day, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(memoryId, 'p1', 'Something happened.', embedding, null, 1, 'noon', new Date().toISOString());
+    srcWorld.db.prepare('INSERT INTO memory_participants (memory_id, character_id) VALUES (?, ?)').run(memoryId, 'a');
+    srcWorld.db.prepare('INSERT INTO memory_entries (memory_id, entry_id) VALUES (?, ?)').run(memoryId, 'entry-1');
+    upsertMemoryVectors(srcWorld.db, memoryId, ['a'], [embedding]);
+    assert.equal(srcWorld.db.prepare('SELECT COUNT(*) AS n FROM memory_vectors').get().n, 1);
+    // vec0 backs its virtual table with several shadow tables (info/chunks/
+    // rowids/vector_chunks*/auxiliary) that a plain DELETE never touches —
+    // the source should have them so the clone's absence check means something.
+    const srcShadowTables = srcWorld.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'memory_vectors%'").all();
+    assert.ok(srcShadowTables.length > 1, 'expected shadow tables alongside memory_vectors itself');
+
+    const clone = await registry.create({
+      name: 'Clone No History', mode: 'clone', cloneFromId: src.id, includeHistory: false,
+    });
+    const cloneWorld = registry.get(clone.id);
+
+    assert.equal(cloneWorld.db.prepare('SELECT COUNT(*) AS n FROM memories').get().n, 0);
+    assert.equal(cloneWorld.db.prepare('SELECT COUNT(*) AS n FROM memory_participants').get().n, 0);
+    assert.equal(cloneWorld.db.prepare('SELECT COUNT(*) AS n FROM memory_entries').get().n, 0);
+    // memory_vectors and every one of its shadow tables should be gone
+    // entirely (dropped, not just emptied) — a lingering shadow table is
+    // exactly what a plain DELETE FROM memory_vectors leaves behind.
+    const cloneShadowTables = cloneWorld.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'memory_vectors%'").all();
+    assert.deepEqual(cloneShadowTables, []);
+
+    // Dropping the table (rather than emptying it) means it doesn't exist at
+    // all until the next write — deleting a character's memories in this
+    // freshly-cloned world (a real flow: e.g. deleting a character before
+    // any new conversation happens) must tolerate that, not crash assuming
+    // memory_vectors is present-but-empty like the old DELETE-based wipe left it.
+    assert.doesNotThrow(() => deleteAllCharacterMemories(cloneWorld.db, 'a'));
 
     registry.closeAll();
     fs.rmSync(rootDir, { recursive: true, force: true });

@@ -214,8 +214,23 @@ export function createWorldRegistry({ rootDir }) {
       // Wipe conversation history but keep relationships (curated world
       // data) and character_embeddings (derived from descriptions, not
       // from what happened — both belong to "the world," not "the story").
+      // memory_vectors (the sqlite-vec index over memories, keyed by
+      // memory_id — see db.js) isn't a real foreign key relationship, so it
+      // doesn't cascade with the deletes above and needs clearing here too,
+      // or the clone ends up with vector rows pointing at memories that no
+      // longer exist. A plain DELETE only clears the logical rows, though —
+      // vec0's actual storage lives in shadow tables (memory_vectors_info/
+      // _chunks/_rowids/_vector_chunks00/_auxiliary) that DELETE doesn't
+      // touch, so DROP the virtual table instead — same as the dimension-
+      // change path in ensureMemoryVectorsTable (db.js) — which tears down
+      // every shadow table atomically. It's created lazily on first write,
+      // so guard for it not existing yet in a world that never recorded a
+      // memory; the next write recreates it fresh.
       const destDb = openDb(destDbPath);
       destDb.exec('DELETE FROM memory_participants; DELETE FROM memory_entries; DELETE FROM memories;');
+      if (destDb.prepare("SELECT name FROM sqlite_master WHERE name = 'memory_vectors'").get()) {
+        destDb.exec('DROP TABLE memory_vectors;');
+      }
       destDb.close();
     }
 

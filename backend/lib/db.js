@@ -222,15 +222,24 @@ export function upsertMemoryVectors(db, memoryId, characterIds, embeddingBuffers
   });
 }
 
+// Guarded like queryMemoryVectorIndex below — a db that's never recorded a
+// memory (a brand-new world, or a "no history" clone now that cloning DROPs
+// rather than empties the table — see worldRegistry.js) has no
+// memory_vectors table at all yet, and these are called unconditionally by
+// memoryStore.js's delete paths (e.g. deleting a character) regardless of
+// whether that character ever had a memory.
 export function removeMemoryVectorParticipant(db, memoryId, characterId) {
+  if (memoryVectorsDim(db) === null) return;
   db.prepare('DELETE FROM memory_vectors WHERE memory_id = ? AND character_id = ?').run(memoryId, characterId);
 }
 
 export function deleteMemoryVectors(db, memoryId) {
+  if (memoryVectorsDim(db) === null) return;
   db.prepare('DELETE FROM memory_vectors WHERE memory_id = ?').run(memoryId);
 }
 
 export function deleteMemoryVectorsForCharacter(db, characterId) {
+  if (memoryVectorsDim(db) === null) return;
   db.prepare('DELETE FROM memory_vectors WHERE character_id = ?').run(characterId);
 }
 
