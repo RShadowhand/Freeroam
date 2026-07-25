@@ -1,5 +1,8 @@
 <script setup>
 import { computed, ref } from 'vue';
+import { useOnboardingModal } from '../../composables/useOnboardingModal';
+
+const onboarding = useOnboardingModal();
 
 // FAQ/manual content — static authored copy, same "data array + card
 // rendering" pattern VariablesGuide.vue uses, not fetched or user-editable.
@@ -304,7 +307,10 @@ const filteredCategories = computed(() => {
   <div class="manual-guide">
     <div class="settings-card">
       <h2>FAQ / Manual</h2>
-      <p class="hint">Answers to common questions about how Freeroam works — search below, or browse by topic.</p>
+      <p class="hint">
+        Answers to common questions about how Freeroam works — search below, or browse by topic.
+        New here? <a href="#" @click.prevent="onboarding.open()">Replay the onboarding tour</a>.
+      </p>
       <input type="text" v-model="query" placeholder="Search the manual (e.g. memory, private place, PNG card)...">
     </div>
 

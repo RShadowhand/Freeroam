@@ -195,7 +195,7 @@ async function remove() {
         <button class="btn secondary" @click="characterModal.close()">Cancel</button>
         <button class="btn secondary" v-if="character" @click="exportJson">Export</button>
         <button class="btn secondary" v-if="character" @click="exportPng">Export as PNG</button>
-        <button class="btn danger" v-if="character && character.source !== 'builtin'" @click="remove">Remove character</button>
+        <button class="btn danger" v-if="character" @click="remove">Remove character</button>
         <span class="form-status">{{ status }}</span>
       </div>
     </div>

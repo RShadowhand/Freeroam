@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router';
 import MainNav from './components/layout/MainNav.vue';
 import SubNav from './components/layout/SubNav.vue';
 import ErrorBanner from './components/layout/ErrorBanner.vue';
+import OnboardingModal from './components/onboarding/OnboardingModal.vue';
 
 const route = useRoute();
 
@@ -20,5 +21,6 @@ const isFreeroam = computed(() => route.path === '/');
     <SubNav />
     <ErrorBanner />
     <router-view />
+    <OnboardingModal />
   </div>
 </template>

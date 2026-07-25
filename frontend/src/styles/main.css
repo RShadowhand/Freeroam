@@ -619,6 +619,32 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
    its Details tab's textareas (see .modal-tab-pane above) get real room,
    especially on desktop. */
 .modal.wide{ max-width:900px; }
+
+/* OnboardingModal.vue — reuses .modal-overlay/.modal-head-row/.modal-close/
+   .modal-tab-foot (see above) for the shell/header/footer, but is its own
+   narrower width (a linear step-by-step wizard reads better narrow than the
+   .wide character-edit modal) and needs its own step-dots + choice-card styles. */
+.modal.onboarding-modal{ max-width:640px; }
+.onboarding-dots{ display:flex; justify-content:center; gap:8px; margin:4px 0 16px; }
+.onboarding-dot{ width:8px; height:8px; border-radius:50%; background:var(--border); }
+.onboarding-dot.active{ background:var(--accent); }
+.onboarding-dot.done{ background:var(--dim); }
+.onboarding-step-body{ display:flex; flex-direction:column; gap:14px; min-height:120px; }
+.onboarding-choice-cards{ display:flex; gap:12px; flex-wrap:wrap; }
+.onboarding-choice-card{
+  flex:1; min-width:220px; text-align:left; display:flex; flex-direction:column; gap:6px;
+  background:var(--panel-raised); border:1px solid var(--border); border-radius:10px;
+  padding:14px 16px; cursor:pointer; color:inherit; font-family:inherit;
+}
+.onboarding-choice-card strong{ font-family:'Cormorant Garamond',serif; font-size:1.1rem; font-weight:600; }
+.onboarding-choice-card span{ color:var(--dim); font-size:0.82rem; line-height:1.4; }
+.onboarding-choice-card:hover{ border-color:var(--accent); }
+.onboarding-choice-card.selected{ border-color:var(--accent); background:rgba(var(--accent-rgb),0.08); }
+.onboarding-choice-card:disabled{ opacity:0.6; cursor:default; }
+/* Skip intro is the last button whenever it's present (Back/Next come
+   first) — pushing just it to the far right keeps Back/Next grouped
+   together on the left instead of spreading every button out evenly. */
+.onboarding-foot .btn:last-child{ margin-left:auto; }
 .memory-row{
   border:1px solid var(--border); border-radius:8px; padding:10px 12px;
   margin-bottom:8px; display:flex; flex-direction:column; gap:6px;
