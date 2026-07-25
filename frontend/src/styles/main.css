@@ -919,6 +919,30 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 }
 .settings-card input{ margin-bottom:10px; }
 
+/* ManualGuide.vue (Settings > Guides > FAQ/Manual) — .anchor-section itself
+   has no flex/gap (see above, VariablesGuide's two cards touch edge-to-edge
+   by design), so this component wraps its own cards in .manual-guide for
+   spacing rather than relying on the parent shell. */
+.manual-guide{ display:flex; flex-direction:column; gap:var(--space-4); }
+.manual-category h3{
+  font-family:'Cormorant Garamond',serif;
+  font-weight:600;
+  font-size:1.1rem;
+  margin:0 0 10px;
+}
+.manual-entry{ border-top:1px solid var(--border-soft); padding:10px 0; }
+.manual-entry:first-of-type{ border-top:none; padding-top:0; }
+.manual-entry summary{
+  cursor:pointer;
+  font-weight:500;
+  color:var(--parchment);
+  list-style:none;
+}
+.manual-entry summary::-webkit-details-marker{ display:none; }
+.manual-entry summary::before{ content:'▸ '; color:var(--accent); }
+.manual-entry[open] summary::before{ content:'▾ '; }
+.manual-entry p{ color:var(--dim); font-size:0.88rem; line-height:1.5; margin:8px 0 0; }
+
 .world-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:14px; }
 .world-card{
   background:var(--panel); border:1px solid var(--border); border-radius:10px;

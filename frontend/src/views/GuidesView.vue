@@ -1,6 +1,7 @@
 <script setup>
 import { useSectionNav } from '../composables/useSectionNav';
 import VariablesGuide from '../components/guides/VariablesGuide.vue';
+import ManualGuide from '../components/guides/ManualGuide.vue';
 
 // Reference/explainer content, as opposed to the rest of Settings which is
 // all configurable state — kept in its own place so "how does X work"
@@ -10,6 +11,7 @@ import VariablesGuide from '../components/guides/VariablesGuide.vue';
 // clicked). Same sidebar-shell pattern as System — built to grow as more
 // guide topics get added, not just hold this one.
 const sections = [
+  { id: 'manual', label: 'FAQ / Manual' },
   { id: 'variables', label: 'Variables' },
 ];
 const { activeId, scrollToSection } = useSectionNav(sections);
@@ -25,6 +27,7 @@ const { activeId, scrollToSection } = useSectionNav(sections);
         >{{ s.label }}</a>
       </nav>
       <div class="page-shell-content">
+        <div id="manual" class="anchor-section"><ManualGuide /></div>
         <div id="variables" class="anchor-section"><VariablesGuide /></div>
       </div>
     </div>
