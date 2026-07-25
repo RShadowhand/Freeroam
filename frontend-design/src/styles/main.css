@@ -1,0 +1,1484 @@
+/* ---- Brand (standalone sidebar header — see MapPanel.vue; the nav bar
+   below carries its own compact wordmark everywhere else, so this isn't
+   duplicated across every other page) ---- */
+.brand{ text-align:center; margin-bottom:8px; flex-shrink:0; }
+.brand .brand-name{
+  font-family:'Cormorant Garamond',serif; font-weight:700; font-size:1.4rem;
+  background:linear-gradient(180deg,#F4EEDF,var(--accent));
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+.brand .brand-tag{
+  display:block; font-family:'IBM Plex Mono',monospace; font-size:0.6rem;
+  letter-spacing:0.1em; text-transform:uppercase; color:var(--dim); margin-top:2px;
+}
+
+/* ---- Nav tabs ----
+   wordmark | tabs (flex:1) | world-chip, so the chip is pinned to the end
+   by its own flex position instead of a margin-left:auto fighting a
+   wrapping row — that combination used to strand the chip on its own
+   orphaned line on narrow screens once the tabs wrapped. */
+.main-nav{
+  display:flex;
+  align-items:center;
+  gap:var(--space-4);
+  padding:var(--space-3) 0;
+  margin:0 0 var(--space-5);
+  border-bottom:1px solid var(--border-subtle);
+}
+.nav-wordmark{
+  font-family:'Cormorant Garamond',serif; font-weight:700; font-size:1.15rem;
+  text-decoration:none; flex-shrink:0;
+  background:linear-gradient(180deg,#F4EEDF,var(--accent));
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+.nav-tabs{ display:flex; gap:8px; flex:1; min-width:0; }
+.nav-tab{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:0.72rem;
+  letter-spacing:0.06em;
+  text-transform:uppercase;
+  color:var(--dim);
+  text-decoration:none;
+  border:1px solid var(--border);
+  border-radius:var(--radius-pill);
+  padding:6px 14px;
+  transition:border-color .2s ease, color .2s ease, background .2s ease;
+}
+.nav-tab:hover{ border-color:var(--accent); color:var(--accent); }
+.nav-tab.active{ border-color:var(--accent); color:var(--accent); background:rgba(var(--accent-rgb),0.08); }
+.world-chip{ flex-shrink:0; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+.sub-nav{
+  display:flex; justify-content:center; gap:6px;
+  margin:0 0 12px; flex-wrap:wrap;
+}
+.sub-tab{
+  font-family:'IBM Plex Mono',monospace; font-size:0.66rem; letter-spacing:0.05em;
+  text-transform:uppercase; color:var(--dim); text-decoration:none;
+  border:1px solid var(--border); border-radius:16px; padding:4px 12px;
+  transition:border-color .2s ease, color .2s ease;
+}
+.sub-tab:hover{ border-color:var(--violet); color:var(--violet); }
+.sub-tab.active{ border-color:var(--violet); color:var(--violet); background:rgba(124,106,156,0.12); }
+
+.view{ width:100%; }
+/* Freeroam's own two-pane .layout already manages its width. Prompts is a
+   vertical stack of prose/code rows — capped so a line of text doesn't
+   stretch edge-to-edge on a wide monitor, well past a comfortable reading
+   measure (Guides gets its own, shell-based cap — see the Settings
+   section below). Grid-based views (Places, Cast, Persona, Settings,
+   Worlds) intentionally have no cap here — their own grid/shell layout is
+   what uses the extra width usefully. */
+#view-prompts{ max-width:900px; margin:0 auto; }
+.var-table{ display:flex; flex-direction:column; gap:10px; }
+.var-row{ border:1px solid var(--border); border-radius:8px; padding:10px 12px; }
+.var-row code{ font-family:'IBM Plex Mono',monospace; color:var(--accent); font-size:0.85rem; }
+.var-row .var-desc{ color:var(--dim); font-size:0.8rem; margin:4px 0; line-height:1.4; }
+.var-row .var-example{ font-size:0.78rem; color:var(--dim); }
+.var-row .var-example b{ color:var(--fg); font-weight:normal; }
+.schedule-table{ width:100%; border-collapse:collapse; margin-top:14px; font-size:0.82rem; }
+.schedule-table th, .schedule-table td{ border:1px solid var(--border); text-align:center; padding:8px 5px; }
+.schedule-table th{ color:var(--dim); font-weight:normal; font-size:0.72rem; }
+.schedule-table th .tod-full{ text-transform:capitalize; }
+.schedule-table th .tod-icon-header{ display:none; }
+.tod-icon{ display:block; }
+.tod-arc{ fill:none; stroke:var(--border); stroke-width:1.3; }
+.tod-horizon{ stroke:var(--border); stroke-width:1.3; }
+.tod-sun{ fill:var(--accent); }
+.tod-moon, .tod-star{ fill:var(--dim); }
+.schedule-table td{ cursor:pointer; color:var(--dim); }
+.schedule-table td.set{ color:var(--accent); font-weight:600; background:rgba(var(--accent-rgb),0.08); }
+.schedule-table td:hover{ border-color:var(--accent); }
+.schedule-copy-row{ margin-top:14px; align-items:center; }
+.schedule-copy-row select{ width:auto; }
+/* ---- Place & Schedule tab (CharacterModal) ---- */
+.section-divider{ margin:20px 0 4px; padding-top:16px; border-top:1px solid var(--border-soft); }
+.section-divider h3{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.05rem; margin:0 0 4px; }
+.section-divider .hint{ margin-bottom:0; }
+.schedule-editor .form-grid{ grid-template-columns:1fr 1fr 1fr; }
+.schedule-reason-row{ margin-top:10px; }
+@media (max-width:720px){ .schedule-editor .form-grid{ grid-template-columns:1fr 1fr; } }
+@media (max-width:560px){ .schedule-editor .form-grid{ grid-template-columns:1fr; } }
+.hint{ color:var(--dim); font-size:0.8rem; margin:0 0 14px; line-height:1.5; }
+.hint a{ color:var(--accent); }
+.hint-inline{ color:var(--dim); font-weight:normal; font-size:0.85em; }
+
+.toolbar-actions{ display:flex; gap:8px; flex-wrap:wrap; }
+
+/* ---- shared form controls ---- */
+label{
+  display:block;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:0.64rem;
+  letter-spacing:0.07em;
+  text-transform:uppercase;
+  color:var(--dim);
+  margin-bottom:5px;
+}
+input[type=text], input[type=password], textarea, select{
+  width:100%;
+  background:var(--panel-raised);
+  border:1px solid var(--border);
+  border-radius:8px;
+  color:var(--parchment);
+  padding:9px 11px;
+  font-family:'Work Sans',sans-serif;
+  font-size:0.86rem;
+}
+textarea{ resize:vertical; min-height:52px; }
+/* Persona description (add + edit) — same "actual paragraph of text"
+   case as .memory-textarea above; the bare 52px default left it too
+   short to read more than a line or two at a time. */
+.persona-edit-text{ min-height:120px; font-size:0.9rem; line-height:1.45; }
+input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outline-offset:1px; }
+
+/* ---- ExpandableTextarea (SillyTavern's "editor_maximize" pattern) ----
+   A small expand button sits in the textarea's own corner rather than
+   needing a label row to anchor to, since not every field that wants
+   one (e.g. an existing memory's inline edit box) has a visible label. */
+.expandable-textarea{ position:relative; }
+.expandable-textarea textarea{ padding-right:34px; }
+.expand-toggle{
+  position:absolute; top:6px; right:6px;
+  background:var(--panel); border:1px solid var(--border); color:var(--dim); cursor:pointer;
+  width:24px; height:24px; border-radius:6px; font-size:0.85rem; line-height:1;
+  transition:border-color .15s ease, color .15s ease;
+}
+.expand-toggle:hover{ border-color:var(--accent); color:var(--accent); }
+.modal.editor-modal{ height:78vh; max-height:78vh; }
+.editor-modal-textarea{
+  flex:1; width:100%; resize:none; font-size:0.95rem; line-height:1.5;
+}
+
+.btn{
+  background:var(--accent);
+  color:var(--accent-text);
+  border:none;
+  border-radius:8px;
+  padding:10px 18px;
+  font-weight:600;
+  font-size:0.86rem;
+  cursor:pointer;
+  white-space:nowrap;
+  transition:filter .15s ease;
+}
+.btn:hover:not(:disabled){ filter:brightness(1.08); }
+.btn:disabled{ opacity:0.4; cursor:not-allowed; }
+.btn.secondary{
+  background:transparent;
+  border:1px solid var(--border);
+  color:var(--parchment);
+}
+.btn.secondary:hover{ border-color:var(--accent); color:var(--accent); }
+.btn.small{ padding:6px 12px; font-size:0.78rem; }
+.btn.danger{ background:transparent; border:1px solid var(--rose); color:var(--rose); }
+.btn.danger:hover:not(:disabled){ background:rgba(181,86,107,0.14); }
+
+.toolbar{ display:flex; justify-content:space-between; align-items:center; gap:10px 14px; flex-wrap:wrap; margin-bottom:14px; }
+.toolbar h2{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.3rem; margin:0; }
+
+.area-group{ display:flex; flex-direction:column; gap:6px; margin-bottom:18px; }
+.area-label-row{ display:flex; align-items:center; gap:10px; }
+.area-label{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:0.7rem;
+  letter-spacing:0.1em;
+  text-transform:uppercase;
+  color:var(--dim);
+  padding:2px 6px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex:1;
+  min-width:0;
+}
+.area-label::after{ content:''; flex:1; height:1px; background:var(--border); }
+.area-weather{ display:flex; align-items:center; gap:6px; flex-shrink:0; }
+.area-weather .weather-current{ font-size:0.78rem; color:var(--parchment); }
+.area-weather select{ width:auto; font-size:0.72rem; padding:3px 6px; }
+
+.type-badge{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:0.58rem;
+  letter-spacing:0.05em;
+  text-transform:uppercase;
+  padding:1px 7px;
+  border-radius:8px;
+  border:1px solid var(--border);
+  color:var(--dim);
+  flex-shrink:0;
+}
+.type-badge.private{ color:var(--rose); border-color:var(--rose); }
+
+.empty-note{ color:var(--dim); font-size:0.85rem; text-align:center; padding:28px 10px; }
+.empty-note a{ color:var(--accent); }
+
+/* ---- Freeroam view ---- */
+.layout{
+  display:grid;
+  grid-template-columns:300px 1fr 300px;
+  gap:18px;
+  align-items:start;
+}
+@media (max-width:820px){ .layout{grid-template-columns:1fr;} }
+
+/* map-col/phone-col's total height is pinned to match .chat-panel exactly
+   (both use this same block); their own tab content flexes to fill
+   whatever's left after fixed-height siblings (tab row / header) instead
+   of also claiming the full column height itself — otherwise the column
+   runs taller than the viewport and the whole page scrolls, with
+   .chat-panel (which has no such siblings) appearing short by comparison.
+   min-width:0 for the same reason a flex item needs it: a CSS Grid item's
+   default min-width is also `auto` (= its content's natural size), which
+   silently stops a 1fr track (mobile's single-column .layout) from ever
+   actually shrinking the column down to the viewport's real width — this
+   is what let .phone-header's content demand 462px on a 390px screen and
+   push its own time-controls off the right edge entirely. */
+.map-col, .phone-col{
+  display:flex; flex-direction:column; gap:8px; min-width:0;
+  height:calc(100vh - 130px); min-height:520px;
+}
+.quick-add-form{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:12px;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  flex-shrink:0;
+}
+
+.map{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:10px;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+  flex:1;
+  min-height:0;
+  overflow-y:auto;
+}
+
+.place{
+  position:relative;
+  background:var(--panel-raised);
+  border:1px solid var(--border);
+  border-radius:7px;
+  padding:11px 13px;
+  cursor:pointer;
+  text-align:left;
+  color:var(--parchment);
+  display:flex;
+  align-items:center;
+  gap:10px;
+  transition:border-color .2s ease, background .2s ease, transform .15s ease;
+  width:100%;
+  font-family:'Work Sans',sans-serif;
+}
+.place:hover{transform:translateX(2px);border-color:var(--violet);}
+.place .info{flex:1;min-width:0;}
+.place .pname{
+  font-family:'Cormorant Garamond',serif;
+  font-weight:600;
+  font-size:1.05rem;
+  line-height:1.2;
+  display:flex;
+  align-items:center;
+  gap:6px;
+}
+.place .pdesc{
+  font-size:0.72rem;
+  color:var(--dim);
+  margin-top:2px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.place .dots{display:flex;gap:4px;flex-shrink:0;}
+.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+.place.current{
+  border-color:var(--accent);
+  background:linear-gradient(90deg, rgba(var(--accent-rgb),0.14), rgba(var(--accent-rgb),0.03));
+  animation:glow 3.2s ease-in-out infinite;
+}
+@keyframes glow{
+  0%,100%{box-shadow:0 0 0 rgba(var(--accent-rgb),0);}
+  50%{box-shadow:0 0 14px rgba(var(--accent-rgb),0.25);}
+}
+@media (prefers-reduced-motion:reduce){
+  .place.current{animation:none;box-shadow:0 0 10px rgba(var(--accent-rgb),0.2);}
+}
+.legend{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:0.66rem;
+  color:var(--dim);
+  padding:6px 6px 2px;
+  line-height:1.5;
+}
+
+.chat-panel{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:10px;
+  display:flex;
+  flex-direction:column;
+  height:calc(100vh - 130px);
+  min-height:520px;
+}
+/* ---- Map/Current-area tabs (left column) ---- */
+.panel-tabs{ display:flex; gap:0; border-bottom:1px solid var(--border); flex-shrink:0; }
+.panel-tab{
+  flex:1; text-align:center;
+  font-family:'IBM Plex Mono',monospace; font-size:0.72rem; letter-spacing:0.04em;
+  background:none; border:none; color:var(--dim); cursor:pointer;
+  padding:9px 4px; border-bottom:2px solid transparent;
+  transition:color .15s ease, border-color .15s ease;
+}
+.panel-tab:hover{ color:var(--parchment); }
+.panel-tab.active{ color:var(--accent); border-bottom-color:var(--accent); }
+.map-tab-body{ flex:1; min-height:0; display:flex; flex-direction:column; margin-top:8px; }
+.map-tab-content{ flex:1; min-height:0; display:flex; flex-direction:column; gap:8px; }
+
+.current-area{
+  flex:1; min-height:0; overflow-y:auto;
+  background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px;
+}
+.current-area .pname{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.2rem; }
+.current-area .area-context{
+  font-family:'IBM Plex Mono',monospace; font-size:0.68rem; letter-spacing:0.06em;
+  text-transform:uppercase; color:var(--dim); margin-top:4px;
+}
+.current-area .pdesc{ font-size:0.82rem; color:var(--dim); margin-top:6px; line-height:1.4; }
+.current-area .persona-tag{
+  font-family:'IBM Plex Mono',monospace; font-size:0.66rem; letter-spacing:0.05em;
+  color:var(--accent); margin-top:8px;
+}
+.present{ display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+.chip{
+  display:flex; align-items:center; gap:6px;
+  background:var(--panel-raised); border:1px solid var(--border);
+  border-radius:20px; padding:4px 10px 4px 4px; font-size:0.74rem; color:var(--parchment);
+}
+.chip .dot{width:8px;height:8px;}
+.chip .mini-avatar{width:18px;height:18px;border-radius:var(--avatar-radius);object-fit:cover;}
+.chip.empty{color:var(--dim);font-style:italic;border-style:dashed;padding:4px 10px;}
+.chip.inactive{opacity:0.55;}
+.chip-active-toggle{
+  background:none; border:none; color:var(--dim); cursor:pointer;
+  font-size:0.6rem; padding:0 2px; line-height:1;
+}
+.chip-active-toggle.active{ color:var(--accent); }
+.chip-active-toggle:hover{ color:var(--parchment); }
+.chip-send-select{
+  width:auto; padding:0 2px; font-size:0.68rem; border:none; background:none;
+  color:var(--dim); cursor:pointer; max-width:22px;
+}
+.chip-send-select:hover{ color:var(--accent); }
+.chip-remove{
+  background:none; border:none; color:var(--dim); cursor:pointer;
+  font-size:0.66rem; padding:0 2px; line-height:1;
+}
+.chip-remove:hover{ color:var(--rose); }
+.header-actions{ display:flex; gap:8px; margin-top:10px; align-items:center; flex-wrap:wrap; }
+.bring-select{
+  width:auto; background:var(--panel-raised); border:1px solid var(--border);
+  border-radius:8px; color:var(--dim); padding:6px 8px;
+  font-family:'Work Sans',sans-serif; font-size:0.78rem;
+}
+
+.messages{
+  /* min-height:0 — same flex-child-won't-shrink-below-content gap as
+     elsewhere in this file (see the mobile-viewport comment below): a
+     wide, auto-growing edit box is the first message content tall enough
+     to actually expose it, but the fix belongs on .messages itself, not
+     scoped to one breakpoint. */
+  flex:1; min-height:0; overflow-y:auto; padding:16px 18px;
+  display:flex; flex-direction:column; gap:10px;
+}
+.msg{max-width:78%;}
+/* The 78%/88% caps below are sized for reading a normal chat bubble, not
+   for editing one. .editing is a real class toggled from each message
+   component's isEditing computed (not a CSS :has() trick, which some
+   desktop browsers still don't support and would silently no-op on) —
+   this one rule covers desktop and the mobile override at line ~1178
+   without needing to touch the media query separately, since a plain
+   class selector wins over both by specificity regardless of source
+   order or browser.
+   max-width alone raises the ceiling but doesn't reach it: .msg.user/
+   .msg.char/.msg.narrator each set their own align-self (flex-end/
+   flex-start/center), which shrink-to-fit the bubble to its own content
+   width in .messages' cross axis — a textarea's default intrinsic width
+   (~20 columns) is what it shrinks to, regardless of how high max-width
+   allows it to go. align-self:stretch is the piece that actually makes
+   it claim that width; the three-class selectors below (not just
+   .msg.editing) are needed to out-specificity .msg.user/.msg.char/
+   .msg.narrator's own align-self rather than relying on file order. */
+.msg.editing{ max-width:100%; }
+.msg.user.editing, .msg.char.editing, .msg.narrator.editing{ align-self:stretch; }
+.msg.user{align-self:flex-end;}
+.msg.char{ align-self:flex-start; display:flex; align-items:flex-start; gap:9px; }
+.msg-avatar{ flex-shrink:0; margin-top:2px; display:flex; flex-direction:column; align-items:center; gap:2px; }
+.msg-avatar .mini-avatar{ width:38px; height:38px; border-radius:var(--avatar-radius); object-fit:cover; border:1px solid var(--border); }
+/* A native <select> was the original quick-move control here, but on
+   mobile it's both hard to tap accurately (its own closed-state box is
+   tiny) and at the mercy of the OS's own picker UI for how optgroups
+   render — no way to guarantee "Go with, to" actually shows. Replaced
+   with a real, fully-styled popover menu instead (see QuickMoveMenu.vue),
+   so both groups always render exactly as designed and every option is
+   a properly touch-sized button, on every platform. */
+.quick-move-trigger{
+  display:flex; align-items:center; justify-content:center;
+  width:32px; height:32px; padding:0; margin-top:2px;
+  border:none; background:none; color:var(--dim); cursor:pointer;
+  font-size:0.95rem; border-radius:6px;
+}
+.quick-move-trigger:hover, .quick-move-trigger.active{ color:var(--accent); background:var(--panel-raised); }
+.quick-move-menu{
+  position:fixed; z-index:50; display:flex; flex-direction:column; gap:2px;
+  background:var(--panel-raised); border:1px solid var(--border); border-radius:8px;
+  padding:4px; min-width:170px; max-width:240px; max-height:280px; overflow-y:auto;
+  box-shadow:0 6px 20px rgba(0,0,0,0.35);
+}
+.quick-move-group-label{
+  font-family:'IBM Plex Mono',monospace; font-size:0.6rem; letter-spacing:0.05em;
+  text-transform:uppercase; color:var(--dim); padding:6px 8px 2px;
+}
+.quick-move-option{
+  display:block; width:100%; text-align:left; background:none; border:none;
+  color:var(--parchment); font-size:0.8rem; padding:9px 10px; border-radius:5px;
+  cursor:pointer; min-height:36px;
+}
+.quick-move-option:hover, .quick-move-option:active{ background:rgba(var(--accent-rgb),0.14); color:var(--accent); }
+.msg-body{ min-width:0; flex:1; }
+.msg.system{
+  align-self:center; max-width:90%; text-align:center; color:var(--dim);
+  font-family:'IBM Plex Mono',monospace; font-size:0.72rem;
+  letter-spacing:0.04em; text-transform:uppercase; margin:6px 0;
+}
+.msg.error{ align-self:center; color:var(--rose); font-size:0.78rem; text-align:center; }
+.msg.narrator{
+  align-self:center; max-width:92%; position:relative;
+  border-top:1px solid var(--border); border-bottom:1px solid var(--border);
+  padding:9px 4px; margin:4px 0;
+}
+.narrator-text{
+  color:var(--dim); font-style:italic; font-size:0.86rem; line-height:1.55;
+  white-space:pre-wrap; padding-right:44px;
+}
+.msg.narrator .msg-edit-btn, .msg.narrator .msg-delete-btn{ position:absolute; top:6px; right:2px; }
+.msg.narrator .msg-delete-btn{ right:24px; }
+.bubble{ padding:9px 13px; border-radius:12px; font-size:0.92rem; line-height:1.42; white-space:pre-wrap; }
+.bubble em{ color:var(--fmt-italic-color); font-style:italic; }
+.bubble strong{ color:var(--fmt-bold-color); font-weight:600; }
+.bubble .quote{ color:var(--fmt-quote-color); }
+.msg.user .bubble em{ color:#CFC5E2; }
+.msg.user .bubble .quote{ color:#F2D9A6; }
+.msg.user .bubble{ background:var(--violet); color:#F4EEDF; border-bottom-right-radius:3px; }
+.msg.char .bubble{ background:var(--panel-raised); border:1px solid var(--border); border-bottom-left-radius:3px; }
+.speaker{
+  font-family:'IBM Plex Mono',monospace; font-size:0.66rem; letter-spacing:0.06em;
+  text-transform:uppercase; margin-bottom:3px; display:flex; align-items:center; gap:5px;
+}
+.typing{
+  align-self:flex-start; color:var(--dim); font-size:0.78rem; font-style:italic;
+  font-family:'IBM Plex Mono',monospace; padding-left:4px;
+}
+
+.input-row{ display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border); align-items:flex-end; }
+.input-row textarea{
+  flex:1; background:var(--panel-raised); border:1px solid var(--border);
+  border-radius:8px; color:var(--parchment); padding:10px 12px;
+  font-family:'Work Sans',sans-serif; font-size:0.9rem;
+  resize:none; overflow-y:auto; max-height:160px; line-height:1.4;
+}
+.input-row textarea:focus{outline:2px solid var(--accent);outline-offset:1px;}
+.input-row textarea:disabled{opacity:0.5;}
+.input-row button{
+  background:var(--accent); color:var(--accent-text); border:none; border-radius:8px;
+  padding:10px 18px; font-weight:600; font-size:0.88rem; transition:filter .15s ease;
+}
+.input-row button:hover:not(:disabled){filter:brightness(1.08);}
+.input-row button:disabled{opacity:0.4;cursor:not-allowed;}
+.input-row button:focus-visible, .place:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+
+.loading-note{ text-align:center; color:var(--dim); font-family:'IBM Plex Mono',monospace; font-size:0.8rem; padding:40px 0; }
+
+.new-character-btn{ margin-top:10px; }
+
+.msg.char.npc .speaker{ color:var(--rose); }
+.msg.char.npc .bubble{ border-style:dashed; }
+
+/* ---- Calls (Phase 3) — call-tagged messages get a thin accent edge so a
+   call reads as its own thread within the place's continuous log, without
+   a whole second bubble style. ---- */
+.msg.user.call .bubble, .msg.char.call .bubble{ border-left:3px solid var(--accent); }
+.msg.system.call{ color:var(--accent); }
+.msg.narrator.call{ border-color:var(--accent); }
+.call-bar{
+  display:flex; align-items:center; justify-content:space-between; gap:10px; flex-shrink:0;
+  background:rgba(var(--accent-rgb),0.12); border-bottom:1px solid var(--accent);
+  border-radius:10px 10px 0 0; padding:9px 14px;
+  font-family:'IBM Plex Mono',monospace; font-size:0.78rem; color:var(--accent);
+}
+.call-bar-label{ letter-spacing:0.02em; }
+.msg-avatar .npc-dot{
+  display:inline-block; width:38px; height:38px; border-radius:var(--avatar-radius);
+  background:var(--rose); opacity:0.5; flex-shrink:0;
+}
+.npc-tag{
+  font-family:'IBM Plex Mono',monospace; font-size:0.56rem; letter-spacing:0.05em;
+  text-transform:uppercase; color:var(--rose); border:1px solid var(--rose);
+  border-radius:8px; padding:0 5px;
+}
+.save-npc-btn{
+  background:none; border:1px solid var(--border); color:var(--dim);
+  border-radius:10px; font-size:0.62rem; padding:1px 8px; cursor:pointer;
+}
+.save-npc-btn:hover{ border-color:var(--accent); color:var(--accent); }
+
+.regen-btn{
+  background:none; border:none; color:var(--dim); cursor:pointer;
+  font-size:0.8rem; padding:0 3px; line-height:1;
+  opacity:0; transition:opacity .15s ease;
+}
+.msg.char:hover .regen-btn{ opacity:1; }
+.regen-btn:hover{ color:var(--accent); }
+
+/* ---- Save-as-character modal ---- */
+.modal-overlay{
+  position:fixed; inset:0; background:rgba(20,18,26,0.72);
+  display:flex; align-items:center; justify-content:center;
+  z-index:1000; padding:20px;
+}
+.modal{
+  background:var(--panel); border:1px solid var(--border); border-radius:12px;
+  padding:22px 24px; max-width:480px; width:100%; max-height:86vh; overflow-y:auto;
+  display:flex; flex-direction:column; gap:14px;
+}
+.modal h2{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.3rem; margin:0; }
+.char-modal-identity{ display:flex; align-items:center; gap:14px; }
+.char-modal-identity .avatar, .char-modal-identity .avatar-fallback{ width:56px; height:56px; font-size:1.3rem; flex-shrink:0; }
+.char-modal-identity .field-row{ flex:1; }
+
+/* ---- Character edit modal: tabs ----
+   A tabbed modal (not one long scroll) needs the modal itself to stop
+   being the thing that scrolls — only the active tab's body does, while
+   the header/tabs and Save/Cancel/Remove footer stay pinned in view no
+   matter how long a tab's content runs (Memories especially, which can
+   grow to hundreds of entries). */
+.modal.tabbed{
+  max-height:82vh;
+  overflow:hidden;
+  gap:0;
+}
+.modal-head-row{ display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
+.modal-close{
+  background:none; border:none; color:var(--dim); cursor:pointer; font-size:1rem;
+  padding:4px; line-height:1; flex-shrink:0;
+}
+.modal-close:hover{ color:var(--parchment); }
+.modal-tabs{
+  display:flex; gap:0; border-bottom:1px solid var(--border);
+  margin:14px 0 0; flex-shrink:0; min-width:0;
+  overflow-x:auto; -webkit-overflow-scrolling:touch;
+}
+.modal-tab{
+  font-family:'IBM Plex Mono',monospace; font-size:0.74rem; letter-spacing:0.04em;
+  background:none; border:none; color:var(--dim); cursor:pointer;
+  padding:9px 2px 11px; margin-right:22px; border-bottom:2px solid transparent;
+  display:flex; align-items:center; gap:6px; transition:color .15s ease, border-color .15s ease;
+  flex-shrink:0; white-space:nowrap;
+}
+.modal-tab:hover{ color:var(--parchment); }
+.modal-tab.active{ color:var(--accent); border-bottom-color:var(--accent); }
+.modal-tab .count{
+  font-family:'IBM Plex Mono',monospace; font-size:0.62rem; background:var(--panel-raised);
+  border-radius:10px; padding:1px 6px; color:var(--dim);
+}
+.modal-tab-body{
+  flex:1; overflow-y:auto; padding:16px 2px 4px;
+}
+.modal-tab-pane{ display:flex; flex-direction:column; gap:14px; }
+.modal-tab-foot{
+  display:flex; gap:10px; align-items:center; flex-shrink:0;
+  padding-top:14px; margin-top:2px; border-top:1px solid var(--border);
+}
+
+.placement-options{ display:flex; flex-direction:column; gap:7px; margin-top:6px; }
+.placement-options label{
+  display:flex; align-items:center; gap:8px;
+  font-family:'Work Sans',sans-serif; font-size:0.84rem; font-weight:400;
+  text-transform:none; letter-spacing:0; color:var(--parchment);
+}
+.placement-options input[type=radio]{ width:auto; }
+
+/* .modal.wide is the character edit modal specifically — wide enough that
+   its Details tab's textareas (see .modal-tab-pane above) get real room,
+   especially on desktop. */
+.modal.wide{ max-width:900px; }
+
+/* OnboardingModal.vue — reuses .modal-overlay/.modal-head-row/.modal-close/
+   .modal-tab-foot (see above) for the shell/header/footer, but is its own
+   narrower width (a linear step-by-step wizard reads better narrow than the
+   .wide character-edit modal) and needs its own step-dots + choice-card styles. */
+.modal.onboarding-modal{ max-width:640px; }
+.onboarding-dots{ display:flex; justify-content:center; gap:8px; margin:4px 0 16px; }
+.onboarding-dot{ width:8px; height:8px; border-radius:50%; background:var(--border); }
+.onboarding-dot.active{ background:var(--accent); }
+.onboarding-dot.done{ background:var(--dim); }
+.onboarding-step-body{ display:flex; flex-direction:column; gap:14px; min-height:120px; }
+.onboarding-choice-cards{ display:flex; gap:12px; flex-wrap:wrap; }
+.onboarding-choice-card{
+  flex:1; min-width:220px; text-align:left; display:flex; flex-direction:column; gap:6px;
+  background:var(--panel-raised); border:1px solid var(--border); border-radius:10px;
+  padding:14px 16px; cursor:pointer; color:inherit; font-family:inherit;
+}
+.onboarding-choice-card strong{ font-family:'Cormorant Garamond',serif; font-size:1.1rem; font-weight:600; }
+.onboarding-choice-card span{ color:var(--dim); font-size:0.82rem; line-height:1.4; }
+.onboarding-choice-card:hover{ border-color:var(--accent); }
+.onboarding-choice-card.selected{ border-color:var(--accent); background:rgba(var(--accent-rgb),0.08); }
+.onboarding-choice-card:disabled{ opacity:0.6; cursor:default; }
+/* Skip intro is the last button whenever it's present (Back/Next come
+   first) — pushing just it to the far right keeps Back/Next grouped
+   together on the left instead of spreading every button out evenly. */
+.onboarding-foot .btn:last-child{ margin-left:auto; }
+.memory-row{
+  border:1px solid var(--border); border-radius:8px; padding:10px 12px;
+  margin-bottom:8px; display:flex; flex-direction:column; gap:6px;
+}
+.memory-meta{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.memory-meta .badge{
+  border:1px solid var(--border); border-radius:8px; padding:1px 7px;
+}
+.memory-time{
+  font-family:'IBM Plex Mono',monospace; font-size:0.62rem; color:var(--dim); margin-left:auto;
+}
+.memory-text{ font-size:0.86rem; line-height:1.45; white-space:pre-wrap; }
+/* Shared by both the "add a memory" and "edit this memory" textareas —
+   memory text is often a full paragraph, and the old 52-70px min-heights
+   left barely two cramped lines visible at once. */
+.memory-textarea{ min-height:120px; font-size:0.9rem; line-height:1.45; }
+.memory-debug{
+  border:1px dashed var(--border); border-radius:8px; padding:12px 14px;
+  margin:14px 0 18px;
+}
+.memory-debug-title{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:0.95rem; margin:0 0 4px; }
+.badge-recalled{ border-color:var(--accent); color:var(--accent); }
+.badge-dim{ color:var(--dim); }
+.memory-pagination{ display:flex; align-items:center; gap:10px; margin-top:10px; }
+
+/* ---- Places view ---- */
+.places-top-forms{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:var(--space-5);
+  align-items:start;
+  margin-bottom:22px;
+}
+.places-top-forms .form-card{ margin-bottom:0; }
+@media (max-width:900px){ .places-top-forms{ grid-template-columns:1fr; } }
+
+/* Newspaper-style columns, not a grid: area-groups vary a lot in height
+   (one place vs a dozen), and CSS grid would pad every row to its tallest
+   item, leaving large gaps next to short areas. column-width instead
+   packs each area back-to-back down a column and only wraps to the next
+   column when one fills — the browser picks however many columns actually
+   fit rather than a hardcoded count. */
+.map-columns{ column-width:340px; column-gap:var(--space-6); }
+.map-columns .area-group{ break-inside:avoid; }
+
+.form-card{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:18px 20px;
+  margin-bottom:22px;
+}
+.form-card h2{
+  font-family:'Cormorant Garamond',serif;
+  font-weight:600;
+  font-size:1.25rem;
+  margin:0 0 12px;
+}
+.form-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px 14px;
+}
+.form-grid .span2{ grid-column:1 / -1; }
+@media (max-width:560px){ .form-grid{ grid-template-columns:1fr; } }
+
+.form-actions{ margin-top:14px; display:flex; gap:10px; align-items:center; }
+.form-status{ font-family:'IBM Plex Mono',monospace; font-size:0.74rem; color:var(--rose); }
+
+.place-row{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:14px 16px;
+  margin-bottom:10px;
+}
+.place-row.editing{ border-color:var(--violet); }
+.row-view{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+.row-title{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.1rem; display:flex; align-items:center; gap:8px; }
+.row-desc{ font-size:0.8rem; color:var(--dim); margin-top:4px; line-height:1.4; }
+.row-actions{ display:flex; gap:8px; flex-shrink:0; }
+.row-actions button{
+  background:none; border:none; color:var(--dim); font-size:0.76rem; cursor:pointer; padding:4px;
+}
+.row-actions button:hover{ color:var(--accent); text-decoration:underline; }
+.row-actions .danger:hover{ color:var(--rose); }
+
+/* ---- Cast view ---- */
+.upload-zone{
+  background:var(--panel);
+  border:1.5px dashed var(--border);
+  border-radius:10px;
+  padding:26px 20px;
+  text-align:center;
+  margin-bottom:18px;
+  transition:border-color .2s ease, background .2s ease;
+}
+.upload-zone.dragover{ border-color:var(--accent); background:rgba(var(--accent-rgb),0.06); }
+.upload-zone p{ margin:0 0 12px; color:var(--dim); font-size:0.86rem; }
+.upload-zone input[type=file]{ display:none; }
+.upload-status{
+  margin-top:12px;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:0.74rem;
+  text-align:left;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.upload-status .ok{ color:var(--sage); }
+.upload-status .fail{ color:var(--rose); }
+
+.grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill, minmax(200px, 1fr));
+  gap:14px;
+}
+.char-card{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:14px;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+.cast-grid{ grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); }
+.cast-card{
+  align-items:center; text-align:center; cursor:pointer; padding:18px 10px;
+  transition:border-color .15s ease;
+}
+.cast-card:hover{ border-color:var(--accent); }
+.cast-card-avatar .avatar, .cast-card-avatar .avatar-fallback{ width:76px; height:76px; font-size:1.7rem; }
+.cast-card .card-name{ font-size:1rem; }
+.card-top{ display:flex; align-items:center; gap:10px; }
+.avatar{
+  width:44px; height:44px; border-radius:var(--avatar-radius);
+  object-fit:cover; border:1px solid var(--border);
+  flex-shrink:0;
+}
+.avatar-fallback{
+  width:44px; height:44px; border-radius:var(--avatar-radius);
+  display:flex; align-items:center; justify-content:center;
+  font-family:'Cormorant Garamond',serif; font-weight:700; font-size:1.1rem;
+  color:#1A1620; flex-shrink:0;
+}
+.card-name{
+  font-family:'Cormorant Garamond',serif;
+  font-weight:600;
+  font-size:1.1rem;
+  line-height:1.2;
+}
+.badge{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:0.62rem;
+  letter-spacing:0.05em;
+  text-transform:uppercase;
+  color:var(--dim);
+}
+.card-persona{
+  font-size:0.76rem;
+  color:var(--dim);
+  line-height:1.4;
+  max-height:54px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.field-row{ display:flex; flex-direction:column; gap:3px; }
+.field-row label{ margin-bottom:0; }
+.field-row select:disabled{ opacity:0.4; cursor:not-allowed; }
+.field-label{ display:block; font-size:0.72rem; color:var(--dim); margin:6px 0 2px; }
+.card-extra{ font-size:0.76rem; color:var(--dim); line-height:1.4; margin-top:4px; }
+.card-extra strong{ color:var(--fg); }
+.card-actions{ display:flex; justify-content:space-between; align-items:center; gap:8px; }
+.delete-btn{
+  background:none; border:none; color:var(--rose);
+  font-size:0.72rem; cursor:pointer; padding:4px;
+}
+.delete-btn:hover{ text-decoration:underline; }
+
+/* ---- Persona & Prompts views ---- */
+.active-badge{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:0.58rem;
+  letter-spacing:0.05em;
+  text-transform:uppercase;
+  padding:1px 7px;
+  border-radius:8px;
+  border:1px solid var(--accent);
+  color:var(--accent);
+  flex-shrink:0;
+}
+
+.preset-card{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:16px 18px;
+  margin-bottom:16px;
+}
+.preset-card.active{ border-color:var(--accent); }
+.preset-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+  margin-bottom:12px;
+}
+.preset-name-input{
+  font-family:'Cormorant Garamond',serif;
+  font-weight:600;
+  font-size:1.15rem;
+  background:transparent;
+  border:1px solid transparent;
+  padding:4px 6px;
+  flex:1;
+  min-width:160px;
+}
+.preset-name-input:hover, .preset-name-input:focus{ border-color:var(--border); }
+.preset-actions{ display:flex; gap:6px; flex-wrap:wrap; }
+
+.context-settings-row{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px 14px;
+  margin-bottom:14px;
+  padding-bottom:14px;
+  border-bottom:1px solid var(--border);
+}
+.context-settings-row .field-row input{ max-width:160px; }
+.context-settings-hint{ grid-column:1 / -1; }
+@media (max-width:560px){ .context-settings-row{ grid-template-columns:1fr; } }
+
+.prompt-block{
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:10px 12px;
+  margin-bottom:8px;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.prompt-block.marker{ border-style:dashed; background:var(--panel-raised); }
+.prompt-block-top{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.prompt-block-top .prompt-name-input{ flex:1; min-width:120px; font-size:0.82rem; padding:6px 8px; }
+.prompt-block-top select{ width:auto; flex-shrink:0; padding:6px 8px; font-size:0.78rem; }
+.enable-toggle{
+  display:flex; align-items:center; gap:5px; margin:0;
+  font-size:0.62rem; color:var(--dim); text-transform:none; letter-spacing:0; flex-shrink:0;
+}
+.prompt-content{ min-height:64px; font-size:0.82rem; }
+.marker-note{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:0.66rem;
+  color:var(--dim);
+  letter-spacing:0.02em;
+}
+.prompt-block-actions{ display:flex; gap:4px; flex-shrink:0; margin-left:auto; }
+.prompt-block-actions button{
+  background:none; border:1px solid var(--border); color:var(--dim);
+  border-radius:6px; font-size:0.72rem; cursor:pointer; padding:4px 8px;
+}
+.prompt-block-actions button:hover:not(:disabled){ border-color:var(--accent); color:var(--accent); }
+.prompt-block-actions button:disabled{ opacity:0.3; cursor:not-allowed; }
+.prompt-block-actions button.danger:hover{ border-color:var(--rose); color:var(--rose); }
+
+.preset-footer{ display:flex; justify-content:space-between; align-items:center; margin-top:10px; gap:10px; flex-wrap:wrap; }
+
+/* ---- Settings: Connection (Endpoint/Model/Test connection only — small
+   enough that a sidebar-nav shell would feel emptier than useful; the top
+   two cards sit side by side instead via .auto-grid, Model spans full
+   width below since its model list benefits from the room). ---- */
+#view-settings{ display:flex; flex-direction:column; gap:var(--space-6); max-width:900px; margin:0 auto; }
+
+/* ---- Settings: System / Guides (both use the .page-shell sidebar-nav —
+   see useSectionNav.js — since each has enough sections to be worth
+   jumping between). Content column stays a comfortable reading width even
+   though the shell itself can be much wider on a big screen — the freed-up
+   space becomes breathing room next to the sidebar, not stretched-out
+   inputs/prose. ---- */
+#view-system .page-shell-content{ max-width:760px; }
+#view-guides .page-shell-content{ max-width:820px; }
+.anchor-section{ scroll-margin-top:16px; }
+
+.settings-card{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:20px 22px;
+  margin-bottom:0;
+}
+.settings-card h2{
+  font-family:'Cormorant Garamond',serif;
+  font-weight:600;
+  font-size:1.35rem;
+  margin:0 0 4px;
+}
+.settings-card input{ margin-bottom:10px; }
+
+/* ManualGuide.vue (Settings > Guides > FAQ/Manual) — .anchor-section itself
+   has no flex/gap (see above, VariablesGuide's two cards touch edge-to-edge
+   by design), so this component wraps its own cards in .manual-guide for
+   spacing rather than relying on the parent shell. */
+.manual-guide{ display:flex; flex-direction:column; gap:var(--space-4); }
+.manual-category h3{
+  font-family:'Cormorant Garamond',serif;
+  font-weight:600;
+  font-size:1.1rem;
+  margin:0 0 10px;
+}
+.manual-entry{ border-top:1px solid var(--border-soft); padding:10px 0; }
+.manual-entry:first-of-type{ border-top:none; padding-top:0; }
+.manual-entry summary{
+  cursor:pointer;
+  font-weight:500;
+  color:var(--parchment);
+  list-style:none;
+}
+.manual-entry summary::-webkit-details-marker{ display:none; }
+.manual-entry summary::before{ content:'▸ '; color:var(--accent); }
+.manual-entry[open] summary::before{ content:'▾ '; }
+.manual-entry p{ color:var(--dim); font-size:0.88rem; line-height:1.5; margin:8px 0 0; }
+
+.world-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:14px; }
+.world-card{
+  background:var(--panel); border:1px solid var(--border); border-radius:10px;
+  padding:16px 18px; display:flex; flex-direction:column; gap:8px;
+}
+.world-card.current{ border-color:var(--accent); }
+.world-card-header{ display:flex; align-items:center; gap:8px; }
+.world-card-header h3{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.1rem; margin:0; flex:1; min-width:0; }
+.world-badge{
+  font-family:'IBM Plex Mono',monospace; font-size:0.6rem; letter-spacing:0.06em; text-transform:uppercase;
+  color:var(--accent); border:1px solid var(--accent); border-radius:20px; padding:2px 8px; flex-shrink:0;
+}
+.world-card-meta{ font-size:0.76rem; color:var(--dim); }
+.world-card-actions{ display:flex; gap:6px; flex-wrap:wrap; margin-top:4px; }
+.world-card-checkbox{ display:flex; align-items:center; gap:6px; font-size:0.82rem; }
+.row{ display:flex; gap:10px; align-items:center; }
+.row input{ margin-bottom:0; }
+.status{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:0.74rem;
+  margin-top:8px;
+}
+.status.ok{ color:var(--sage); }
+.status.warn{ color:var(--rose); }
+
+.model-list{
+  max-height:260px;
+  overflow-y:auto;
+  border:1px solid var(--border);
+  border-radius:8px;
+  margin-top:4px;
+}
+.model-item{
+  padding:9px 12px;
+  font-size:0.82rem;
+  border-bottom:1px solid var(--border);
+  cursor:pointer;
+  display:flex;
+  flex-wrap:wrap;
+  justify-content:space-between;
+  gap:2px 10px;
+}
+/* The name span needs an explicit min-width:0 to be allowed to shrink
+   below its own text's natural width — a flex item's default min-width is
+   its content size, which otherwise pushes .ctx off the row entirely on a
+   narrow screen instead of letting flex-wrap above actually engage. */
+.model-item > span:first-child{ min-width:0; overflow-wrap:break-word; }
+.model-item:last-child{ border-bottom:none; }
+.model-item:hover{ background:var(--panel-raised); }
+.model-item.selected{
+  background:rgba(var(--accent-rgb),0.12);
+  color:var(--accent);
+}
+.model-item .ctx{
+  color:var(--dim);
+  font-family:'IBM Plex Mono',monospace;
+  font-size:0.72rem;
+  flex-shrink:0;
+}
+.current-model{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:0.78rem;
+  color:var(--accent);
+  margin-bottom:10px;
+}
+.test-output{
+  margin-top:12px;
+  background:var(--panel-raised);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:10px 12px;
+  font-size:0.84rem;
+  line-height:1.5;
+  white-space:pre-wrap;
+  min-height:20px;
+}
+
+.endpoint-fields{ display:flex; flex-direction:column; gap:10px; margin-bottom:14px; }
+.endpoint-row{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+/* Direct-child only — a descendant selector here would also match the
+   nested label inside .checkbox-field (a checkbox's own label, several
+   levels down), forcing it to refuse to shrink/wrap in its own flex
+   container and overflow the page on narrow screens. */
+.endpoint-row > label{ margin:0; flex-shrink:0; }
+.checkbox-list{ display:flex; flex-direction:column; gap:6px; max-height:160px; overflow-y:auto; }
+.checkbox-field{ display:flex; align-items:center; gap:8px; }
+.checkbox-field input[type=checkbox]{ width:auto; }
+.checkbox-field label{ margin:0; text-transform:none; letter-spacing:0; font-size:0.82rem; color:var(--parchment); font-family:'Work Sans',sans-serif; }
+.theme-color-row{ display:flex; align-items:center; gap:10px; margin:10px 0; }
+.theme-color-row label{ margin:0; flex:1; text-transform:none; letter-spacing:0; font-size:0.82rem; color:var(--parchment); font-family:'Work Sans',sans-serif; }
+.theme-color-row input[type=color]{
+  width:40px; height:28px; padding:2px; border:1px solid var(--border); border-radius:6px;
+  background:var(--panel-raised); cursor:pointer;
+}
+.model-item .price{
+  color:var(--dim); font-family:'IBM Plex Mono',monospace; font-size:0.66rem; flex-shrink:0;
+}
+.provider-select{ margin-top:8px; }
+
+/* ---- Relationships view ----
+   One line per relationship (avatar, name, chips) instead of a full card
+   each — with the add/remove-label controls collapsed behind a +/- toggle
+   and only ever one row's worth open at a time. A card per person doesn't
+   scale: even 4 relationships used to run past a full screen. */
+.rel-row{ border-bottom:1px solid var(--border-soft); padding:8px 2px; }
+.rel-row:first-child{ border-top:1px solid var(--border-soft); }
+.rel-row-main{ display:flex; align-items:center; gap:12px; }
+.rel-avatar.avatar, .rel-avatar.avatar-fallback{ width:32px; height:32px; font-size:0.8rem; flex-shrink:0; }
+.rel-target{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1rem; min-width:88px; flex-shrink:0; }
+.rel-chips{ display:flex; flex-wrap:wrap; gap:6px; flex:1; }
+.rel-chips .chip{ background:var(--panel-raised); }
+.rel-expand-toggle{
+  background:none; border:1px solid var(--border); color:var(--dim); cursor:pointer;
+  width:24px; height:24px; border-radius:6px; flex-shrink:0; font-size:0.85rem; line-height:1;
+  transition:border-color .15s ease, color .15s ease;
+}
+.rel-expand-toggle:hover{ border-color:var(--accent); color:var(--accent); }
+.rel-expand-toggle.active{ border-color:var(--accent); color:var(--accent); background:rgba(var(--accent-rgb),0.1); }
+.rel-add{
+  display:flex; gap:6px; flex-wrap:wrap; align-items:center;
+  background:var(--panel-raised); border-radius:8px; padding:10px 12px; margin:8px 0 2px 44px;
+}
+.rel-add select, .rel-add input{ width:auto; flex:1; min-width:140px; }
+
+/* ---- Time widget (used inside PhoneHeader.vue) ---- */
+.time-widget{
+  display:flex; align-items:center; gap:6px;
+  font-family:'IBM Plex Mono',monospace; font-size:0.68rem; letter-spacing:0.05em;
+  color:var(--accent); border:1px solid var(--border); border-radius:16px; padding:3px 10px;
+  flex-shrink:0;
+}
+.time-widget button{
+  background:none; border:none; color:var(--dim); cursor:pointer; font-size:0.9rem; padding:0 2px; line-height:1;
+}
+.time-widget button:hover{ color:var(--accent); }
+.time-jump-row{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  margin-top:8px; padding-top:8px; border-top:1px solid var(--border);
+  font-size:0.78rem;
+}
+.time-jump-row label{ margin:0; color:var(--dim); }
+.time-jump-row input[type=number]{ width:70px; }
+.time-jump-row select{ width:auto; }
+.time-jump-weekday{ color:var(--accent); font-family:'IBM Plex Mono',monospace; font-size:0.72rem; min-width:70px; }
+
+/* ---- Message edit/delete ---- */
+.msg-actions{ display:flex; gap:2px; justify-content:flex-end; margin-top:2px; }
+.msg-edit-btn, .msg-delete-btn{
+  background:none; border:none; color:var(--dim); cursor:pointer;
+  font-size:0.78rem; padding:0 3px; line-height:1;
+  opacity:0; transition:opacity .15s ease;
+}
+.msg:hover .msg-edit-btn, .msg:hover .msg-delete-btn{ opacity:1; }
+@media (hover:none){ .msg-edit-btn, .msg-delete-btn{ opacity:0.55; } }
+.msg-edit-btn:hover{ color:var(--accent); }
+.msg-delete-btn:hover{ color:var(--rose); }
+.retry-btn{
+  background:none; border:1px dashed var(--accent); color:var(--accent); cursor:pointer;
+  font-size:0.7rem; padding:2px 8px; border-radius:8px; margin-left:6px;
+  font-family:'IBM Plex Mono',monospace;
+}
+.retry-btn:hover{ background:rgba(var(--accent-rgb),0.12); }
+/* EditRow.vue is a single-root wrapper (not two sibling roots) specifically
+   so it lands as ONE flex item in .msg.char's row instead of the textarea
+   and its Save/Cancel splitting into two side-by-side items and squeezing
+   the box narrow. flex:1 then lets it actually claim that row's width;
+   width:100% covers .msg.user, which isn't a flex container at all. */
+.msg-edit-wrap{ flex:1; min-width:0; width:100%; }
+/* Grows to fit what's actually typed instead of a fixed height nobody
+   can read past — EditRow.vue's own scrollHeight-based autoResize() does
+   the actual growing (see the comment there for why field-sizing:content
+   isn't used); min-height/max-height here just bound it. resize:none
+   since autoResize would immediately overwrite a manual drag anyway.
+   Save/Cancel appear above AND below the box so they're reachable
+   either way, however tall it grows. */
+.msg-edit-textarea{
+  min-height:110px; max-height:50vh; width:100%; resize:none; overflow-y:auto;
+  font-size:0.92rem; line-height:1.42;
+}
+.msg-edit-actions{ display:flex; gap:8px; margin:6px 0; }
+
+/* ---- Reasoning / thinking trace ---- */
+.reasoning-toggle{
+  background:none; border:1px dashed var(--border); color:var(--dim); cursor:pointer;
+  font-size:0.66rem; border-radius:8px; padding:2px 8px; margin-bottom:4px;
+  font-family:'IBM Plex Mono',monospace;
+}
+.reasoning-toggle:hover{ border-color:var(--violet); color:var(--violet); }
+.reasoning-text{
+  font-size:0.78rem; color:var(--dim); font-style:italic; line-height:1.4;
+  padding:8px 10px; border-left:2px solid var(--violet); margin-bottom:6px; white-space:pre-wrap;
+}
+.reasoning-live{ opacity:0.85; animation:reasoning-pulse 1.6s ease-in-out infinite; }
+@keyframes reasoning-pulse{ 0%,100%{ border-left-color:var(--violet); } 50%{ border-left-color:var(--border); } }
+.msg-stats{
+  font-family:'IBM Plex Mono',monospace; font-size:0.64rem; color:var(--dim);
+  margin-top:3px; opacity:0.75;
+}
+.suggest-row{ display:flex; flex-wrap:wrap; gap:5px; margin-top:6px; align-items:center; }
+.suggest-chip{
+  background:var(--panel-raised); border:1px solid var(--border); border-radius:14px;
+  color:var(--dim); font-size:0.68rem; padding:3px 9px; cursor:pointer;
+}
+.suggest-chip:hover{ border-color:var(--accent); color:var(--accent); }
+.suggest-dismiss{
+  background:none; border:none; color:var(--dim); cursor:pointer;
+  font-size:0.62rem; padding:2px 4px; opacity:0.6;
+}
+.suggest-dismiss:hover{ opacity:1; color:var(--rose); }
+.suggest-chip.suggest-more{ font-weight:600; color:var(--accent); border-color:var(--accent); }
+
+/* ---- Suggestion overflow modal ---- */
+.suggest-group{ display:flex; flex-direction:column; gap:6px; }
+.suggest-group-label{
+  font-family:'IBM Plex Mono',monospace; font-size:0.62rem; letter-spacing:0.05em;
+  text-transform:uppercase; color:var(--dim);
+}
+.suggest-group-items{ display:flex; flex-wrap:wrap; gap:6px; }
+/* A centered dialog works fine on desktop, but on a small screen a sheet
+   sliding up from the bottom is easier to reach one-handed and reads more
+   like "options for this message" than a modal takeover — matches the
+   quick-move popover's mobile-first reasoning without needing that same
+   position:fixed/getBoundingClientRect machinery here, since this modal
+   isn't anchored to a specific trigger element. */
+@media (max-width:600px){
+  .suggest-overlay{ align-items:flex-end; padding:0; }
+  .suggest-modal{ width:100%; max-width:100%; border-radius:16px 16px 0 0; max-height:70vh; }
+}
+
+/* ---- Error banner ---- */
+.error-banner{
+  background:rgba(181,86,107,0.14); border:1px solid var(--rose); color:var(--parchment);
+  border-radius:8px; padding:10px 14px; margin-bottom:14px; font-size:0.84rem;
+  display:flex; justify-content:space-between; align-items:center; gap:10px;
+}
+.error-banner button{ background:none; border:none; color:var(--dim); cursor:pointer; font-size:0.9rem; }
+.error-banner button:hover{ color:var(--parchment); }
+
+/* ---- Hidden (angle-bracket) formatting ---- */
+.bubble .hidden-tag{ display:none; }
+
+/* ---- Responsive / mobile ---- */
+.mobile-panel-toggles{ display:none; }
+.phone-strip-mobile{ display:none; }
+
+/* Hover-revealed controls need to be visible on touch devices. */
+@media (hover:none){
+  .regen-btn{ opacity:0.55; }
+}
+
+.phone-header{
+  text-align:center; padding:12px 0; border-bottom:1px solid var(--border-subtle); flex-shrink:0;
+}
+.phone-time{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.8rem; }
+.phone-date{
+  font-family:'IBM Plex Mono',monospace; font-size:0.76rem; color:var(--dim);
+  letter-spacing:0.04em; margin-top:2px;
+}
+.phone-time-controls{ display:flex; justify-content:center; margin-top:8px; }
+
+@media (max-width:820px){
+  /* Chat-first, like a messaging app: the map/phone side panels hide
+     behind toggles, and picking a room returns to the chat automatically.
+     mobilePanel (FreeroamView.vue) is a single value, not two independent
+     booleans, so map-open and phone-open can never both be true — but the
+     CSS still only needs to know "is this specific one open," not enforce
+     the exclusivity itself. */
+  .mobile-panel-toggles{ display:flex; gap:8px; margin-bottom:10px; }
+  .phone-strip-mobile{ display:flex; margin-bottom:10px; }
+  .map-col{ display:none; }
+  .phone-col{ display:none; }
+  .layout.map-open .map-col{ display:flex; }
+  .layout.phone-open .phone-col{ display:flex; }
+  .layout.map-open .chat-panel, .layout.phone-open .chat-panel{ display:none; }
+
+  /* Pin the Freeroam view to exactly one viewport's height so only its
+     message backlog scrolls, not the whole page.
+     min-height alone (an earlier attempt) is a FLOOR, not a ceiling: a
+     flex/grid container with only min-height is still free to grow
+     taller than the viewport when its content wants more room, and it
+     did — content pushed .app itself to ~9000px tall, so it was the
+     whole *page* scrolling (measured with a real headless-browser
+     check), and .messages' own overflow:auto never even engaged because
+     .messages was never actually shorter than its content. A firm
+     height (not min-height) plus overflow:hidden at every level is what
+     actually forces that — anything taller than its box must scroll
+     *inside* that box instead of growing it, and .messages is the one
+     level in this chain that provides an overflow:auto to do that.
+     This is scoped to .app.freeroam-view (toggled by the router — see
+     App.vue) rather than applied to .app unconditionally — every other
+     mobile view (Settings, Cast, ...) is a normal page that's meant to
+     grow past one viewport and let the whole page scroll; only
+     Freeroam's chat needs this fixed-viewport + internal-scroll
+     treatment. */
+  .app.freeroam-view{ display:flex; flex-direction:column; height:100dvh; overflow:hidden; }
+  .app.freeroam-view #view-freeroam{ flex:1; min-height:0; overflow:hidden; display:flex; flex-direction:column; }
+  .app.freeroam-view #view-freeroam .layout{ flex:1; min-height:0; overflow:hidden; align-items:stretch; grid-template-rows:1fr; }
+  .chat-panel{ height:auto; min-height:0; }
+  .map-col{ height:auto; min-height:0; }
+  .phone-col{ height:auto; min-height:0; }
+  .map{ max-height:none; }
+
+  /* The phone panel takes over the FULL mobile viewport (see phone-open
+     above), so its header competes with the actual thread/contacts list
+     for the same cramped vertical space that desktop's roomy .phone-col
+     never has to worry about. Desktop's stacked, centered "lock screen"
+     look (large time-of-day heading, then date, then a separate controls
+     row) costs three full lines; collapsing it to a single left-to-right
+     row — small inline info on the left, controls on the right — gets the
+     same information into a third of the height. */
+  /* min-width:0 on .phone-header itself, not just .phone-info below — the
+     same recurring flex "blowout" this project keeps hitting. .phone-col
+     is display:flex;flex-direction:column, so .phone-header is a cross-
+     axis (width) flex item there too, and a flex item's default min-width
+     is auto (= its own content's natural size), not 0. Without this,
+     .phone-header demanded its full unshrunk content width (measured:
+     462px against a 390px viewport) and overflowed sideways, pushing
+     .phone-time-controls off the right edge entirely — every level in the
+     shrink chain needs its own min-width:0, not just the innermost one. */
+  .phone-header{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:6px 10px; text-align:left; min-width:0;
+  }
+  /* Standard flex-truncation pattern: .phone-info is the row (time label
+     that never shrinks, then the date/weather/area line that can), and it
+     needs its own min-width:0 to be allowed to shrink below its content's
+     natural width in the first place — a flex item's default min-width is
+     auto (= its content size), which silently defeats any child's
+     overflow:ellipsis further down. display:inline on the date line (an
+     earlier version of this rule) doesn't reliably support
+     text-overflow:ellipsis at all — inline boxes don't establish the kind
+     of box overflow:hidden needs — which is what produced the mangled,
+     clipped-mid-word rendering this replaces. */
+  .phone-info{ display:flex; align-items:baseline; gap:4px; min-width:0; overflow:hidden; }
+  .phone-time{ font-size:0.66rem; font-family:'IBM Plex Mono',monospace; letter-spacing:0.04em; flex-shrink:0; }
+  .phone-time::after{ content:'·'; margin-left:4px; color:var(--dim); }
+  .phone-date{
+    font-size:0.78rem; margin-top:0; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .phone-time-controls{ margin-top:0; flex-shrink:0; }
+}
+
+@media (max-width:600px){
+  .app{ padding:14px 12px 24px; }
+  .brand{ margin-bottom:10px; }
+  .brand .brand-name{ font-size:1.15rem; }
+  /* Two clean rows instead of one wrapping flex row: wordmark + world-chip
+     (both narrow, share a row naturally) on top, tabs on their own full-
+     width row below — see the .main-nav comment above for why the old
+     single-row version could strand the chip. */
+  .main-nav{ flex-wrap:wrap; gap:8px 10px; padding:var(--space-2) 0; margin:0 0 var(--space-4); }
+  .nav-wordmark{ order:1; }
+  .world-chip{ order:2; margin-left:auto; }
+  /* flex:0 0 100%, not width:100% — the base rule's .nav-tabs{flex:1}
+     sets flex-basis:0%, and flex-basis wins over width in a row-flex
+     container, so a bare width:100% here silently loses to that and
+     nav-tabs never actually claims its own row. The full flex shorthand
+     overrides grow/shrink/basis together so it actually gets one. */
+  .nav-tabs{ order:3; flex:0 0 100%; gap:6px; flex-wrap:wrap; }
+  .nav-tab{ padding:5px 10px; font-size:0.64rem; flex-shrink:0; }
+  .sub-nav{ gap:4px; margin:0 0 14px; }
+
+  .current-area .pname{ font-size:1.1rem; }
+  .current-area .pdesc{ font-size:0.78rem; }
+  .messages{ padding:12px 12px; }
+  .msg{ max-width:88%; }
+  .input-row{ padding:10px 10px; }
+
+  .modal-overlay{ padding:10px; }
+  .modal{ padding:16px 16px; }
+
+  /* Full "Afternoon" etc. don't fit a 7-column table on a phone screen —
+     "night" was getting sliced to "nig" (see schedule-table th above).
+     Swap to a same-width emoji per time-of-day instead of abbreviating
+     further; the full word is still one tap/hold away via the th title. */
+  .schedule-table th .tod-full{ display:none; }
+  .schedule-table th .tod-icon-header{ display:block; width:20px; height:20px; margin:0 auto; }
+
+  /* 16px floor on form controls stops iOS zooming the page on focus. */
+  input[type=text], input[type=password], input[type=number], textarea, select,
+  .input-row input, .bring-select{
+    font-size:16px;
+  }
+}
+
+/* ---- Phone panel (right column) ----
+   .phone-col is part of the same fixed-height/viewport-pinning treatment
+   .map-col already gets (see the .map-col, .phone-col rule and the mobile
+   .app.freeroam-view block) — now that it's a real column in .layout
+   instead of a standalone routed view, .phone-thread .messages can just
+   flex:1 within that bounded height like .map does, instead of the
+   max-height guess the old standalone Phone view needed.
+   The header/time/date base rules themselves live further up, right
+   before the @media(max-width:820px) block that overrides them — same
+   selectors, equal specificity, so whichever comes LAST in the cascade
+   wins regardless of viewport; keeping the base declaration textually
+   before its override is what lets the override actually take effect. */
+
+.phone-contacts{
+  flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:2px;
+  background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:6px;
+}
+.phone-contact-row{
+  display:flex; align-items:center; gap:12px; width:100%;
+  background:none; border:none; border-bottom:1px solid var(--border-soft);
+  padding:10px 4px; cursor:pointer; text-align:left; color:inherit;
+}
+.phone-contact-row:hover{ background:var(--panel-raised); }
+.phone-contact-name{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1rem; }
+.group-icon{
+  width:44px; height:44px; border-radius:var(--avatar-radius); flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--panel-raised); border:1px solid var(--border); font-size:1.2rem;
+}
+.new-group-row .group-icon{ color:var(--accent); border-style:dashed; }
+.new-group-row .phone-contact-name{ color:var(--accent); }
+
+.phone-thread{ flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; }
+.phone-app-screen{ flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; }
+.phone-thread-header{ display:flex; align-items:center; gap:10px; padding-bottom:8px; border-bottom:1px solid var(--border-subtle); flex-shrink:0; }
+.phone-back{
+  background:none; border:none; color:var(--accent); cursor:pointer;
+  font-size:0.82rem; padding:4px 2px; flex-shrink:0;
+}
+.phone-thread-name{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.05rem; }
+.phone-thread .messages{ flex:1; min-height:0; border:1px solid var(--border); border-radius:10px; }
+.typing-bubble{ font-style:italic; color:var(--dim); }
+
+/* ---- RoamOS home screen (Phone panel, redesigned) ---- */
+.phone-home{
+  flex:1; min-height:0; overflow-y:auto;
+  display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; align-content:start;
+  padding:10px 4px;
+}
+.phone-app-icon{
+  display:flex; flex-direction:column; align-items:center; gap:6px;
+  background:none; border:none; cursor:pointer; color:inherit; padding:6px 2px;
+}
+.phone-app-glyph{
+  position:relative; width:56px; height:56px; border-radius:16px; font-size:1.7rem;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--panel-raised); border:1px solid var(--border);
+  transition:border-color .15s ease, transform .1s ease;
+}
+.phone-app-icon:hover .phone-app-glyph{ border-color:var(--accent); }
+.phone-app-icon:active .phone-app-glyph{ transform:scale(0.94); }
+.phone-app-badge{
+  position:absolute; top:-6px; right:-6px; min-width:18px; height:18px; padding:0 4px;
+  border-radius:9px; background:var(--rose); color:#1A1620;
+  font-family:'IBM Plex Mono',monospace; font-size:0.68rem; font-weight:700;
+  display:flex; align-items:center; justify-content:center; line-height:1;
+}
+.phone-app-label{
+  font-family:'IBM Plex Mono',monospace; font-size:0.7rem; letter-spacing:0.02em; color:var(--dim);
+}
+.phone-app-hint{ flex-shrink:0; margin:0; }
+.phone-call-icon{ margin-left:auto; flex-shrink:0; color:var(--accent); font-size:0.9rem; }
+.phone-call-icon.disabled{ color:var(--dim); opacity:0.5; }
+.phone-nudge-btn{
+  margin-left:auto; flex-shrink:0; cursor:pointer; font-size:0.9rem; opacity:0.6;
+  transition:opacity .15s ease;
+}
+.phone-nudge-btn:hover{ opacity:1; }
+.phone-info-btn{
+  margin-left:auto; flex-shrink:0; background:none; border:none; color:var(--dim);
+  cursor:pointer; font-size:1rem; padding:2px 4px;
+}
+.phone-info-btn:hover{ color:var(--accent); }
+
+/* ---- Group texting (Phase 4) ---- */
+.group-char{ display:flex; align-items:flex-start; gap:8px; align-self:flex-start; max-width:85%; }
+.group-char .avatar, .group-char .avatar-fallback{ width:30px; height:30px; font-size:0.8rem; }
+.group-char-body{ min-width:0; }
+.group-char-body .speaker{
+  font-family:'IBM Plex Mono',monospace; font-size:0.64rem; letter-spacing:0.05em;
+  text-transform:uppercase; color:var(--dim); margin-bottom:2px;
+}
+
+.new-group-form{ flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; }
+.new-group-name{
+  background:var(--panel-raised); border:1px solid var(--border); border-radius:8px;
+  color:var(--parchment); padding:8px 10px; font-family:'Work Sans',sans-serif; font-size:0.88rem;
+}
+.new-group-picker{
+  flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:2px;
+  background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:6px;
+}
+.new-group-option{
+  display:flex; align-items:center; gap:10px; padding:8px 6px; cursor:pointer;
+  border-bottom:1px solid var(--border-soft);
+}
+.new-group-option .avatar, .new-group-option .avatar-fallback{ width:28px; height:28px; font-size:0.74rem; }
+.new-group-option input[type=checkbox]{ width:auto; flex-shrink:0; }
+.new-group-actions{ display:flex; align-items:center; justify-content:space-between; gap:10px; flex-shrink:0; }
+.new-group-error{ color:var(--rose); font-size:0.78rem; }
+
+/* ---- Phone strip (mobile-only collapsed/back toggle) ----
+   No `display` here on purpose: this class always co-occurs with
+   .phone-strip-mobile on the same element (see PhoneStrip.vue), and that
+   class owns visibility (none on desktop, flex under the 820px media
+   query) — an unconditional display here at equal specificity would win
+   the cascade regardless of viewport and leak the strip onto desktop. */
+.phone-strip{
+  width:100%; align-items:center; justify-content:center; gap:6px;
+  background:var(--panel); border:1px solid var(--border); border-radius:10px;
+  padding:8px 12px; font-family:'IBM Plex Mono',monospace; font-size:0.76rem; color:var(--dim);
+  cursor:pointer;
+}
+.phone-strip:hover{ border-color:var(--accent); color:var(--parchment); }
+.phone-strip-icon{ font-size:0.9rem; }
+.phone-strip-time{ color:var(--parchment); }
+.phone-strip-badge{ margin-left:6px; color:var(--accent); }
