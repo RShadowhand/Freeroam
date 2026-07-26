@@ -66,6 +66,9 @@
    hardcoded "viewport minus toolbar height" pixel subtraction, since the
    toolbar can wrap to two lines on narrow screens. */
 .relations-graph{ height:70vh; min-height:480px; border:1px solid var(--border); border-radius:10px; margin-top:10px; }
+.graph-toolbar{ display:flex; align-items:center; gap:8px; margin-top:10px; }
+.graph-toolbar label{ font-size:0.8rem; color:var(--dim); }
+.graph-toolbar select{ width:auto; font-size:0.8rem; padding:4px 8px; }
 /* Freeroam's own two-pane .layout already manages its width. Prompts is a
    vertical stack of prose/code rows — capped so a line of text doesn't
    stretch edge-to-edge on a wide monitor, well past a comfortable reading

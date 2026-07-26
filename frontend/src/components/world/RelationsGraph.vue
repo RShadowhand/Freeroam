@@ -15,6 +15,7 @@ const theme = useThemeStore();
 const characterModal = useCharacterModal();
 const personaModal = usePersonaModal();
 const graphEl = ref(null);
+const layoutMode = ref('fcose');
 let cy = null;
 
 // Nodes = every character, always (not just ones with a relationship) —
@@ -59,6 +60,13 @@ function buildElements() {
 // references — theme.resolvedVar() (stores/theme.js) is the existing helper
 // for exactly this, already used to seed a color picker with the current
 // theme's resolved accent.
+//
+// Edge labels are opt-in via .label-visible (revealed on hover — see the
+// mouseover/mouseout handlers below) rather than always-on: with a dense
+// many-to-many web, permanently drawing every relationship's label is what
+// actually makes the graph unreadable, far more than the edges/lines
+// themselves. .dimmed is the other half of the same hover interaction —
+// everything outside the hovered node's immediate neighborhood fades out.
 function buildStyle() {
   const panel = theme.resolvedVar('--panel');
   const border = theme.resolvedVar('--border');
@@ -79,9 +87,12 @@ function buildStyle() {
     { selector: 'edge', style: {
       'curve-style': 'bezier', width: 1.5, 'line-color': dim, 'target-arrow-color': dim,
       'target-arrow-shape': 'triangle', 'arrow-scale': 0.8,
+    } },
+    { selector: 'edge.label-visible', style: {
       label: 'data(label)', 'font-size': 9, color: dim, 'text-rotation': 'autorotate',
       'text-background-color': panel, 'text-background-opacity': 0.85, 'text-background-padding': 2,
     } },
+    { selector: '.dimmed', style: { opacity: 0.15 } },
   ];
 }
 
@@ -91,8 +102,20 @@ function buildStyle() {
 // animate:false skips animated convergence and jumps straight to the
 // settled layout — the per-tick render cost during an animated settle is
 // exactly what fcose-over-cose was chosen to avoid at this scale.
+// circle/grid/concentric are all built into Cytoscape core (no extra
+// dependency) and are direct geometric placements rather than iterative
+// physics, so switching to them is never a performance concern — only
+// fcose itself needed the extension. concentric ranks by node.degree()
+// (connection count), so heavily-connected "hub" characters land toward
+// the center — the most direct answer to "who's actually central here."
+const LAYOUT_OPTIONS = {
+  fcose: { name: 'fcose', quality: 'default', randomize: true, nodeRepulsion: 4500, idealEdgeLength: 80 },
+  circle: { name: 'circle' },
+  grid: { name: 'grid' },
+  concentric: { name: 'concentric', concentric: (node) => node.degree(), levelWidth: () => 1 },
+};
 function runLayout() {
-  cy.layout({ name: 'fcose', quality: 'default', randomize: true, animate: false, nodeRepulsion: 4500, idealEdgeLength: 80 }).run();
+  cy.layout({ ...LAYOUT_OPTIONS[layoutMode.value], animate: false }).run();
 }
 
 onMounted(() => {
@@ -106,8 +129,24 @@ onMounted(() => {
     }
     characterModal.open(id);
   });
-  cy.on('mouseover', 'node', () => { graphEl.value.style.cursor = 'pointer'; });
-  cy.on('mouseout', 'node', () => { graphEl.value.style.cursor = ''; });
+  // Hover, not click, drives ego-focus + label reveal — click already opens
+  // the character/persona modal above, so overloading it with a second
+  // "highlight the neighborhood" meaning would conflict. Moving the mouse
+  // away always fully resets; no separate "click background to clear" state
+  // to manage.
+  cy.on('mouseover', 'node', (evt) => {
+    const node = evt.target;
+    const neighborhood = node.closedNeighborhood();
+    cy.elements().not(neighborhood).addClass('dimmed');
+    neighborhood.edges().addClass('label-visible');
+    graphEl.value.style.cursor = 'pointer';
+  });
+  cy.on('mouseout', 'node', () => {
+    cy.elements().removeClass('dimmed label-visible');
+    graphEl.value.style.cursor = '';
+  });
+  cy.on('mouseover', 'edge', (evt) => evt.target.addClass('label-visible'));
+  cy.on('mouseout', 'edge', (evt) => evt.target.removeClass('label-visible'));
 });
 
 onUnmounted(() => {
@@ -140,5 +179,14 @@ watch([() => world.relationships, () => world.charactersList], () => {
 </script>
 
 <template>
+  <div class="graph-toolbar">
+    <label>Layout</label>
+    <select v-model="layoutMode" @change="runLayout">
+      <option value="fcose">Force-directed</option>
+      <option value="circle">Circular</option>
+      <option value="grid">Grid</option>
+      <option value="concentric">Concentric (by connections)</option>
+    </select>
+  </div>
   <div ref="graphEl" class="relations-graph"></div>
 </template>

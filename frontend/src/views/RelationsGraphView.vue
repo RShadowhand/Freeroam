@@ -15,7 +15,7 @@ onMounted(async () => {
     <div class="toolbar">
       <h2>Relations Graph</h2>
     </div>
-    <p class="hint">Click a node to open that character or persona. Drag to reposition, scroll to zoom.</p>
+    <p class="hint">Click a node to open that character or persona. Hover a node to highlight its direct connections and dim the rest. Drag to reposition, scroll to zoom.</p>
     <RelationsGraph />
   </section>
 </template>
