@@ -5,14 +5,14 @@ import { useRoute } from 'vue-router';
 const route = useRoute();
 
 const worldTabs = [
-  { path: '/world/places', label: 'Places' },
   { path: '/world/cast', label: 'Cast' },
+  { path: '/world/places', label: 'Places' },
   { path: '/world/persona', label: 'Personas' },
 ];
 const settingsTabs = [
-  { path: '/settings/connection', label: 'Connection' },
   { path: '/settings/system', label: 'System' },
   { path: '/settings/prompts', label: 'Prompts' },
+  { path: '/settings/connection', label: 'Connection' },
   { path: '/settings/guides', label: 'Guides' },
 ];
 

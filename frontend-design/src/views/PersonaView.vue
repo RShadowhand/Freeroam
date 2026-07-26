@@ -56,9 +56,9 @@ function onImportFileChange() {
     <div class="toolbar">
       <h2>Your personas</h2>
       <div class="toolbar-actions">
+        <button class="btn secondary small" v-if="world.activePersonaId" @click="clearActive">Clear active persona</button>
         <button class="btn secondary small" @click="importFileInput.click()">Import persona (.json or .png)</button>
         <input type="file" ref="importFileInput" accept="application/json,.json,image/png,.png" style="display:none;" @change="onImportFileChange">
-        <button class="btn secondary small" v-if="world.activePersonaId" @click="clearActive">Clear active persona</button>
       </div>
     </div>
     <div class="form-status" v-if="importStatus">{{ importStatus }}</div>

@@ -723,14 +723,14 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 }
 .place-row.editing{ border-color:var(--violet); }
 .row-view{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
-.row-title{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.1rem; display:flex; align-items:center; gap:8px; }
+.row-title{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.1rem; display:flex; align-items:center; gap:8px; break-inside: avoid; }
 .row-desc{ font-size:0.8rem; color:var(--dim); margin-top:4px; line-height:1.4; }
-.row-actions{ display:flex; gap:8px; flex-shrink:0; }
-.row-actions button{
+.row-actions{ display:flex; gap:8px; flex-shrink:0; margin-top: 4px; }
+/* .row-actions button{
   background:none; border:none; color:var(--dim); font-size:0.76rem; cursor:pointer; padding:4px;
 }
 .row-actions button:hover{ color:var(--accent); text-decoration:underline; }
-.row-actions .danger:hover{ color:var(--rose); }
+.row-actions .danger:hover{ color:var(--rose); } */
 
 /* ---- Cast view ---- */
 .upload-zone{

@@ -121,12 +121,11 @@ async function remove() {
         <em v-else>No description yet.</em>
       </div>
       <div class="card-actions">
-        <button class="btn secondary small" v-if="isActive" @click="deactivate">Clear active</button>
-        <button class="btn secondary small" v-else @click="activate">Set active</button>
         <span style="display:flex;gap:10px;">
-          <button @click="startEdit">Edit</button>
-          <button @click="exportJson">Export</button>
-          <button @click="exportPng">Export as PNG</button>
+          <button class="btn secondary small" v-if="isActive" @click="deactivate">Clear active</button>
+          <button class="btn secondary small" v-else @click="activate">Set active</button>
+          <button class="btn secondary small" @click="startEdit">Edit</button>
+          <button class="btn secondary small" @click="exportJson">Export</button>
           <button class="delete-btn" @click="remove">Remove</button>
         </span>
       </div>
