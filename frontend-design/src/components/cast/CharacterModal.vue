@@ -17,6 +17,7 @@ const description = ref('');
 const personality = ref('');
 const scenario = ref('');
 const exampleDialogue = ref('');
+const avatarInput = ref(null);
 const status = ref('');
 
 const character = computed(() => characterModal.editingId.value ? world.charactersById[characterModal.editingId.value] : null);
@@ -62,7 +63,8 @@ async function save() {
     world.charactersList.push(data.character);
     world.charactersById[data.character.id] = data.character;
   } else {
-    const { ok, data } = await updateCharacter(characterModal.editingId.value, body);
+    const avatarFile = avatarInput.value?.files?.[0] || null;
+    const { ok, data } = await updateCharacter(characterModal.editingId.value, { ...body, avatarFile });
     if (!ok) { status.value = data.error || 'request failed'; return; }
     const idx = world.charactersList.findIndex((c) => c.id === characterModal.editingId.value);
     if (idx !== -1) world.charactersList[idx] = data.character;
@@ -148,6 +150,10 @@ async function remove() {
         <div class="modal-tab-pane" v-show="activeTab === 'details'">
           <div class="char-modal-identity">
             <CardAvatar v-if="character" :name="character.name" :avatar-url="character.avatarUrl" :color="character.color" />
+            <div class="field-row" v-if="character">
+              <label>Avatar</label>
+              <input type="file" ref="avatarInput" accept="image/png,image/jpeg,image/webp">
+            </div>
             <div class="field-row">
               <label>Name</label>
               <input type="text" v-model="name" placeholder="e.g. Marrow">

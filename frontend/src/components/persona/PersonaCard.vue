@@ -11,6 +11,7 @@ const world = useWorldStore();
 const editing = ref(false);
 const name = ref(props.persona.name);
 const description = ref(props.persona.description || '');
+const avatarInput = ref(null);
 const status = ref('');
 
 const isActive = computed(() => props.persona.id === world.activePersonaId);
@@ -23,7 +24,8 @@ function startEdit() {
 }
 
 async function save() {
-  const { ok, data } = await updatePersona(props.persona.id, { name: name.value.trim(), description: description.value.trim() });
+  const avatarFile = avatarInput.value?.files?.[0] || null;
+  const { ok, data } = await updatePersona(props.persona.id, { name: name.value.trim(), description: description.value.trim(), avatarFile });
   if (!ok) { status.value = data.error || 'Could not save changes.'; return; }
   const i = world.personasList.findIndex((p) => p.id === props.persona.id);
   world.personasList[i] = data.persona;
@@ -87,6 +89,13 @@ async function remove() {
         <div class="span2">
           <label>Name</label>
           <input type="text" v-model="name">
+        </div>
+        <div class="span2" style="display:flex;align-items:center;gap:10px;">
+          <CardAvatar :name="persona.name" :avatar-url="persona.avatarUrl" :color="persona.color" />
+          <div>
+            <label>Avatar</label>
+            <input type="file" ref="avatarInput" accept="image/png,image/jpeg,image/webp">
+          </div>
         </div>
         <div class="span2">
           <label>Description</label>

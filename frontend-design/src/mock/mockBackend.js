@@ -281,7 +281,18 @@ on('POST', '/api/characters', (_p, req) => {
 on('PUT', '/api/characters/:id', (p, req) => {
   const c = state.characters.find((x) => x.id === p.id);
   if (!c) return notFound('Character not found.');
-  Object.assign(c, req.body);
+  if (req.isForm) {
+    const name = req.formFields.get('name');
+    if (name) c.name = name;
+    if (req.formFields.has('description')) c.description = req.formFields.get('description');
+    if (req.formFields.has('personality')) c.personality = req.formFields.get('personality');
+    if (req.formFields.has('scenario')) c.scenario = req.formFields.get('scenario');
+    if (req.formFields.has('exampleDialogue')) c.exampleDialogue = req.formFields.get('exampleDialogue');
+    const avatar = req.formFields.get('avatar');
+    if (avatar && avatar.size) c.avatarUrl = URL.createObjectURL(avatar);
+  } else {
+    Object.assign(c, req.body);
+  }
   return json({ character: c });
 });
 on('DELETE', '/api/characters/:id', (p) => {
@@ -326,8 +337,16 @@ on('POST', '/api/personas', (_p, req) => {
 on('PUT', '/api/personas/:id', (p, req) => {
   const per = state.personas.personas.find((x) => x.id === p.id);
   if (!per) return notFound('Persona not found.');
-  if (req.body.name) per.name = req.body.name;
-  if (req.body.description !== undefined) per.description = req.body.description;
+  if (req.isForm) {
+    const name = req.formFields.get('name');
+    if (name) per.name = name;
+    if (req.formFields.has('description')) per.description = req.formFields.get('description');
+    const avatar = req.formFields.get('avatar');
+    if (avatar && avatar.size) per.avatarUrl = URL.createObjectURL(avatar);
+  } else {
+    if (req.body.name) per.name = req.body.name;
+    if (req.body.description !== undefined) per.description = req.body.description;
+  }
   return json({ persona: per });
 });
 on('DELETE', '/api/personas/:id', (p) => {

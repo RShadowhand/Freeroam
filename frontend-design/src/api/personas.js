@@ -8,7 +8,16 @@ export const createPersona = ({ name, description, avatarFile }) => {
   if (avatarFile) form.append('avatar', avatarFile);
   return apiForm('/api/personas', form);
 };
-export const updatePersona = (id, body) => apiJson(`/api/personas/${id}`, 'PUT', body);
+export const updatePersona = (id, { avatarFile, ...fields } = {}) => {
+  if (avatarFile) {
+    const form = new FormData();
+    if (fields.name !== undefined) form.append('name', fields.name);
+    if (fields.description !== undefined) form.append('description', fields.description);
+    form.append('avatar', avatarFile);
+    return apiForm(`/api/personas/${id}`, form, 'PUT');
+  }
+  return apiJson(`/api/personas/${id}`, 'PUT', fields);
+};
 export const deletePersona = (id) => apiDelete(`/api/personas/${id}`);
 export const setActivePersona = (id) => apiJson('/api/personas/active', 'POST', { id });
 export const exportPersona = (id) => apiGet(`/api/personas/${id}/export`);

@@ -867,6 +867,82 @@ describe('PNG card export/import (characters, personas, places)', () => {
   });
 });
 
+describe('Avatar upload via PUT /api/characters/:id and PUT /api/personas/:id', () => {
+  const tinyPng = () => new Blob([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], { type: 'image/png' });
+
+  test('PUT /api/characters/:id with an avatar file sets avatarUrl and writes the file to disk', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Avatar Char', description: 'x' })).json();
+    const form = new FormData();
+    form.append('avatar', tinyPng(), 'avatar.png');
+    const res = await fetch(`${baseUrl}/api/characters/${character.id}`, { method: 'PUT', body: form });
+    assert.equal(res.status, 200);
+    const { character: updated } = await res.json();
+    assert.equal(updated.avatarUrl, `${registry.getDefault().avatarUrlBase}/${character.id}.png`);
+    assert.ok(fs.existsSync(path.join(registry.getDefault().avatarDir, `${character.id}.png`)));
+  });
+
+  test('PUT /api/characters/:id replaces an existing avatar (same id+ext, new file written)', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Replace Char', description: 'x' })).json();
+    const form1 = new FormData();
+    form1.append('avatar', tinyPng(), 'avatar.png');
+    const { character: withAvatar } = await (await fetch(`${baseUrl}/api/characters/${character.id}`, { method: 'PUT', body: form1 })).json();
+    assert.ok(fs.existsSync(path.join(registry.getDefault().avatarDir, path.basename(withAvatar.avatarUrl))));
+
+    const form2 = new FormData();
+    form2.append('avatar', tinyPng(), 'avatar2.png');
+    const { character: replaced } = await (await fetch(`${baseUrl}/api/characters/${character.id}`, { method: 'PUT', body: form2 })).json();
+    assert.equal(replaced.avatarUrl, withAvatar.avatarUrl);
+    assert.ok(fs.existsSync(path.join(registry.getDefault().avatarDir, path.basename(replaced.avatarUrl))));
+  });
+
+  test('PUT /api/characters/:id still accepts a plain JSON body (no avatar) for text-only edits', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Text Only Char', description: 'x' })).json();
+    const res = await fetch(`${baseUrl}/api/characters/${character.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Renamed Char' }),
+    });
+    assert.equal(res.status, 200);
+    const { character: updated } = await res.json();
+    assert.equal(updated.name, 'Renamed Char');
+    assert.equal(updated.avatarUrl, null);
+  });
+
+  test('PUT /api/personas/:id with an avatar file sets avatarUrl and writes the file to disk', async () => {
+    const { persona } = await (await postJson('/api/personas', { name: 'Avatar Persona', description: 'x' })).json();
+    const form = new FormData();
+    form.append('avatar', tinyPng(), 'avatar.png');
+    const res = await fetch(`${baseUrl}/api/personas/${persona.id}`, { method: 'PUT', body: form });
+    assert.equal(res.status, 200);
+    const { persona: updated } = await res.json();
+    assert.equal(updated.avatarUrl, `${registry.getDefault().avatarUrlBase}/personas/${persona.id}.png`);
+    assert.ok(fs.existsSync(path.join(registry.getDefault().personaAvatarDir, `${persona.id}.png`)));
+  });
+
+  test('PUT /api/personas/:id replaces an existing avatar (same id+ext, new file written)', async () => {
+    const { persona } = await (await postJson('/api/personas', { name: 'Replace Persona', description: 'x' })).json();
+    const form1 = new FormData();
+    form1.append('avatar', tinyPng(), 'avatar.png');
+    const { persona: withAvatar } = await (await fetch(`${baseUrl}/api/personas/${persona.id}`, { method: 'PUT', body: form1 })).json();
+
+    const form2 = new FormData();
+    form2.append('avatar', tinyPng(), 'avatar2.png');
+    const { persona: replaced } = await (await fetch(`${baseUrl}/api/personas/${persona.id}`, { method: 'PUT', body: form2 })).json();
+    assert.equal(replaced.avatarUrl, withAvatar.avatarUrl);
+    assert.ok(fs.existsSync(path.join(registry.getDefault().personaAvatarDir, path.basename(replaced.avatarUrl))));
+  });
+
+  test('PUT /api/characters/:id and PUT /api/personas/:id reject a non-image avatar mimetype', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Bad Avatar Char', description: 'x' })).json();
+    const { persona } = await (await postJson('/api/personas', { name: 'Bad Avatar Persona', description: 'x' })).json();
+    const badForm = () => {
+      const form = new FormData();
+      form.append('avatar', new Blob([Buffer.from('not an image')], { type: 'text/plain' }), 'avatar.txt');
+      return form;
+    };
+    assert.equal((await fetch(`${baseUrl}/api/characters/${character.id}`, { method: 'PUT', body: badForm() })).status, 400);
+    assert.equal((await fetch(`${baseUrl}/api/personas/${persona.id}`, { method: 'PUT', body: badForm() })).status, 400);
+  });
+});
+
 describe('Persisted chat: /api/places/:placeId/enter, /say, GET /chat', () => {
   async function makePlace(name) {
     const res = await postJson('/api/places', { name, type: 'communal' });

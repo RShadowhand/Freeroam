@@ -422,6 +422,18 @@ const uploadPersonaAvatar = multer({
   },
 });
 
+// Distinct from `upload` (PNG-only, expects a full TavernCard) — this is
+// for attaching/replacing a plain picture on a character that already
+// exists, same rules as uploadPersonaAvatar above.
+const uploadCharacterAvatar = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!EXT_FOR_MIME[file.mimetype]) return cb(new Error('Avatar must be a PNG, JPEG, or WebP image.'));
+    cb(null, true);
+  },
+});
+
 const ZIP_MIMETYPES = ['application/zip', 'application/x-zip-compressed', 'application/octet-stream'];
 const uploadWorldBundle = multer({
   storage: multer.memoryStorage(),
@@ -939,7 +951,7 @@ app.delete('/api/characters/:id', (req, res) => {
 });
 
 // Edit a character's fields directly (any source, including builtin).
-app.put('/api/characters/:id', async (req, res) => {
+app.put('/api/characters/:id', uploadCharacterAvatar.single('avatar'), async (req, res) => {
   const w = req.world;
   const { id } = req.params;
   const characters = loadCharacters(w);
@@ -956,6 +968,15 @@ app.put('/api/characters/:id', async (req, res) => {
   if (typeof personality === 'string') character.personality = personality.trim();
   if (typeof scenario === 'string') character.scenario = scenario.trim();
   if (typeof exampleDialogue === 'string') character.exampleDialogue = exampleDialogue.trim();
+
+  if (req.file) {
+    if (character.avatarUrl) {
+      fs.rm(path.join(w.avatarDir, path.basename(character.avatarUrl)), { force: true }, () => {});
+    }
+    const ext = EXT_FOR_MIME[req.file.mimetype];
+    fs.writeFileSync(path.join(w.avatarDir, `${id}.${ext}`), req.file.buffer);
+    character.avatarUrl = `${w.avatarUrlBase}/${id}.${ext}`;
+  }
 
   saveCharacters(w, characters);
   // The identity embedding (characterEmbeddings.js) is built from name +

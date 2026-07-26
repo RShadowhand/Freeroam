@@ -7,7 +7,15 @@ export const uploadCharacterCard = (file) => {
   form.append('card', file);
   return apiForm('/api/characters', form);
 };
-export const updateCharacter = (id, body) => apiJson(`/api/characters/${id}`, 'PUT', body);
+export const updateCharacter = (id, { avatarFile, ...fields } = {}) => {
+  if (avatarFile) {
+    const form = new FormData();
+    Object.entries(fields).forEach(([k, v]) => form.append(k, v ?? ''));
+    form.append('avatar', avatarFile);
+    return apiForm(`/api/characters/${id}`, form, 'PUT');
+  }
+  return apiJson(`/api/characters/${id}`, 'PUT', fields);
+};
 export const deleteCharacter = (id) => apiDelete(`/api/characters/${id}`);
 export const placeCharacter = (id, body) => apiJson(`/api/characters/${id}/place`, 'POST', body);
 export const saveScheduleSlot = (id, day, timeOfDay, body) =>
