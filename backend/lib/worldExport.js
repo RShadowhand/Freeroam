@@ -56,11 +56,17 @@ export async function buildWorldExportBundle(w, { includeHistory = true, worldNa
 // nested folders aren't precisely documented — this is unambiguous.
 async function restoreDirFromZip(zip, zipPrefix, destDir) {
   const jobs = [];
+  const resolvedDest = path.resolve(destDir);
   zip.forEach((relPath, file) => {
     if (file.dir || !relPath.startsWith(`${zipPrefix}/`)) return;
     const rel = relPath.slice(zipPrefix.length + 1);
+    const target = path.join(destDir, rel);
+    // Zip-slip guard: entry names come from the (untrusted) bundle, and a
+    // crafted name like "chats/../../evil" would otherwise path.join its
+    // way out of destDir into an arbitrary write. Skip anything that
+    // doesn't resolve to strictly inside the destination directory.
+    if (!path.resolve(target).startsWith(resolvedDest + path.sep)) return;
     jobs.push(file.async('nodebuffer').then((buf) => {
-      const target = path.join(destDir, rel);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, buf);
     }));

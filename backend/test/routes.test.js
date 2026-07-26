@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import JSZip from 'jszip';
 import { encodeEmbedding, upsertMemoryVectors } from '../lib/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -782,6 +783,24 @@ describe('World export/import (whole-world zip bundle)', () => {
     const form = new FormData();
     const res = await fetch(`${baseUrl}/api/worlds/import`, { method: 'POST', body: form });
     assert.equal(res.status, 400);
+  });
+
+  test('POST /api/worlds/import skips zip-slip entries that try to escape the world directory', async () => {
+    const zip = new JSZip();
+    zip.file('manifest.json', JSON.stringify({ formatVersion: 1, worldName: 'Zip Slip Test', includeHistory: true }));
+    // A crafted entry name that path.join would otherwise resolve to
+    // tmpRoot/zip-slip-escaped.json — four levels up out of the destination
+    // world's chats/ dir (.../data/worlds/<id>/chats). The import must skip
+    // it rather than write outside the world directory (see restoreDirFromZip).
+    zip.file('chats/../../../../zip-slip-escaped.json', JSON.stringify([{ type: 'system', text: 'pwned' }]));
+    const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+    const form = new FormData();
+    form.append('bundle', new Blob([buffer], { type: 'application/zip' }), 'world.zip');
+    const res = await fetch(`${baseUrl}/api/worlds/import`, { method: 'POST', body: form });
+    assert.equal(res.status, 201);
+
+    assert.ok(!fs.existsSync(path.join(tmpRoot, 'zip-slip-escaped.json')), 'zip-slip entry must not escape the world dir');
   });
 });
 

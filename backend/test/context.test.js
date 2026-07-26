@@ -865,6 +865,16 @@ describe('parseCharacterTurn', () => {
     const entries = parseCharacterTurn('  ', speaker, present);
     assert.equal(entries[0].type, 'error');
   });
+
+  test('a speaker name containing regex metacharacters neither throws nor mis-strips', () => {
+    const drSpeaker = { id: 'dr', name: 'Dr. Vane (Ret.)' };
+    const [entry] = parseCharacterTurn('Dr. Vane (Ret.): As I was saying.', drSpeaker, [drSpeaker]);
+    assert.equal(entry.text, 'As I was saying.');
+    assert.equal(entry.charId, 'dr');
+    // And an unprefixed reply from the same speaker stays untouched.
+    const [plain] = parseCharacterTurn('A quiet nod.', drSpeaker, [drSpeaker]);
+    assert.equal(plain.text, 'A quiet nod.');
+  });
 });
 
 describe('importSillyTavernPreset (real SillyTavern export)', () => {

@@ -571,7 +571,11 @@ export function parseCharacterTurn(text, speaker, presentChars) {
     return parseReplyLines(trimmed, ordered);
   }
 
-  const selfPrefix = new RegExp(`^(?:${speaker.name}|${speaker.name.split(' ')[0]}):\\s*`, 'i');
+  // Names are user/card-provided free text — escape regex metacharacters,
+  // or a name like "Dr. Vane (Ret.)" makes this RegExp constructor throw
+  // (same escaping suggestedActions.js's nameAppearsIn already does).
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const selfPrefix = new RegExp(`^(?:${escapeRe(speaker.name)}|${escapeRe(speaker.name.split(' ')[0])}):\\s*`, 'i');
   trimmed = trimmed.replace(selfPrefix, '');
   return [{ type: 'char', charId: speaker.id, name: speaker.name, text: trimmed }];
 }

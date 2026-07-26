@@ -970,11 +970,16 @@ app.put('/api/characters/:id', uploadCharacterAvatar.single('avatar'), async (re
   if (typeof exampleDialogue === 'string') character.exampleDialogue = exampleDialogue.trim();
 
   if (req.file) {
-    if (character.avatarUrl) {
-      fs.rm(path.join(w.avatarDir, path.basename(character.avatarUrl)), { force: true }, () => {});
-    }
     const ext = EXT_FOR_MIME[req.file.mimetype];
-    fs.writeFileSync(path.join(w.avatarDir, `${id}.${ext}`), req.file.buffer);
+    const newPath = path.join(w.avatarDir, `${id}.${ext}`);
+    // Only delete the old file when it's actually a different path — when
+    // the extension is unchanged, the write below overwrites in place, and
+    // an async rm of the same path could race it and delete the NEW file.
+    if (character.avatarUrl) {
+      const oldPath = path.join(w.avatarDir, path.basename(character.avatarUrl));
+      if (oldPath !== newPath) fs.rm(oldPath, { force: true }, () => {});
+    }
+    fs.writeFileSync(newPath, req.file.buffer);
     character.avatarUrl = `${w.avatarUrlBase}/${id}.${ext}`;
   }
 
@@ -1139,11 +1144,16 @@ app.put('/api/personas/:id', uploadPersonaAvatar.single('avatar'), (req, res) =>
   if (typeof description === 'string') persona.description = description.trim();
 
   if (req.file) {
-    if (persona.avatarUrl) {
-      fs.rm(path.join(w.personaAvatarDir, path.basename(persona.avatarUrl)), { force: true }, () => {});
-    }
     const ext = EXT_FOR_MIME[req.file.mimetype];
-    fs.writeFileSync(path.join(w.personaAvatarDir, `${id}.${ext}`), req.file.buffer);
+    const newPath = path.join(w.personaAvatarDir, `${id}.${ext}`);
+    // Only delete the old file when it's actually a different path — when
+    // the extension is unchanged, the write below overwrites in place, and
+    // an async rm of the same path could race it and delete the NEW file.
+    if (persona.avatarUrl) {
+      const oldPath = path.join(w.personaAvatarDir, path.basename(persona.avatarUrl));
+      if (oldPath !== newPath) fs.rm(oldPath, { force: true }, () => {});
+    }
+    fs.writeFileSync(newPath, req.file.buffer);
     persona.avatarUrl = `${w.avatarUrlBase}/personas/${id}.${ext}`;
   }
 
