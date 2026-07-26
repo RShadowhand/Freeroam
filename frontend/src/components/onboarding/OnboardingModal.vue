@@ -186,7 +186,7 @@ function finishAndGoToCast() {
         <template v-else-if="STEPS[onboarding.currentStep.value] === 'add-persona'">
           <p class="hint">
             Your persona is who <em>you</em> are in this world — without one, you'll appear in scenes as "the
-            visitor." Set one up now, or skip and add it later from World → Persona.
+            visitor." Set one up now, or skip and add it later from World → Cast.
           </p>
           <p class="hint" v-if="world.activePersona">Playing as <strong>{{ world.activePersona.name }}</strong>.</p>
           <AddPersonaForm />

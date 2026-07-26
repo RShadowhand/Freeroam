@@ -25,6 +25,18 @@ useThemeStore().apply();
 // configured browser targets (see vite.config.js) predate top-level
 // module await.
 (async () => {
+  // `npm run dev` (vite --mode mock) runs this app with zero backend
+  // dependency: mock/mockBackend.js patches window.fetch to answer every
+  // /api/* call in-browser with seeded demo data, entirely before the
+  // network layer ever sees a request — so it must be imported (and awaited)
+  // before the very first real call, useWorldsStore().init() below.
+  // `npm run dev:live` (a real backend on :3001) and `npm start` (production
+  // build) never touch this branch — import.meta.env.MODE is a compile-time
+  // constant, so those builds strip this whole branch (and the mock module
+  // along with it) via dead-code elimination.
+  if (import.meta.env.MODE === 'mock') {
+    await import('./mock/mockBackend.js');
+  }
   await useWorldsStore().init();
   app.mount('#app');
 })();

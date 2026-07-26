@@ -31,8 +31,8 @@ const MANUAL_CATEGORIES = [
       },
       {
         q: 'What are the three main tabs at the top?',
-        a: 'Freeroam (the map, chat, and phone — where you actually play), World (Places/Cast/Persona — editing '
-          + 'the people and locations that exist), and Settings (connection, prompts, and this guide).',
+        a: 'Freeroam (the map, chat, and phone — where you actually play), World (Places/Cast — editing '
+          + 'the people, personas, and locations that exist), and Settings (connection, prompts, and this guide).',
       },
     ],
   },
@@ -72,7 +72,7 @@ const MANUAL_CATEGORIES = [
       {
         q: 'What\'s the difference between a character and a persona?',
         a: 'Characters are the people the AI plays. Your persona is who you play as — set one under World → '
-          + 'Persona so characters know who they\'re talking to; without one, you\'re just "the visitor."',
+          + 'Cast (above the character list) so characters know who they\'re talking to; without one, you\'re just "the visitor."',
       },
       {
         q: 'How do I add a character?',

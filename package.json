@@ -11,6 +11,7 @@
     "start": "npm run build --workspace=frontend && npm start --workspace=backend",
     "build": "npm run build --workspace=frontend",
     "dev": "npm run dev --workspace=frontend",
+    "dev:live": "npm run dev:live --workspace=frontend",
     "test": "npm test --workspace=backend"
   },
   "engines": {

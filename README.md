@@ -54,16 +54,16 @@ freeroam/
 │   │   └── worlds/<id>/     one world (save slot) per dir: characters/places/world/personas/presets/
 │   │                        groups JSON, chats/ + texts/ logs, and its own memory/relationship SQLite db (gitignored)
 │   └── uploads/avatars/<id>/  uploaded avatars, world-scoped, served at /avatars/<worldId>/... (gitignored)
-├── frontend/                Vue 3 + Vite SPA (hash-based routing)
-│   └── src/
-│       ├── router/          hash routes (#/world/..., #/settings/...)
-│       ├── stores/          Pinia: world, chat, settings, theme, ui, phone, groups, worlds
-│       ├── api/             thin fetch wrappers, one file per backend resource
-│       ├── composables/     shared singleton UI state (modals, popovers)
-│       ├── components/      layout/, freeroam/, world/, cast/, persona/, phone/, prompts/, settings/, onboarding/, guides/, shared/
-│       ├── views/           one per route
-│       └── styles/          shared.css (theme CSS variables) + main.css (everything else)
-└── frontend-design/         a backend-free copy of frontend/ for standalone visual editing (see below)
+└── frontend/                Vue 3 + Vite SPA (hash-based routing)
+    └── src/
+        ├── router/          hash routes (#/world/..., #/settings/...)
+        ├── stores/          Pinia: world, chat, settings, theme, ui, phone, groups, worlds
+        ├── api/             thin fetch wrappers, one file per backend resource
+        ├── composables/     shared singleton UI state (modals, popovers)
+        ├── components/      layout/, freeroam/, world/, cast/, persona/, phone/, prompts/, settings/, onboarding/, guides/, shared/
+        ├── views/           one per route
+        ├── mock/            mockBackend.js — patches window.fetch for `npm run dev` (see below)
+        └── styles/          shared.css (theme CSS variables) + main.css (everything else)
 ```
 
 `backend/` and `frontend/` are two npm workspaces under the root
@@ -81,10 +81,14 @@ Then open **http://localhost:3001**. `npm start` always rebuilds the frontend
 first, so pulling changes and re-running `npm start` is all you need — no
 separate build step.
 
-For frontend development with hot-reload, run `npm run dev` from the repo root
-(Vite serves the SPA and proxies `/api` + `/avatars` to the backend on :3001,
-which you still need running separately — `npm start --workspace=backend`) and
-open the URL Vite prints.
+For frontend-only work (visual/UX changes) with **no backend at all**, run
+`npm run dev` from the repo root and open the URL Vite prints — see
+[Mock dev mode](#mock-dev-mode).
+
+For frontend development against a real backend instead, run `npm run
+dev:live` (Vite serves the SPA with hot-reload and proxies `/api` +
+`/avatars` to the backend on :3001, which you still need running separately
+— `npm start --workspace=backend`).
 
 A first-run onboarding walkthrough covers the essentials in-app; the short
 version:
@@ -221,14 +225,22 @@ internet), then caches it under `backend/.cache/`. Changing the embedding model
 makes stored vectors incompatible; Settings has an explicit "rebuild
 embeddings" action rather than silently re-embedding on startup.
 
-## frontend-design/
+## Mock dev mode
 
-`frontend-design/` is a standalone copy of `frontend/` for visual/UX editing
-with **no backend required**. Its `src/mock/mockBackend.js` patches
+```bash
+npm run dev          # mock backend, no server needed (the default)
+npm run dev:live      # hot-reload against a real backend on :3001
+```
+
+`npm run dev` — the default — runs the exact same `frontend/` app with **no
+backend process at all**, for visual/UX work where you don't want to run (or
+don't have) a real backend. `frontend/src/mock/mockBackend.js` patches
 `window.fetch` to answer every `/api/*` call in-browser with seeded demo data
-(replies are canned, not real generations), so `npm run dev` inside it runs the
-whole UI with zero network dependency. Edit the `.vue`/`.css` files there and
-see changes live; it's kept in sync with the real `frontend/` by hand.
+(replies are canned, not real generations). It's only ever loaded in this
+mode: `main.js` gates the import behind `import.meta.env.MODE === 'mock'`
+(set via Vite's `--mode` flag, which `dev` passes and `dev:live` doesn't) —
+a compile-time check `npm run build`/`npm run dev:live` never take, so the
+mock code has zero footprint in a production build.
 
 ## Tests
 

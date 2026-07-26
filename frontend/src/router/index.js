@@ -10,7 +10,10 @@ const routes = [
   { path: '/world', redirect: '/world/places' },
   { path: '/world/places', name: 'world-places', component: () => import('../views/PlacesView.vue'), meta: { top: '/world' } },
   { path: '/world/cast', name: 'world-cast', component: () => import('../views/CastView.vue'), meta: { top: '/world' } },
-  { path: '/world/persona', name: 'world-persona', component: () => import('../views/PersonaView.vue'), meta: { top: '/world' } },
+  // Personas merged into the Cast page — redirected rather than dropped
+  // outright so an old bookmark/muscle-memory URL still lands somewhere
+  // sensible (same convention as /settings/variables below).
+  { path: '/world/persona', redirect: '/world/cast' },
   // A distinct top-level prefix from '/world' on purpose — '/world/*' is
   // the in-fiction content editors (places/cast/persona), while this is
   // the save-slot switcher; sharing a prefix would be confusing on both

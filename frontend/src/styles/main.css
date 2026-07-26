@@ -723,14 +723,14 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 }
 .place-row.editing{ border-color:var(--violet); }
 .row-view{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
-.row-title{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.1rem; display:flex; align-items:center; gap:8px; }
+.row-title{ font-family:'Cormorant Garamond',serif; font-weight:600; font-size:1.1rem; display:flex; align-items:center; gap:8px; break-inside: avoid; }
 .row-desc{ font-size:0.8rem; color:var(--dim); margin-top:4px; line-height:1.4; }
-.row-actions{ display:flex; gap:8px; flex-shrink:0; }
-.row-actions button{
+.row-actions{ display:flex; gap:8px; flex-shrink:0; margin-top: 4px; }
+/* .row-actions button{
   background:none; border:none; color:var(--dim); font-size:0.76rem; cursor:pointer; padding:4px;
 }
 .row-actions button:hover{ color:var(--accent); text-decoration:underline; }
-.row-actions .danger:hover{ color:var(--rose); }
+.row-actions .danger:hover{ color:var(--rose); } */
 
 /* ---- Cast view ---- */
 .upload-zone{
@@ -762,6 +762,10 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   grid-template-columns:repeat(auto-fill, minmax(200px, 1fr));
   gap:14px;
 }
+/* Cast view: separates the Personas section from the character cast below
+   it — .toolbar/.grid/.empty-note have no bottom margin of their own, so
+   without this the two sections butt up against each other with 0px gap. */
+.cast-section + .cast-section{ margin-top:32px; }
 .char-card{
   background:var(--panel);
   border:1px solid var(--border);
@@ -779,6 +783,13 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 .cast-card:hover{ border-color:var(--accent); }
 .cast-card-avatar .avatar, .cast-card-avatar .avatar-fallback{ width:76px; height:76px; font-size:1.7rem; }
 .cast-card .card-name{ font-size:1rem; }
+/* Unlike a plain .cast-card (whole card opens the character modal), a
+   persona card exposes its actions as explicit buttons (Set/Clear active,
+   Edit) — no whole-card click, so the inherited cursor/hover-border from
+   .cast-card would misleadingly suggest one. */
+.persona-cast-card{ cursor:default; }
+.persona-cast-card:hover{ border-color:var(--border); }
+.persona-cast-card .card-actions{ justify-content:center; flex-wrap:wrap; margin-top:2px; }
 .card-top{ display:flex; align-items:center; gap:10px; }
 .avatar{
   width:44px; height:44px; border-radius:var(--avatar-radius);

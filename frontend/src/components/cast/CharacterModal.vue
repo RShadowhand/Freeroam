@@ -5,6 +5,7 @@ import { useCharacterModal } from '../../composables/useCharacterModal';
 import { createCharacter, updateCharacter, deleteCharacter, exportCharacter } from '../../api/characters';
 import { apiBlobGet } from '../../api/http';
 import CardAvatar from '../shared/CardAvatar.vue';
+import ExpandableTextarea from '../shared/ExpandableTextarea.vue';
 import RelationshipsSection from './RelationshipsSection.vue';
 import MemoriesSection from './MemoriesSection.vue';
 import PlaceScheduleSection from './PlaceScheduleSection.vue';
@@ -161,21 +162,21 @@ async function remove() {
           </div>
           <div class="field-row">
             <label>Description</label>
-            <textarea v-model="description" rows="6" placeholder="Who are they? Role in the world, appearance, background."></textarea>
+            <ExpandableTextarea v-model="description" rows="6" placeholder="Who are they? Role in the world, appearance, background." />
           </div>
           <div class="form-grid">
             <div>
               <label>Personality <span class="hint-inline">(optional)</span></label>
-              <textarea v-model="personality" rows="4" placeholder="Traits, manner of speaking."></textarea>
+              <ExpandableTextarea v-model="personality" rows="4" placeholder="Traits, manner of speaking." />
             </div>
             <div>
               <label>Scenario <span class="hint-inline">(optional, opt-in — see Variables page)</span></label>
-              <textarea v-model="scenario" rows="4" placeholder="A specific situation they're in, if any."></textarea>
+              <ExpandableTextarea v-model="scenario" rows="4" placeholder="A specific situation they're in, if any." />
             </div>
           </div>
           <div class="field-row">
             <label>Example dialogue <span class="hint-inline">(optional, opt-in)</span></label>
-            <textarea v-model="exampleDialogue" rows="4" placeholder="A sample of how they talk."></textarea>
+            <ExpandableTextarea v-model="exampleDialogue" rows="4" placeholder="A sample of how they talk." />
           </div>
           <p class="hint">Only Description (and Personality, if a preset asks for it) are sent by default. Scenario and Example dialogue are opt-in — they're only included if the active prompt preset has a block for them.</p>
         </div>

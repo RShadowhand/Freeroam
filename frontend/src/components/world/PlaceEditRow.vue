@@ -129,12 +129,13 @@ async function remove() {
         </div>
         <div class="row-desc" v-if="place.desc">{{ place.desc }}</div>
         <div class="row-desc" v-else><em>No description yet.</em></div>
-      </div>
-      <div class="row-actions">
-        <button @click="startEdit">Edit</button>
-        <button @click="exportJson">Export</button>
-        <button @click="exportPng">Export as PNG</button>
-        <button class="danger" @click="remove">Remove</button>
+
+        <div class="row-actions">
+          <button class="btn secondary small" @click="startEdit">Edit</button>
+          <button class="btn secondary small" @click="exportJson">Export</button>
+          <button class="btn secondary small" @click="exportPng">Export as PNG</button>
+          <button class="btn danger small" @click="remove">Remove</button>
+        </div>
       </div>
     </div>
   </div>

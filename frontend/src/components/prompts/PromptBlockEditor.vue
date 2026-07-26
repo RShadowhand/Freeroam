@@ -1,4 +1,6 @@
 <script setup>
+import ExpandableTextarea from '../shared/ExpandableTextarea.vue';
+
 // Mutates `block` in place — it's the same reactive object living inside
 // the parent PresetCard's draft.prompts array, not a copy, so edits here
 // are exactly equivalent to editing the draft directly.
@@ -30,9 +32,9 @@ const emit = defineEmits(['move-up', 'move-down', 'remove']);
     <div class="marker-note" v-if="block.marker">
       Placeholder · {{ markerLabel ? 'filled with: ' + markerLabel : 'not used in Freeroam, left empty' }}
     </div>
-    <textarea
+    <ExpandableTextarea
       v-else class="prompt-content" v-model="block.content"
       placeholder="Prompt text. {{user}} and {{char}} are supported."
-    ></textarea>
+    />
   </div>
 </template>
