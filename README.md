@@ -33,6 +33,10 @@ neighborhood just to have something to click around on.
   PNGs or JSON, and whole worlds as `.zip` bundles.
 - **A narrator, weather, an in-world clock, and character schedules** — ambient
   scene texture and a world that has a time of day.
+- **Suggested actions** — quick-action chips under a reply (send/go somewhere,
+  add a new place or character, bring someone into or out of the scene),
+  detected locally with no extra LLM call; see
+  [Suggested actions](#suggested-actions).
 
 ## Structure
 
@@ -174,6 +178,33 @@ is shared across anyone hitting the same world.
   to the endpoint's `/chat/completions` (streaming or not). The key never
   touches the browser. A separate **narrator** pass adds ambient scene texture
   for empty, solo, or background-heavy scenes.
+
+## Suggested actions
+
+A generated reply is scanned for a small set of high-value cues and turned
+into one-click suggestion chips under the message — a nudge, not a
+generation, so every chip is just a shortcut to something you could already
+do manually:
+
+- **Destination** — the reply invites you somewhere (a known place: "Send to"
+  / "Go with"; an unrecognized name: "Add place").
+- **New character** — a name gets introduced that isn't in the cast yet
+  ("Add character").
+- **Promote / demote** — a present-but-background character gets beckoned into
+  the conversation, or the speaker steps back from it (adjusts who's "active"
+  at that place — see [How a scene is generated](#how-a-scene-is-generated)).
+
+More than one suggestion on a message collapses into a single "N
+suggestions…" button that opens a grouped modal instead of a wrapping row of
+chips. Detection is entirely local (`backend/lib/suggestedActions.js`) — no
+extra LLM call — via three modes, set in Settings → **Suggested actions**:
+
+- **Regex only** — fixed trigger phrases, instant, but only fires on
+  phrasing it was written for.
+- **ML only** — a local NER + zero-shot intent-classification model
+  (same in-process ONNX approach as embeddings), more robust to varied
+  phrasing, slower per message.
+- **Regex + ML** — runs both and merges, regex hits taking priority.
 
 ## How memory works
 
