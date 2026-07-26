@@ -8,9 +8,7 @@ import { importCharacters } from '../api/characters';
 import { setActivePersona, importPersonas, importPersonaCard } from '../api/personas';
 import UploadZone from '../components/cast/UploadZone.vue';
 import CastCard from '../components/cast/CastCard.vue';
-import CharacterModal from '../components/cast/CharacterModal.vue';
 import PersonaCard from '../components/persona/PersonaCard.vue';
-import PersonaModal from '../components/persona/PersonaModal.vue';
 
 const world = useWorldStore();
 const characterModal = useCharacterModal();
@@ -129,6 +127,4 @@ function onPersonaImportFileChange() {
       </div>
     </div>
   </section>
-  <CharacterModal />
-  <PersonaModal />
 </template>

@@ -5,6 +5,8 @@ import MainNav from './components/layout/MainNav.vue';
 import SubNav from './components/layout/SubNav.vue';
 import ErrorBanner from './components/layout/ErrorBanner.vue';
 import OnboardingModal from './components/onboarding/OnboardingModal.vue';
+import CharacterModal from './components/cast/CharacterModal.vue';
+import PersonaModal from './components/persona/PersonaModal.vue';
 
 const route = useRoute();
 
@@ -22,5 +24,7 @@ const isFreeroam = computed(() => route.path === '/');
     <ErrorBanner />
     <router-view />
     <OnboardingModal />
+    <CharacterModal />
+    <PersonaModal />
   </div>
 </template>

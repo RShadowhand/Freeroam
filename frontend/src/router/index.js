@@ -10,6 +10,7 @@ const routes = [
   { path: '/world', redirect: '/world/places' },
   { path: '/world/places', name: 'world-places', component: () => import('../views/PlacesView.vue'), meta: { top: '/world' } },
   { path: '/world/cast', name: 'world-cast', component: () => import('../views/CastView.vue'), meta: { top: '/world' } },
+  { path: '/world/relations', name: 'world-relations', component: () => import('../views/RelationsGraphView.vue'), meta: { top: '/world' } },
   // Personas merged into the Cast page — redirected rather than dropped
   // outright so an old bookmark/muscle-memory URL still lands somewhere
   // sensible (same convention as /settings/variables below).

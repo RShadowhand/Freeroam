@@ -7,6 +7,7 @@ const route = useRoute();
 const worldTabs = [
   { path: '/world/cast', label: 'Cast' },
   { path: '/world/places', label: 'Places' },
+  { path: '/world/relations', label: 'Relations Graph' },
 ];
 const settingsTabs = [
   { path: '/settings/system', label: 'System' },
