@@ -26,6 +26,17 @@ const offerSaveByIndex = computed(() => {
 const liveReasoningHtml = computed(() => chat.streamingState ? formatMessage(chat.streamingState.reasoning, theme.format) : '');
 const liveTextHtml = computed(() => chat.streamingState ? formatMessage(chat.streamingState.text, theme.format) : '');
 
+// A trailing generation-failure error (type 'error', client-only, never
+// persisted — see stores/chat.js) shouldn't hide the Retry button on the
+// user message it followed; scan back past any of those to find the last
+// *real* entry. isLast is only ever consumed by UserMessage.vue's retry
+// button, so this redefinition is safely scoped.
+const lastRealIndex = computed(() => {
+  const log = chat.currentLog;
+  for (let i = log.length - 1; i >= 0; i--) { if (log[i].type !== 'error') return i; }
+  return -1;
+});
+
 function scrollToBottom() {
   if (box.value) box.value.scrollTop = box.value.scrollHeight;
 }
@@ -42,7 +53,7 @@ watch(() => chat.currentPlace, () => nextTick(scrollToBottom));
   <div class="messages" id="messages" ref="box">
     <MessageItem
       v-for="(m, i) in chat.currentLog" :key="m.id || i"
-      :message="m" :is-last="i === chat.currentLog.length - 1" :offer-save="offerSaveByIndex[i]"
+      :message="m" :is-last="i === lastRealIndex" :offer-save="offerSaveByIndex[i]"
     />
     <div class="msg char" v-if="chat.streamingState">
       <div class="msg-avatar"><Avatar :char-id="chat.streamingState.charId" :size="38" /></div>

@@ -117,7 +117,7 @@ export const useChatStore = defineStore('chat', {
         if (data.returnMarkerPending) this.pendingReturnMarker.add(id); else this.pendingReturnMarker.delete(id);
         localStorage.setItem(lastPlaceKey(), id);
       } catch (err) {
-        this.logs[id] = [...(this.logs[id] || []), { type: 'error', text: `Something goes wrong trying to reach the room. (${err.message})` }];
+        this.logs[id] = [...(this.logs[id] || []), { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong trying to reach the room. (${err.message})` }];
         useUiStore().showError(`Couldn't enter that place. (${err.message})`);
       } finally {
         this.entering = false;
@@ -237,11 +237,11 @@ export const useChatStore = defineStore('chat', {
         }
 
         if (result.error) {
-          this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', text: `Something goes wrong trying to reach the room. (${result.error})` }];
+          this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong trying to reach the room. (${result.error})` }];
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', text: `Something goes wrong trying to reach the room. (${err.message})` }];
+        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong trying to reach the room. (${err.message})` }];
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
@@ -276,11 +276,11 @@ export const useChatStore = defineStore('chat', {
 
         this.pendingReturnMarker.delete(placeId);
         if (result.error) {
-          this.logs[placeId] = [...this.logs[placeId], { type: 'error', text: `Something goes wrong trying to reach the room. (${result.error})` }];
+          this.logs[placeId] = [...this.logs[placeId], { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong trying to reach the room. (${result.error})` }];
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', text: `Something goes wrong trying to reach the room. (${err.message})` }];
+        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong trying to reach the room. (${err.message})` }];
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
@@ -332,11 +332,11 @@ export const useChatStore = defineStore('chat', {
         }
 
         if (result.error) {
-          this.logs[placeId] = [...this.logs[placeId], { type: 'error', text: `Something goes wrong on the call. (${result.error})` }];
+          this.logs[placeId] = [...this.logs[placeId], { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong on the call. (${result.error})` }];
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', text: `Something goes wrong on the call. (${err.message})` }];
+        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong on the call. (${err.message})` }];
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
@@ -383,7 +383,7 @@ export const useChatStore = defineStore('chat', {
           this.logs[placeId] = data.log;
         }
       } catch (err) {
-        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', text: `Could not regenerate. (${err.message})` }];
+        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Could not regenerate. (${err.message})` }];
       } finally {
         this.streamingState = null;
         this.setLoading(false);
@@ -413,6 +413,15 @@ export const useChatStore = defineStore('chat', {
       } catch (err) {
         useUiStore().showError(`Could not delete the message. (${err.message})`);
       }
+    },
+
+    // A generation-failure error is a client-only render artifact — every
+    // catch block above appends one straight to `logs`, never to the
+    // backend (there's nothing persisted to delete), so removing it is a
+    // pure local filter, no API call.
+    removeError(entryId) {
+      const placeId = this.currentPlace;
+      this.logs[placeId] = (this.logs[placeId] || []).filter((m) => m.id !== entryId);
     },
 
     toggleReasoning(id) {

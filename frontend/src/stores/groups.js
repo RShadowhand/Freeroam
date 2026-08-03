@@ -137,11 +137,11 @@ export const useGroupsStore = defineStore('groups', {
         }
 
         if (result.error) {
-          this.logs[groupId] = [...this.logs[groupId], { type: 'error', text: `Couldn't send that. (${result.error})` }];
+          this.logs[groupId] = [...this.logs[groupId], { type: 'error', id: crypto.randomUUID(), text: `Couldn't send that. (${result.error})` }];
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'error', text: `Couldn't send that. (${err.message})` }];
+        this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't send that. (${err.message})` }];
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
@@ -169,16 +169,22 @@ export const useGroupsStore = defineStore('groups', {
         }
 
         if (result.error) {
-          this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'error', text: `Couldn't retry. (${result.error})` }];
+          this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't retry. (${result.error})` }];
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'error', text: `Couldn't retry. (${err.message})` }];
+        this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't retry. (${err.message})` }];
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
         this.loading = false;
       }
+    },
+
+    // A generation-failure error is a client-only render artifact — never
+    // sent to the backend, so removing it is a pure local filter.
+    removeError(groupId, entryId) {
+      this.logs[groupId] = (this.logs[groupId] || []).filter((m) => m.id !== entryId);
     },
   },
 });

@@ -37,11 +37,21 @@ const typingName = computed(() => (
   groups.streamingState && groups.streamingState.groupId === props.groupId ? groups.streamingState.name : ''
 ));
 
+// A trailing generation-failure error (type 'error', client-only, never
+// persisted — see stores/groups.js) shouldn't hide Retry on the user
+// message it followed; scan back past any of those to find the last *real*
+// entry.
+const lastRealIndex = computed(() => {
+  const l = log.value;
+  for (let i = l.length - 1; i >= 0; i--) { if (l[i].type !== 'error') return i; }
+  return -1;
+});
+
 // Nothing replied to the trailing message yet — same "offer to try again"
 // condition place chat's UserMessage.vue uses for its own retry button.
 const showRetry = computed(() => {
-  const l = log.value;
-  return l.length > 0 && l[l.length - 1].type === 'user' && !groups.streamingState;
+  const idx = lastRealIndex.value;
+  return idx >= 0 && log.value[idx].type === 'user' && !groups.streamingState;
 });
 
 function charName(charId) {
@@ -91,6 +101,9 @@ function deleteMessage(entryId) {
 function retry() {
   groups.retryText(props.groupId);
 }
+function dismissError(entryId) {
+  groups.removeError(props.groupId, entryId);
+}
 </script>
 
 <template>
@@ -106,13 +119,16 @@ function retry() {
     <div class="messages" ref="box">
       <div class="empty-note" v-if="!log.length">No messages yet — say hello to the group.</div>
       <template v-for="(m, i) in log" :key="m.id || i">
-        <div class="msg error" v-if="m.type === 'error'">{{ m.text }}</div>
+        <div class="msg error" v-if="m.type === 'error'">
+          {{ m.text }}
+          <button class="msg-delete-btn error-dismiss" title="Dismiss" @click="dismissError(m.id)">✕</button>
+        </div>
         <div class="msg user" v-else-if="m.type === 'user'">
           <div class="bubble" v-html="html(m.text)"></div>
           <div class="msg-actions">
             <button v-if="m.id" class="msg-delete-btn" title="Delete" @click="deleteMessage(m.id)">🗑</button>
             <button
-              v-if="i === log.length - 1 && showRetry" class="retry-btn"
+              v-if="i === lastRealIndex && showRetry" class="retry-btn"
               title="No reply yet — try sending this again" @click="retry"
             >↻ Retry</button>
           </div>

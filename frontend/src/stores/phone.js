@@ -129,11 +129,11 @@ export const usePhoneStore = defineStore('phone', {
         }
 
         if (result.error) {
-          this.logs[characterId] = [...this.logs[characterId], { type: 'error', text: `Couldn't send that. (${result.error})` }];
+          this.logs[characterId] = [...this.logs[characterId], { type: 'error', id: crypto.randomUUID(), text: `Couldn't send that. (${result.error})` }];
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'error', text: `Couldn't send that. (${err.message})` }];
+        this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't send that. (${err.message})` }];
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
@@ -161,11 +161,11 @@ export const usePhoneStore = defineStore('phone', {
         }
 
         if (result.error) {
-          this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'error', text: `Couldn't retry. (${result.error})` }];
+          this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't retry. (${result.error})` }];
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'error', text: `Couldn't retry. (${err.message})` }];
+        this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't retry. (${err.message})` }];
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
@@ -178,6 +178,12 @@ export const usePhoneStore = defineStore('phone', {
       if (ok) this.logs[characterId] = data.log;
       else useUiStore().showError(data.error || 'Could not delete the message.');
       return { ok, data };
+    },
+
+    // A generation-failure error is a client-only render artifact — never
+    // sent to the backend, so removing it is a pure local filter.
+    removeError(characterId, entryId) {
+      this.logs[characterId] = (this.logs[characterId] || []).filter((m) => m.id !== entryId);
     },
   },
 });

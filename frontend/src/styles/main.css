@@ -465,7 +465,11 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   font-family:'IBM Plex Mono',monospace; font-size:0.72rem;
   letter-spacing:0.04em; text-transform:uppercase; margin:6px 0;
 }
-.msg.error{ align-self:center; color:var(--rose); font-size:0.78rem; text-align:center; }
+.msg.error{ align-self:center; display:flex; align-items:center; gap:8px; color:var(--rose); font-size:0.78rem; text-align:center; }
+/* Always visible, unlike .msg-delete-btn's hover-reveal default elsewhere —
+   an error is rare/one-off, so dismissing it should be immediately
+   discoverable, not require hovering first. */
+.msg.error .error-dismiss{ opacity:1; }
 .msg.narrator{
   align-self:center; max-width:92%; position:relative;
   border-top:1px solid var(--border); border-bottom:1px solid var(--border);
