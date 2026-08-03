@@ -11,7 +11,7 @@ import { logger } from './log.js';
 // (an X-World-Id header), never via a server-side "current world" pointer,
 // so different browsers/users can be in different worlds at the same time.
 
-export const WORLD_JSON_FILES = ['characters.json', 'places.json', 'world.json', 'personas.json', 'presets.json', 'groups.json'];
+export const WORLD_JSON_FILES = ['characters.json', 'places.json', 'world.json', 'personas.json', 'groups.json'];
 
 // A whole-world export/import (see worldExport.js) is a full-fidelity
 // backup/restore, a different intent from clone's "branch a variant" —
@@ -73,8 +73,12 @@ export function rewriteAvatarUrls(dataDir, worldId) {
 // clean up. Returns the new { worlds, defaultWorldId } registry, or null
 // if there was no legacy data to migrate (a true fresh install).
 function migrateLegacyLayout({ dataRoot, worldsRoot, avatarsRoot }) {
+  // presets.json is deliberately excluded here — a lingering pre-multi-world
+  // presets.json sits directly at dataRoot/presets.json, which is exactly
+  // where the new global presets file belongs (see externalDataRoot.js), so
+  // there's nothing to move; leaving it in place already does the right thing.
   const legacyArtifacts = [
-    'characters.json', 'places.json', 'world.json', 'personas.json', 'presets.json',
+    'characters.json', 'places.json', 'world.json', 'personas.json',
     'chats', 'freeroam.db', 'memories', 'memories.imported',
   ].map((f) => path.join(dataRoot, f));
   const hasLegacyAvatars = fs.existsSync(avatarsRoot) && fs.readdirSync(avatarsRoot).length > 0;
@@ -89,7 +93,7 @@ function migrateLegacyLayout({ dataRoot, worldsRoot, avatarsRoot }) {
   fs.writeFileSync(marker, String(Date.now()));
 
   const moves = [
-    'characters.json', 'places.json', 'world.json', 'personas.json', 'presets.json',
+    'characters.json', 'places.json', 'world.json', 'personas.json',
     'chats', 'freeroam.db', 'freeroam.db-wal', 'freeroam.db-shm', 'memories', 'memories.imported',
   ];
   for (const name of moves) {
@@ -97,14 +101,11 @@ function migrateLegacyLayout({ dataRoot, worldsRoot, avatarsRoot }) {
     if (fs.existsSync(src)) fs.renameSync(src, path.join(dataDir, name));
   }
 
-  // Avatars: the destination (uploads/avatars/<id>) lives inside the
-  // source (uploads/avatars) — rename the whole source dir aside first so
-  // the move can't nest into itself.
+  // Avatars: the destination (dataDir/avatars) is a completely separate
+  // tree from the source (dataRoot/uploads/avatars) now that avatars nest
+  // inside each world's own folder, so a direct rename is safe.
   if (fs.existsSync(avatarsRoot)) {
-    const staging = `${avatarsRoot}.migrating`;
-    fs.renameSync(avatarsRoot, staging);
-    fs.mkdirSync(avatarsRoot, { recursive: true });
-    fs.renameSync(staging, path.join(avatarsRoot, id));
+    fs.renameSync(avatarsRoot, path.join(dataDir, 'avatars'));
   }
 
   rewriteAvatarUrls(dataDir, id);
@@ -118,10 +119,12 @@ function migrateLegacyLayout({ dataRoot, worldsRoot, avatarsRoot }) {
   return registryData;
 }
 
-export function createWorldRegistry({ rootDir }) {
-  const dataRoot = path.join(rootDir, 'data');
+export function createWorldRegistry({ dataRoot }) {
   const worldsRoot = path.join(dataRoot, 'worlds');
-  const avatarsRoot = path.join(rootDir, 'uploads', 'avatars');
+  // Only used to locate a legacy pre-multi-world avatar tree during
+  // migrateLegacyLayout — avatars otherwise live nested under each world's
+  // own dataDir (see contextFor's avatarDir below), not in a shared tree.
+  const avatarsRoot = path.join(dataRoot, 'uploads', 'avatars');
   const registryPath = path.join(dataRoot, 'worlds.json');
 
   const contexts = new Map(); // worldId -> context object (paths + lazy db)
@@ -147,7 +150,7 @@ export function createWorldRegistry({ rootDir }) {
   function contextFor(id) {
     if (contexts.has(id)) return contexts.get(id);
     const dataDir = path.join(worldsRoot, id);
-    const avatarDir = path.join(avatarsRoot, id);
+    const avatarDir = path.join(dataDir, 'avatars');
     const personaAvatarDir = path.join(avatarDir, 'personas');
     const chatDir = path.join(dataDir, 'chats');
     const textsDir = path.join(dataDir, 'texts');
@@ -168,7 +171,6 @@ export function createWorldRegistry({ rootDir }) {
         places: path.join(dataDir, 'places.json'),
         world: path.join(dataDir, 'world.json'),
         personas: path.join(dataDir, 'personas.json'),
-        presets: path.join(dataDir, 'presets.json'),
         weather: path.join(dataDir, 'weather.json'),
         calls: path.join(dataDir, 'calls.json'),
         groups: path.join(dataDir, 'groups.json'),
@@ -348,7 +350,6 @@ export function createWorldRegistry({ rootDir }) {
     contexts.delete(id);
 
     await removeDirWithRetry(path.join(worldsRoot, id));
-    await removeDirWithRetry(path.join(avatarsRoot, id));
 
     return { defaultWorldId };
   }
@@ -362,7 +363,6 @@ export function createWorldRegistry({ rootDir }) {
 
   async function init() {
     fs.mkdirSync(dataRoot, { recursive: true });
-    fs.mkdirSync(avatarsRoot, { recursive: true });
 
     let migrated = null;
     if (!fs.existsSync(worldsRoot)) {
@@ -375,7 +375,7 @@ export function createWorldRegistry({ rootDir }) {
       if (staleMarkers.length) {
         throw new Error(
           `World migration did not finish cleanly (found: ${staleMarkers.join(', ')}). `
-          + 'Restore backend/data and backend/uploads from backup before restarting.'
+          + 'Restore your data directory from backup before restarting.'
         );
       }
     }

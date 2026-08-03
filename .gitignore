@@ -3,11 +3,8 @@ dist/
 .cache/
 
 # Secrets and user data — never commit
-backend/config.json
-backend/data/
-backend/data - Copy/
-backend/uploads/
-backend/uploads - Copy/
+data/
+data - Copy/
 
 npm-debug.log*
 .DS_Store

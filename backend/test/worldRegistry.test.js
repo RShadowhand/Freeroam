@@ -17,7 +17,7 @@ function tempRoot() {
 describe('createWorldRegistry — fresh install', () => {
   test('init() with no existing data creates one seeded default world', async () => {
     const rootDir = tempRoot();
-    const registry = createWorldRegistry({ rootDir });
+    const registry = createWorldRegistry({ dataRoot: rootDir });
     await registry.init();
 
     const { worlds, defaultWorldId } = registry.list();
@@ -41,7 +41,10 @@ describe('createWorldRegistry — fresh install', () => {
 
 describe('createWorldRegistry — legacy single-world migration', () => {
   function seedLegacyLayout(rootDir) {
-    const dataDir = path.join(rootDir, 'data');
+    // Under the renamed { dataRoot } API, dataRoot IS the flat data folder
+    // directly (no nested data/ appended) — so legacy artifacts seed right
+    // at its top level, matching what a pre-migration install now looks like.
+    const dataDir = rootDir;
     fs.mkdirSync(dataDir, { recursive: true });
     fs.mkdirSync(path.join(dataDir, 'chats'), { recursive: true });
     fs.writeFileSync(path.join(dataDir, 'characters.json'), JSON.stringify([
@@ -68,7 +71,7 @@ describe('createWorldRegistry — legacy single-world migration', () => {
     const rootDir = tempRoot();
     const dataDir = seedLegacyLayout(rootDir);
 
-    const registry = createWorldRegistry({ rootDir });
+    const registry = createWorldRegistry({ dataRoot: rootDir });
     await registry.init();
 
     const { worlds, defaultWorldId } = registry.list();
@@ -102,12 +105,12 @@ describe('createWorldRegistry — legacy single-world migration', () => {
     const rootDir = tempRoot();
     seedLegacyLayout(rootDir);
 
-    const first = createWorldRegistry({ rootDir });
+    const first = createWorldRegistry({ dataRoot: rootDir });
     await first.init();
     const idAfterFirst = first.list().defaultWorldId;
     first.closeAll();
 
-    const second = createWorldRegistry({ rootDir });
+    const second = createWorldRegistry({ dataRoot: rootDir });
     await second.init();
     const { worlds, defaultWorldId } = second.list();
     assert.equal(worlds.length, 1);
@@ -121,7 +124,7 @@ describe('createWorldRegistry — legacy single-world migration', () => {
 describe('createWorldRegistry — create()', () => {
   test('mode "empty" writes empty seed files so the app-level lazy seed never fires', async () => {
     const rootDir = tempRoot();
-    const registry = createWorldRegistry({ rootDir });
+    const registry = createWorldRegistry({ dataRoot: rootDir });
     await registry.init();
 
     const entry = await registry.create({ name: 'Blank Slate', mode: 'empty' });
@@ -136,7 +139,7 @@ describe('createWorldRegistry — create()', () => {
 
   test('mode "clone" copies the source world\'s JSON files and rewrites avatar URLs', async () => {
     const rootDir = tempRoot();
-    const registry = createWorldRegistry({ rootDir });
+    const registry = createWorldRegistry({ dataRoot: rootDir });
     await registry.init();
 
     const src = await registry.create({ name: 'Source', mode: 'empty' });
@@ -157,7 +160,7 @@ describe('createWorldRegistry — create()', () => {
 
   test('mode "clone" with includeHistory:false also wipes memory_vectors AND its sqlite-vec shadow tables', async () => {
     const rootDir = tempRoot();
-    const registry = createWorldRegistry({ rootDir });
+    const registry = createWorldRegistry({ dataRoot: rootDir });
     await registry.init();
 
     const src = await registry.create({ name: 'Source', mode: 'empty' });
@@ -206,7 +209,7 @@ describe('createWorldRegistry — create()', () => {
 
   test('rejects a missing or overlong name', async () => {
     const rootDir = tempRoot();
-    const registry = createWorldRegistry({ rootDir });
+    const registry = createWorldRegistry({ dataRoot: rootDir });
     await registry.init();
 
     await assert.rejects(() => registry.create({ name: '  ' }), /name is required/i);
@@ -220,7 +223,7 @@ describe('createWorldRegistry — create()', () => {
 describe('createWorldRegistry — rename/touch/remove', () => {
   test('rename() updates the name, validates like create()', async () => {
     const rootDir = tempRoot();
-    const registry = createWorldRegistry({ rootDir });
+    const registry = createWorldRegistry({ dataRoot: rootDir });
     await registry.init();
     const { defaultWorldId } = registry.list();
 
@@ -236,7 +239,7 @@ describe('createWorldRegistry — rename/touch/remove', () => {
 
   test('touch() updates lastPlayedAt once, then throttles further calls', async () => {
     const rootDir = tempRoot();
-    const registry = createWorldRegistry({ rootDir });
+    const registry = createWorldRegistry({ dataRoot: rootDir });
     await registry.init();
     const { defaultWorldId } = registry.list();
     const before = registry.list().worlds[0].lastPlayedAt;
@@ -257,7 +260,7 @@ describe('createWorldRegistry — rename/touch/remove', () => {
 
   test('remove() refuses to delete the only remaining world', async () => {
     const rootDir = tempRoot();
-    const registry = createWorldRegistry({ rootDir });
+    const registry = createWorldRegistry({ dataRoot: rootDir });
     await registry.init();
     const { defaultWorldId } = registry.list();
 
@@ -269,7 +272,7 @@ describe('createWorldRegistry — rename/touch/remove', () => {
 
   test('remove() deletes a non-default world, closes its db, and the dir is gone', async () => {
     const rootDir = tempRoot();
-    const registry = createWorldRegistry({ rootDir });
+    const registry = createWorldRegistry({ dataRoot: rootDir });
     await registry.init();
 
     const second = await registry.create({ name: 'Second', mode: 'empty' });
@@ -279,7 +282,7 @@ describe('createWorldRegistry — rename/touch/remove', () => {
     const result = await registry.remove(second.id);
     assert.equal(result.defaultWorldId, registry.list().defaultWorldId);
     assert.equal(registry.list().worlds.some((w) => w.id === second.id), false);
-    assert.equal(fs.existsSync(path.join(rootDir, 'data', 'worlds', second.id)), false);
+    assert.equal(fs.existsSync(path.join(rootDir, 'worlds', second.id)), false);
     assert.equal(registry.get(second.id), null);
 
     registry.closeAll();
@@ -288,7 +291,7 @@ describe('createWorldRegistry — rename/touch/remove', () => {
 
   test('removing the current default world reassigns defaultWorldId to a remaining world', async () => {
     const rootDir = tempRoot();
-    const registry = createWorldRegistry({ rootDir });
+    const registry = createWorldRegistry({ dataRoot: rootDir });
     await registry.init();
     const originalDefault = registry.list().defaultWorldId;
 
@@ -305,7 +308,7 @@ describe('createWorldRegistry — rename/touch/remove', () => {
 describe('createWorldRegistry — get()', () => {
   test('returns null for an unknown id, never constructs a path from it', async () => {
     const rootDir = tempRoot();
-    const registry = createWorldRegistry({ rootDir });
+    const registry = createWorldRegistry({ dataRoot: rootDir });
     await registry.init();
 
     assert.equal(registry.get('../../etc/passwd'), null);

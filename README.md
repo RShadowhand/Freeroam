@@ -43,17 +43,18 @@ neighborhood just to have something to click around on.
 ```
 freeroam/
 ├── package.json             root npm workspace — see "Run it" below
+├── data/                    all runtime data, external to both workspaces (gitignored)
+│   ├── config.json          created on first run: API key + model — global, shared by every world
+│   ├── presets.json         prompt presets — also global, shared by every world (not per-world)
+│   ├── worlds.json          registry: [{ id, name, createdAt, lastPlayedAt }], defaultWorldId
+│   └── worlds/<id>/         one world (save slot) per dir: characters/places/world/personas/
+│                            groups JSON, its own avatars/ (incl. avatars/personas/), chats/ + texts/
+│                            logs, and its own memory/relationship SQLite db
 ├── backend/                 Express app + all game logic
 │   ├── server.js            routes: serves the frontend build + every /api/* endpoint
 │   ├── lib/                 context assembly, memory/relationship stores, embeddings,
 │   │                        NLP, TavernCard/PNG parsing, texting/calls/groups, worldRegistry, ...
-│   ├── test/                node:test suites (run with `npm test`)
-│   ├── config.json          created on first run: API key + model — global, shared by every world (gitignored)
-│   ├── data/
-│   │   ├── worlds.json      registry: [{ id, name, createdAt, lastPlayedAt }], defaultWorldId (gitignored)
-│   │   └── worlds/<id>/     one world (save slot) per dir: characters/places/world/personas/presets/
-│   │                        groups JSON, chats/ + texts/ logs, and its own memory/relationship SQLite db (gitignored)
-│   └── uploads/avatars/<id>/  uploaded avatars, world-scoped, served at /avatars/<worldId>/... (gitignored)
+│   └── test/                node:test suites (run with `npm test`)
 └── frontend/                Vue 3 + Vite SPA (hash-based routing)
     └── src/
         ├── router/          hash routes (#/world/..., #/settings/...)
@@ -111,7 +112,8 @@ version:
 A **world** is a full save slot: its own cast, places, chat history, and
 memory — switching worlds is a clean break, not a shared space. Everything is
 world-scoped except `config.json` (the API key/model and narrator/memory
-settings, which apply everywhere).
+settings) and `presets.json` (prompt presets), both global and shared across
+every world.
 
 - The **world name chip** at the right of the nav bar shows which world you're
   in and links to **Worlds**, where you can switch, rename, duplicate
@@ -121,11 +123,17 @@ settings, which apply everywhere).
 - **Multiple people can use one running instance in different worlds at the
   same time** — each browser tracks its own current world via a header sent
   with every request (`X-World-Id`), not the server. Running more than one
-  *server process* against the same `backend/data` at once is still
+  *server process* against the same `data/` folder at once is still
   unsupported.
 - **Upgrading from before this feature existed**: the first time the server
   starts, existing single-world data is automatically moved into
   `data/worlds/<id>/` as "My World" and set as the default — no action needed.
+- **Upgrading from before `data/` lived outside `backend/`**: the first time
+  the server starts, `backend/data`, `backend/uploads`, and `backend/config.json`
+  are automatically moved to the repo-root `data/` folder, per-world avatars are
+  folded into each world's own `data/worlds/<id>/avatars/`, and any pre-existing
+  per-world `presets.json` files are merged into one global `data/presets.json` —
+  no action needed.
 
 ## Places
 
@@ -251,6 +259,6 @@ npm test
 ```
 
 They point the app at a disposable temp directory (`FREEROAM_TEST_ROOT`), so
-they never touch real `backend/data` or `config.json`, and never make a real
+they never touch the real `data/` folder or `config.json`, and never make a real
 paid LLM call — the OpenRouter-backed paths are only exercised up through their
 validation branches, while the local embedding model (free) is used for real.

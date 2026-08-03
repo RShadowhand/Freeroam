@@ -88,6 +88,7 @@ import {
 } from './lib/textCascade.js';
 import { rollsProactiveText } from './lib/proactiveTexts.js';
 import { logger } from './lib/log.js';
+import { relocateDataRoot, consolidatePerWorldExtras } from './lib/externalDataRoot.js';
 logger.setLevel("debug")
 
 const __filename = fileURLToPath(import.meta.url);
@@ -96,19 +97,35 @@ const __dirname = path.dirname(__filename);
 // Overridable so the test suite can point a real (but disposable) Express
 // app at a temp directory instead of this project's actual data/config —
 // tests must never read the real OpenRouter key or write into real data.
-const ROOT_DIR = process.env.FREEROAM_TEST_ROOT || __dirname;
+// Lives outside backend/ (a repo-root data/ folder) so the backend source
+// tree stays free of runtime state — see lib/externalDataRoot.js for the
+// one-time automatic migration off the old backend-local layout.
+const DATA_ROOT = process.env.FREEROAM_TEST_ROOT || path.join(__dirname, '..', 'data');
 
-const CONFIG_PATH = path.join(ROOT_DIR, 'config.json');
-const AVATAR_ROOT = path.join(ROOT_DIR, 'uploads', 'avatars');
+const CONFIG_PATH = path.join(DATA_ROOT, 'config.json');
+const PRESETS_PATH = path.join(DATA_ROOT, 'presets.json'); // global — see loadPresets/savePresets below
+
+// The migration is a no-op once already applied (each step checks whether
+// its source still exists), and is skipped entirely under
+// FREEROAM_TEST_ROOT — its source paths are hardcoded relative to this
+// real backend directory and must never touch a test's scratch root.
+if (!process.env.FREEROAM_TEST_ROOT) {
+  relocateDataRoot({ backendDir: __dirname, dataRoot: DATA_ROOT });
+}
 
 // Every world (save slot) gets its own characters/places/world-state/
-// personas/presets, its own chat logs, and its own SQLite db — resolved
+// personas/avatars, its own chat logs, and its own SQLite db — resolved
 // per-request from the X-World-Id header (see the middleware below), never
 // from a server-side "current world" pointer, so different browsers/users
 // can be in different worlds on the same running instance at once.
-// config.json (API key/model/narrator/memory settings) stays global.
-const registry = createWorldRegistry({ rootDir: ROOT_DIR });
+// config.json/presets.json (API key/model/narrator/memory settings, prompt
+// presets) stay global, shared across every world.
+const registry = createWorldRegistry({ dataRoot: DATA_ROOT });
 await registry.init();
+
+if (!process.env.FREEROAM_TEST_ROOT) {
+  consolidatePerWorldExtras({ registry, dataRoot: DATA_ROOT });
+}
 
 // --- Config (endpoint + model) ---------------------------------------------
 
@@ -354,16 +371,18 @@ const EXT_FOR_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'w
 
 const DEFAULT_PRESETS = { presets: [], activePresetId: null };
 
-function loadPresets(w) {
+// Global, not per-world (mirrors config.json) — shared across every save
+// slot, so a world duplicate/export no longer carries its own presets.
+function loadPresets() {
   try {
-    return { ...DEFAULT_PRESETS, ...JSON.parse(fs.readFileSync(w.paths.presets, 'utf-8')) };
+    return { ...DEFAULT_PRESETS, ...JSON.parse(fs.readFileSync(PRESETS_PATH, 'utf-8')) };
   } catch {
-    savePresets(w, DEFAULT_PRESETS);
+    savePresets(DEFAULT_PRESETS);
     return { ...DEFAULT_PRESETS };
   }
 }
-function savePresets(w, data) {
-  fs.writeFileSync(w.paths.presets, JSON.stringify(data, null, 2));
+function savePresets(data) {
+  fs.writeFileSync(PRESETS_PATH, JSON.stringify(data, null, 2));
 }
 
 // --- App ----------------------------------------------------------------
@@ -380,12 +399,24 @@ app.use(express.json({ limit: '5mb' }));
 // dev server (`npm run dev` in frontend/) instead, which proxies /api and
 // /avatars requests through to this server (see frontend/vite.config.js).
 app.use(express.static(path.join(__dirname, '..', 'frontend', 'dist')));
-// One static mount for every world's avatars — express.static happily
-// serves nested paths, so /avatars/<worldId>/<file> and
-// /avatars/<worldId>/personas/<file> both resolve here without any
-// per-world route. World isolation for avatars is path-encoded rather than
-// header-based because an <img src> can't send a custom header.
-app.use('/avatars', express.static(AVATAR_ROOT));
+// Avatars now live nested inside each world's own folder rather than one
+// shared tree, so a single express.static(fixed root) mount no longer
+// covers every world — dispatch to a lazily-built, per-world static
+// handler instead, keyed off the :worldId path segment. World isolation
+// for avatars is path-encoded rather than header-based because an <img
+// src> can't send a custom header; the public URL shape (/avatars/<id>/…,
+// /avatars/<id>/personas/…) is unchanged from before.
+const avatarStatics = new Map(); // worldId -> express.static handler
+app.use('/avatars/:worldId', (req, res, next) => {
+  const world = registry.get(req.params.worldId);
+  if (!world) return next();
+  let handler = avatarStatics.get(world.id);
+  if (!handler) {
+    handler = express.static(world.avatarDir);
+    avatarStatics.set(world.id, handler);
+  }
+  handler(req, res, next);
+});
 
 // Resolves the active world for every /api request from the X-World-Id
 // header — absent means the registry's default world (old tabs, curl, the
@@ -1194,7 +1225,7 @@ app.post('/api/personas/active', (req, res) => {
 // --- Prompt preset routes -------------------------------------------------
 
 app.get('/api/presets', (req, res) => {
-  res.json(loadPresets(req.world));
+  res.json(loadPresets());
 });
 
 // Catalog for the Prompts view's "insert standard block" dropdown — see
@@ -1203,7 +1234,7 @@ app.get('/api/prompts/standard-blocks', (req, res) => {
   res.json({ blocks: STANDARD_PROMPT_BLOCKS });
 });
 
-function createPreset(w, { name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage }) {
+function createPreset({ name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage }) {
   const preset = {
     id: crypto.randomUUID(),
     name: name.trim(),
@@ -1212,19 +1243,18 @@ function createPreset(w, { name, prompts, contextLength, maxReplyTokens, memoryA
     prompts: normalizePromptList(prompts),
     memoryAsSeparateMessage: !!memoryAsSeparateMessage,
   };
-  const data = loadPresets(w);
+  const data = loadPresets();
   data.presets.push(preset);
-  savePresets(w, data);
+  savePresets(data);
   return preset;
 }
 
 app.post('/api/presets', (req, res) => {
-  const w = req.world;
   const { name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage } = req.body || {};
   if (typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'A preset name is required.' });
   }
-  res.status(201).json({ preset: createPreset(w, { name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage }) });
+  res.status(201).json({ preset: createPreset({ name, prompts, contextLength, maxReplyTokens, memoryAsSeparateMessage }) });
 });
 
 // Transforms a raw SillyTavern Chat Completion preset export into a
@@ -1232,14 +1262,13 @@ app.post('/api/presets', (req, res) => {
 // it read from a dropped file plus a fallback name (from the filename,
 // since ST presets don't carry their own "name" field).
 app.post('/api/presets/import', (req, res) => {
-  const w = req.world;
   const { raw, fallbackName } = req.body || {};
   if (!raw || typeof raw !== 'object') {
     return res.status(400).json({ error: 'A raw SillyTavern preset object is required.' });
   }
   try {
     const parsed = importSillyTavernPreset(raw, fallbackName);
-    res.status(201).json({ preset: createPreset(w, parsed) });
+    res.status(201).json({ preset: createPreset(parsed) });
   } catch (err) {
     res.status(400).json({ error: err.message || 'Could not import this preset.' });
   }
@@ -1261,9 +1290,8 @@ app.post('/api/presets/export', (req, res) => {
 });
 
 app.put('/api/presets/:id', (req, res) => {
-  const w = req.world;
   const { id } = req.params;
-  const data = loadPresets(w);
+  const data = loadPresets();
   const preset = data.presets.find((p) => p.id === id);
   if (!preset) return res.status(404).json({ error: 'Preset not found.' });
 
@@ -1274,31 +1302,29 @@ app.put('/api/presets/:id', (req, res) => {
   if (maxReplyTokens !== undefined) preset.maxReplyTokens = normalizeContextNumber(maxReplyTokens, preset.maxReplyTokens || DEFAULT_MAX_REPLY_TOKENS);
   if (typeof memoryAsSeparateMessage === 'boolean') preset.memoryAsSeparateMessage = memoryAsSeparateMessage;
 
-  savePresets(w, data);
+  savePresets(data);
   res.json({ preset });
 });
 
 app.delete('/api/presets/:id', (req, res) => {
-  const w = req.world;
   const { id } = req.params;
-  const data = loadPresets(w);
+  const data = loadPresets();
   if (!data.presets.some((p) => p.id === id)) return res.status(404).json({ error: 'Preset not found.' });
 
   data.presets = data.presets.filter((p) => p.id !== id);
   if (data.activePresetId === id) data.activePresetId = null;
-  savePresets(w, data);
+  savePresets(data);
   res.json({ ok: true });
 });
 
 app.post('/api/presets/active', (req, res) => {
-  const w = req.world;
   const { id } = req.body || {};
-  const data = loadPresets(w);
+  const data = loadPresets();
   if (id !== null && id !== undefined && !data.presets.some((p) => p.id === id)) {
     return res.status(400).json({ error: 'Unknown preset id.' });
   }
   data.activePresetId = id || null;
-  savePresets(w, data);
+  savePresets(data);
   res.json({ activePresetId: data.activePresetId });
 });
 
@@ -3054,7 +3080,7 @@ async function buildTurnRequest({ w, place, speakerId, presentIds, charactersByI
   const cfg = loadConfig();
   const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
-  const { presets, activePresetId } = loadPresets(w);
+  const { presets, activePresetId } = loadPresets();
   const activePreset = presets.find((p) => p.id === activePresetId) || null;
   const world = loadWorld(w);
   const placesById = {};
@@ -3773,7 +3799,8 @@ app.use((err, req, res, next) => {
 const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === __filename;
 if (isMainModule) {
   const PORT = process.env.PORT || 3001;
-  app.listen(PORT, () => {
+  const HOST = process.env.HOST || "0.0.0.0";
+  app.listen(PORT, HOST, () => {
     console.log(`Freeroam backend running at http://localhost:${PORT}`);
   });
 }
