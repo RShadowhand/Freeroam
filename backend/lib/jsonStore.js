@@ -5,9 +5,10 @@ import { logger } from './log.js';
 
 // Writes JSON atomically: to a temp file in the same directory, then
 // renameSync over the real path. A crash/kill mid-write leaves the temp
-// file orphaned (harmless — the next write just overwrites it again)
-// instead of truncating the real file, which a plain writeFileSync can do
-// if the process dies partway through.
+// file orphaned — since its name is freshly randomized per call, a later
+// write never reuses or cleans it up, so it just lingers on disk — but that
+// cost is trivial and it's still strictly better than a plain writeFileSync
+// truncating the real file if the process dies partway through.
 export function writeJsonAtomic(filePath, data) {
   const tmpPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}-${crypto.randomUUID()}.tmp`);
   fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
