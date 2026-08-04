@@ -40,6 +40,14 @@ export const usePhoneStore = defineStore('phone', {
       this.abortControllers.get(characterId)?.abort();
     },
 
+    // streamingState is one shared field, not a per-id Map like loadingIds/
+    // abortControllers — without this guard, conversation A finishing (or
+    // hitting its own 'turn' event) while B is still generating concurrently
+    // would clear or stomp on B's still-in-flight typing state.
+    clearStreamingStateFor(characterId) {
+      if (this.streamingState?.characterId === characterId) this.streamingState = null;
+    },
+
     async openConversation(characterId) {
       // loadedIds alone isn't a re-entrancy guard — it's only set *after* the
       // GET below resolves, so two calls before that (e.g. rapid navigation)
@@ -121,7 +129,7 @@ export const usePhoneStore = defineStore('phone', {
             this.streamingState = { characterId, name: evt.name };
           } else if (evt.type === 'turn') {
             this.logs[characterId] = [...(this.logs[characterId] || []), ...evt.entries];
-            this.streamingState = null;
+            this.clearStreamingStateFor(characterId);
           } else if (evt.type === 'done') {
             finalLog = evt.log;
             finalError = evt.error || null;
@@ -129,7 +137,7 @@ export const usePhoneStore = defineStore('phone', {
         });
       }
 
-      this.streamingState = null;
+      this.clearStreamingStateFor(characterId);
       if (finalLog) this.logs[characterId] = finalLog;
       return { error: finalError };
     },
@@ -163,7 +171,7 @@ export const usePhoneStore = defineStore('phone', {
           useUiStore().showError(err.message);
         }
       } finally {
-        this.streamingState = null;
+        this.clearStreamingStateFor(characterId);
         this.abortControllers.delete(characterId);
         this.loadingIds.delete(characterId);
       }
@@ -200,7 +208,7 @@ export const usePhoneStore = defineStore('phone', {
           useUiStore().showError(err.message);
         }
       } finally {
-        this.streamingState = null;
+        this.clearStreamingStateFor(characterId);
         this.abortControllers.delete(characterId);
         this.loadingIds.delete(characterId);
       }

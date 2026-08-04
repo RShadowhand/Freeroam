@@ -36,6 +36,15 @@ export const useGroupsStore = defineStore('groups', {
       this.abortControllers.get(groupId)?.abort();
     },
 
+    // streamingState is one shared field, not a per-id Map like loadingIds/
+    // abortControllers — without this guard, one group's completion (or its
+    // own 'turn' event) while a different group is still generating
+    // concurrently would clear or stomp on that other group's still-in-
+    // flight typing state.
+    clearStreamingStateFor(groupId) {
+      if (this.streamingState?.groupId === groupId) this.streamingState = null;
+    },
+
     async loadGroups() {
       const { ok, data } = await getGroups();
       if (ok) this.groups = data.groups;
@@ -124,7 +133,7 @@ export const useGroupsStore = defineStore('groups', {
             this.streamingState = { groupId, charId: evt.charId, name: evt.name };
           } else if (evt.type === 'turn') {
             this.logs[groupId] = [...(this.logs[groupId] || []), ...evt.entries];
-            this.streamingState = null;
+            this.clearStreamingStateFor(groupId);
           } else if (evt.type === 'done') {
             finalLog = evt.log;
             finalError = evt.error || null;
@@ -132,7 +141,7 @@ export const useGroupsStore = defineStore('groups', {
         });
       }
 
-      this.streamingState = null;
+      this.clearStreamingStateFor(groupId);
       if (finalLog) this.logs[groupId] = finalLog;
       return { error: finalError };
     },
@@ -166,7 +175,7 @@ export const useGroupsStore = defineStore('groups', {
           useUiStore().showError(err.message);
         }
       } finally {
-        this.streamingState = null;
+        this.clearStreamingStateFor(groupId);
         this.abortControllers.delete(groupId);
         this.loadingIds.delete(groupId);
       }
@@ -203,7 +212,7 @@ export const useGroupsStore = defineStore('groups', {
           useUiStore().showError(err.message);
         }
       } finally {
-        this.streamingState = null;
+        this.clearStreamingStateFor(groupId);
         this.abortControllers.delete(groupId);
         this.loadingIds.delete(groupId);
       }
