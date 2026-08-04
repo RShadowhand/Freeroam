@@ -89,6 +89,37 @@ describe('getCharacterEmbeddingChunks', () => {
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM character_embeddings WHERE character_id = ?').get('wren').n, 1);
   }));
 
+  test('two different worlds with the same character id (e.g. one duplicated from the other) compute and store independently', async () => {
+    // Simulates the exact scenario a world duplicate produces: characters.json
+    // is copied byte-for-byte, so the character id collides across two
+    // distinct db connections. The in-flight guard must be scoped per-db,
+    // not just per-characterId, or one world's concurrent request would
+    // wrongly share the other's in-flight promise and never persist into
+    // its own db.
+    const dbA = openDb(':memory:');
+    const dbB = openDb(':memory:');
+    try {
+      const char = { id: 'wren', name: 'Wren', description: 'Blue eyes.' };
+      let callsA = 0, callsB = 0;
+      const embedFnA = async (t) => { callsA += 1; return fakeEmbed(t); };
+      const embedFnB = async (t) => { callsB += 1; return fakeEmbed(t); };
+
+      const [resultA, resultB] = await Promise.all([
+        getCharacterEmbeddingChunks({ db: dbA, embedFn: embedFnA, char }),
+        getCharacterEmbeddingChunks({ db: dbB, embedFn: embedFnB, char }),
+      ]);
+
+      assert.deepEqual(resultA, resultB); // same character text, same fake embedder output
+      assert.equal(callsA, 1, 'world A should compute its own vectors');
+      assert.equal(callsB, 1, 'world B should compute its own vectors, not share world A\'s in-flight promise');
+      assert.equal(dbA.prepare('SELECT COUNT(*) AS n FROM character_embeddings WHERE character_id = ?').get('wren').n, 1);
+      assert.equal(dbB.prepare('SELECT COUNT(*) AS n FROM character_embeddings WHERE character_id = ?').get('wren').n, 1);
+    } finally {
+      dbA.close();
+      dbB.close();
+    }
+  });
+
   test('a fresh call after the in-flight one has settled computes again (the guard only covers overlap, not caching)', () => withDb(async (db) => {
     const char = { id: 'wren', name: 'Wren', description: 'Blue eyes.' };
     await getCharacterEmbeddingChunks({ db, embedFn, char });

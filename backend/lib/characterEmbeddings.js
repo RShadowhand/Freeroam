@@ -49,8 +49,16 @@ async function computeAndStoreCharacterEmbeddings(db, embedFn, char) {
 // identity vectors would otherwise both compute and DELETE+INSERT
 // independently — not corrupting (last write wins, no duplicate rows), just
 // a redundant local-model computation. A concurrent call for the same
-// character instead awaits the one already in flight.
-const inFlightIdentityCompute = new Map(); // characterId -> Promise<vectors>
+// character instead awaits the one already in flight. Keyed by `db` (a
+// distinct connection per world — never shared) as well as characterId, not
+// characterId alone: a world duplicated from another keeps the same
+// character ids as its source (cloneWorldInto copies characters.json
+// byte-for-byte), and this app explicitly supports concurrent multi-world
+// use from different browsers on one instance — without the db-scoping, a
+// world B request could get back vectors computed from world A's db/text
+// and never persist anything into its own. A WeakMap outer layer, not a
+// plain Map, so this never holds a world's db connection alive on its own.
+const inFlightIdentityCompute = new WeakMap(); // db -> Map<characterId, Promise<vectors>>
 
 // Returns the character's identity chunk vectors, computing and storing
 // them on first use — new and imported characters get embedded lazily, the
@@ -61,11 +69,14 @@ export async function getCharacterEmbeddingChunks({ db, embedFn, char }) {
   const rows = db.prepare('SELECT embedding FROM character_embeddings WHERE character_id = ?').all(char.id);
   if (rows.length) return rows.map((r) => decodeEmbedding(r.embedding));
 
-  const pending = inFlightIdentityCompute.get(char.id);
+  let perDb = inFlightIdentityCompute.get(db);
+  if (!perDb) { perDb = new Map(); inFlightIdentityCompute.set(db, perDb); }
+
+  const pending = perDb.get(char.id);
   if (pending) return pending;
   const promise = computeAndStoreCharacterEmbeddings(db, embedFn, char)
-    .finally(() => inFlightIdentityCompute.delete(char.id));
-  inFlightIdentityCompute.set(char.id, promise);
+    .finally(() => perDb.delete(char.id));
+  perDb.set(char.id, promise);
   return promise;
 }
 
