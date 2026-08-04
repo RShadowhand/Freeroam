@@ -20,18 +20,21 @@ function roundsSinceLastNarration(log) {
 
 // Whether the narrator is even eligible to speak this round:
 // - Nobody present: the narrator is the only thing that CAN respond.
-// - A private place with exactly one person there: that person IS the
-//   scene — a narrator voice would be a third wheel.
 // - Anyone present-but-not-active ("background"): always worth narrating,
 //   since describing them is the narrator's core job and (when this is
 //   checked from the "nobody active replied" fallback) it's also the only
-//   thing standing between the user and total silence.
+//   thing standing between the user and total silence — checked BEFORE the
+//   private-room rule below, since a private room's sole occupant can
+//   themselves be the one demoted to background, and that silence still
+//   needs breaking.
+// - A private place with exactly one person there, who IS active: that
+//   person IS the scene — a narrator voice would be a third wheel.
 // - Otherwise (a solo active chat, or a fully-active group with no one
 //   sitting out): ambiance only, throttled to AMBIANCE_CADENCE_ROUNDS.
 export function shouldNarrate({ placeType, presentCount, backgroundCount = 0, log = [] }) {
   if (presentCount === 0) return true;
-  if (placeType === 'private' && presentCount === 1) return false;
   if (backgroundCount > 0) return true;
+  if (placeType === 'private' && presentCount === 1) return false;
   return roundsSinceLastNarration(log) >= AMBIANCE_CADENCE_ROUNDS;
 }
 

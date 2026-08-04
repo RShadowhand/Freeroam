@@ -522,6 +522,14 @@ export function buildSystemPrompt(preset, scene) {
   return assemblePresetMessages(preset, scene).map(m => m.content).join('\n\n');
 }
 
+// Matches a "Name: line" row. The name-length cap just needs to be generous
+// enough not to reject real character names (there's no length limit at
+// character-creation time) while still ruling out an ordinary sentence with
+// an early colon — 100 mirrors the cap already enforced elsewhere (e.g. world
+// names). Shared between parseReplyLines and parseCharacterTurn below so the
+// two never drift out of sync with each other.
+const NAME_LINE = /^([A-Za-z][A-Za-z' -]{1,100}):\s*(.+)$/;
+
 // Parses a model reply (expected "Name: line" format) into chat entries.
 // Known speakers resolve to their character; an unrecognized speaker name
 // becomes an NPC-tagged entry (charId null, isNPC true) rather than being
@@ -539,7 +547,7 @@ export function parseReplyLines(text, presentChars) {
   if (!lines.length) return [{ type: 'error', text: '(silence — no response)' }];
 
   return lines.map((line) => {
-    const m = line.match(/^([A-Za-z][A-Za-z' -]{1,30}):\s*(.+)$/);
+    const m = line.match(NAME_LINE);
     if (m) {
       const speaker = presentByName[m[1].trim().toLowerCase()];
       if (speaker) return { type: 'char', charId: speaker.id, name: speaker.name, text: m[2].trim() };
@@ -549,8 +557,6 @@ export function parseReplyLines(text, presentChars) {
     return { type: 'char', charId: fallback.id, name: fallback.name, text: line };
   });
 }
-
-const NAME_LINE = /^([A-Za-z][A-Za-z' -]{1,30}):\s*(.+)$/;
 
 // Parses one character's generated turn. With per-character generation the
 // whole reply belongs to the speaker by default (narrative/multi-paragraph

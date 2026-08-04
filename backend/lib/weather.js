@@ -19,10 +19,10 @@ export const CONDITIONS = ['clear', 'sunny', 'overcast', 'rainy', 'stormy', 'fog
 const TRANSITIONS = {
   clear: { clear: 4, sunny: 3, overcast: 2, windy: 1 },
   sunny: { sunny: 4, clear: 3, overcast: 1, windy: 1 },
-  overcast: { overcast: 3, clear: 2, rainy: 2, foggy: 1, windy: 1 },
+  overcast: { overcast: 3, clear: 2, rainy: 2, foggy: 1, windy: 1, snowy: 1 },
   rainy: { rainy: 3, overcast: 3, stormy: 1, foggy: 1 },
-  stormy: { stormy: 2, rainy: 3, overcast: 2, windy: 1 },
-  foggy: { foggy: 2, overcast: 3, clear: 1, rainy: 1 },
+  stormy: { stormy: 2, rainy: 3, overcast: 2, windy: 1, snowy: 1 },
+  foggy: { foggy: 2, overcast: 3, clear: 1, rainy: 1, snowy: 1 },
   snowy: { snowy: 3, overcast: 2, clear: 1, windy: 1 },
   windy: { windy: 3, clear: 2, overcast: 2, sunny: 1 },
 };

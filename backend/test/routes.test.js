@@ -296,6 +296,23 @@ describe('POST /api/characters/draft (empty-response handling, real OpenRouter c
     assert.match(data.error, /empty/i);
   });
 
+  test('surfaces a clear timeout message when the endpoint hangs (AbortError from a hung fetch)', async (t) => {
+    // callOpenRouter's AbortController.abort() manifests to callers as a
+    // fetch rejection named 'AbortError' — simulate that directly rather
+    // than actually waiting out LLM_TIMEOUT_MS in a test.
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () => {
+      throw Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+    }));
+
+    const res = await postJson('/api/characters/draft', {
+      name: 'A Mysterious Stranger',
+      log: [{ type: 'user', text: 'Who are you?' }],
+    });
+    assert.equal(res.status, 502);
+    const data = await res.json();
+    assert.match(data.error, /timed out/i);
+  });
+
   test('returns the description when the model responds normally', async (t) => {
     t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () => new Response(JSON.stringify({
       choices: [{ message: { content: '  A quiet keeper of the archive, precise in speech.  ' } }],
@@ -785,6 +802,28 @@ describe('World export/import (whole-world zip bundle)', () => {
     assert.equal(res.status, 400);
   });
 
+  test('cleans up the newly-created world if the import fails partway through (corrupt db.json)', async () => {
+    // manifest.json is valid (so peekManifest and registry.create both
+    // succeed, same as a real import) — the corruption is in db.json, which
+    // importWorldBundle only gets to (and JSON.parses) after the world
+    // already exists, exercising the post-creation failure/cleanup path.
+    const zip = new JSZip();
+    zip.file('manifest.json', JSON.stringify({ formatVersion: 1, worldName: 'Corrupt DB Test', includeHistory: true }));
+    zip.file('db.json', 'this is not valid json{{{');
+    const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+    const { worlds: before } = await (await fetch(`${baseUrl}/api/worlds`)).json();
+
+    const form = new FormData();
+    form.append('bundle', new Blob([buffer], { type: 'application/zip' }), 'world.zip');
+    const res = await fetch(`${baseUrl}/api/worlds/import`, { method: 'POST', body: form });
+    assert.equal(res.status, 500);
+
+    const { worlds: after } = await (await fetch(`${baseUrl}/api/worlds`)).json();
+    assert.equal(after.length, before.length, 'no orphaned world should remain after a failed import');
+    assert.ok(!after.some((w) => w.name === 'Corrupt DB Test'), 'the failed import\'s world should not exist');
+  });
+
   test('POST /api/worlds/import skips zip-slip entries that try to escape the world directory', async () => {
     const zip = new JSZip();
     zip.file('manifest.json', JSON.stringify({ formatVersion: 1, worldName: 'Zip Slip Test', includeHistory: true }));
@@ -1040,6 +1079,31 @@ describe('Persisted chat: /api/places/:placeId/enter, /say, GET /chat', () => {
     const { log: secondVisit } = await (await postJson(`/api/places/${place.id}/enter`, {})).json();
     const greetingCount = secondVisit.filter((e) => e.type === 'char' && e.text === 'Well met, traveler!').length;
     assert.equal(greetingCount, 1); // not repeated on the return visit
+  });
+
+  // metCharacterIds (GET /api/world) is cached per-world and invalidated on
+  // every place-chat write — this specifically checks the cache doesn't go
+  // stale: a GET before the character has spoken must not "lock in" a
+  // pre-greeting snapshot that a later GET, after they've spoken, still returns.
+  test('GET /api/world\'s metCharacterIds picks up a character speaking for the first time, even after an earlier GET cached the world', async () => {
+    const place = await makePlace('Cache Check Hall');
+    const { character } = await (await postJson('/api/characters', { name: 'Cache Check Greeter', description: 'Friendly.' })).json();
+    const charsPath = path.join(defaultWorldDataDir(), 'characters.json');
+    const chars = JSON.parse(fs.readFileSync(charsPath, 'utf-8'));
+    chars.find((c) => c.id === character.id).greetings = ['Hello from the cache test!'];
+    fs.writeFileSync(charsPath, JSON.stringify(chars));
+    await fetch(`${baseUrl}/api/characters/${character.id}/place`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ placeId: place.id, greetingIndex: 0 }),
+    });
+
+    const before = await (await fetch(`${baseUrl}/api/world`)).json();
+    assert.ok(!before.metCharacterIds.includes(character.id), 'not met yet — no greeting fired');
+
+    await postJson(`/api/places/${place.id}/enter`, {}); // fires the scripted greeting (a type:'char' entry)
+
+    const after = await (await fetch(`${baseUrl}/api/world`)).json();
+    assert.ok(after.metCharacterIds.includes(character.id), 'the earlier GET must not have cached a stale, pre-greeting result');
   });
 
   test('a greeting-only arrival (no generation) still records the greeting into memory', async () => {

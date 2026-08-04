@@ -124,7 +124,12 @@ describe('Groups: the cascade (OpenRouter + Math.random mocked)', () => {
   let group;
 
   before(async () => {
-    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+    // textingChancePerChar: 0 keeps maybeSendProactiveTexts (now also called
+    // from the group /send route) from consuming any Math.random() calls —
+    // otherwise its rolls for non-participant builtins (soot/custodian) would
+    // shift the mockRandomSequence() calls below, which are meant entirely
+    // for the cascade's own rollContinues/pickReplier.
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real', textingChancePerChar: 0 });
     ({ group } = await (await postJson('/api/groups', { name: 'Cascade Test', participantIds: ['ezra', 'mireille'] })).json());
   });
   after(async () => {
@@ -340,7 +345,10 @@ describe('Groups: retry', () => {
   });
 
   test('rejects retry when the last message already has a reply', async (t) => {
-    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+    // textingChancePerChar: 0 — see the cascade describe's before() comment;
+    // this test's /send call would otherwise consume Math.random() calls
+    // meant for mockRandomSequence below.
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real', textingChancePerChar: 0 });
     t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
       new Response(JSON.stringify({ choices: [{ message: { content: 'reply' } }] }), { status: 200 })));
     t.mock.method(Math, 'random', mockRandomSequence([0, 0, 0.99])); // one reply lands
@@ -417,5 +425,57 @@ describe('Groups: edit (rename + participants)', () => {
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.deepEqual(data.group.participantIds.sort(), ['ezra', 'mireille']);
+  });
+});
+
+describe('Groups: deleting a character cleans up group membership', () => {
+  // Fresh characters rather than the shared builtin ezra/mireille/soot —
+  // this file's tests all share one server/world, and deleting a builtin
+  // partway through would break every later test that references it.
+  async function makeCharacter(name) {
+    const { character } = await (await postJson('/api/characters', { name })).json();
+    return character;
+  }
+
+  test('deletes a group that drops below 2 participants', async () => {
+    const a = await makeCharacter('CascadeVictimA');
+    const b = await makeCharacter('CascadeVictimB');
+    const { group } = await (await postJson('/api/groups', { name: 'Doomed Duo', participantIds: [a.id, b.id] })).json();
+
+    const delRes = await del(`/api/characters/${a.id}`);
+    assert.equal(delRes.status, 200);
+
+    const check = await fetch(`${baseUrl}/api/groups/${group.id}`);
+    assert.equal(check.status, 404, 'group should be auto-deleted once it drops below 2 participants');
+  });
+
+  test('keeps a group intact (minus the deleted member) when 2+ participants remain', async () => {
+    const a = await makeCharacter('TrioVictimA');
+    const b = await makeCharacter('TrioVictimB');
+    const c = await makeCharacter('TrioVictimC');
+    const { group } = await (await postJson('/api/groups', { name: 'Trio', participantIds: [a.id, b.id, c.id] })).json();
+
+    await del(`/api/characters/${a.id}`);
+
+    const { group: refreshed } = await getJson(`/api/groups/${group.id}`);
+    assert.deepEqual(refreshed.participantIds.sort(), [b.id, c.id].sort());
+  });
+
+  test('leaves other groups (not containing the deleted character) untouched', async () => {
+    const a = await makeCharacter('UnrelatedVictimA');
+    const b = await makeCharacter('UnrelatedVictimB');
+    const bystander1 = await makeCharacter('BystanderA');
+    const bystander2 = await makeCharacter('BystanderB');
+    const { group: untouchedGroup } = await (await postJson('/api/groups', {
+      name: 'Untouched', participantIds: [bystander1.id, bystander2.id],
+    })).json();
+    const { group } = await (await postJson('/api/groups', { name: 'ToShrink', participantIds: [a.id, b.id, bystander1.id] })).json();
+
+    await del(`/api/characters/${a.id}`);
+
+    const { group: stillThere } = await getJson(`/api/groups/${untouchedGroup.id}`);
+    assert.deepEqual(stillThere.participantIds.sort(), [bystander1.id, bystander2.id].sort());
+    const { group: shrunk } = await getJson(`/api/groups/${group.id}`);
+    assert.deepEqual(shrunk.participantIds.sort(), [b.id, bystander1.id].sort());
   });
 });

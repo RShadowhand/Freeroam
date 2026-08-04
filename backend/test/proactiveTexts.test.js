@@ -49,6 +49,13 @@ describe('Proactive texts: routes', () => {
     await fetch(`${baseUrl}/api/settings`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ apiKey: 'sk-test-not-real' }),
     });
+    // A fresh world lazily seeds 4 builtin characters (ezra/mireille/soot/
+    // custodian) on first read — left in place, they'd permanently occupy
+    // slots in every maybeSendProactiveTexts roll pool this file exercises,
+    // which MAX_PROACTIVE_TEXTS_PER_ROUND caps at 3. Clear them so each
+    // test's own characters are the only ones competing for those slots.
+    const { characters: builtins } = await (await fetch(`${baseUrl}/api/characters`)).json();
+    await Promise.all(builtins.map((c) => fetch(`${baseUrl}/api/characters/${c.id}`, { method: 'DELETE' })));
   });
   after(async () => {
     await new Promise((resolve) => server.close(resolve));
@@ -64,8 +71,14 @@ describe('Proactive texts: routes', () => {
   async function getJson(urlPath) {
     return (await fetch(`${baseUrl}${urlPath}`)).json();
   }
-  async function makeCharacter(name) {
+  // Registers cleanup via t.after() so this character doesn't linger in the
+  // shared world once its own test ends — these tests rely on chance=1
+  // hitting every non-excluded character, and MAX_PROACTIVE_TEXTS_PER_ROUND
+  // caps that at 3, so letting characters accumulate across tests would make
+  // later tests' rolls exceed the cap and flake.
+  async function makeCharacter(name, t) {
     const { character } = await (await postJson('/api/characters', { name, description: 'Might text you.' })).json();
+    if (t) t.after(async () => { await fetch(`${baseUrl}/api/characters/${character.id}`, { method: 'DELETE' }); });
     return character;
   }
   const realFetch = globalThis.fetch;
@@ -86,8 +99,8 @@ describe('Proactive texts: routes', () => {
     assert.equal(res.status, 404);
   });
 
-  test('manual trigger requires an API key', async () => {
-    const character = await makeCharacter('No Key Trigger');
+  test('manual trigger requires an API key', async (t) => {
+    const character = await makeCharacter('No Key Trigger', t);
     await postJson('/api/settings/clear-key', {});
     const res = await postJson(`/api/texts/${character.id}/trigger`, {});
     assert.equal(res.status, 400);
@@ -97,7 +110,7 @@ describe('Proactive texts: routes', () => {
   });
 
   test('manual trigger writes a proactive text entry and a memory', async (t) => {
-    const character = await makeCharacter('Trigger Test');
+    const character = await makeCharacter('Trigger Test', t);
     t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
       new Response(JSON.stringify({ choices: [{ message: { content: 'Hey, you free later?' } }] }), { status: 200 })));
 
@@ -113,7 +126,7 @@ describe('Proactive texts: routes', () => {
   });
 
   test('the final prompt turn tells the character to text unprompted', async (t) => {
-    const character = await makeCharacter('Prompt Check');
+    const character = await makeCharacter('Prompt Check', t);
     let capturedBody = null;
     t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async (url, opts) => {
       capturedBody = JSON.parse(opts.body);
@@ -126,7 +139,7 @@ describe('Proactive texts: routes', () => {
   });
 
   test('unread count reflects proactive texts and clears once the conversation is opened', async (t) => {
-    const character = await makeCharacter('Unread Test');
+    const character = await makeCharacter('Unread Test', t);
     const before = await getJson('/api/texts/unread');
 
     t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
@@ -144,8 +157,8 @@ describe('Proactive texts: routes', () => {
   test('/say excludes present characters from the roll, includes absent ones', async (t) => {
     const placeRes = await postJson('/api/places', { name: 'Proactive Test Place', type: 'communal' });
     const place = (await placeRes.json()).place;
-    const present = await makeCharacter('Present Roller');
-    const absent = await makeCharacter('Absent Roller');
+    const present = await makeCharacter('Present Roller', t);
+    const absent = await makeCharacter('Absent Roller', t);
     await fetch(`${baseUrl}/api/characters/${present.id}/place`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ placeId: place.id }),
     });
@@ -166,8 +179,8 @@ describe('Proactive texts: routes', () => {
   });
 
   test('/texts/:characterId/send excludes the texted character from the roll', async (t) => {
-    const texted = await makeCharacter('Texted Roller');
-    const other = await makeCharacter('Other Roller');
+    const texted = await makeCharacter('Texted Roller', t);
+    const other = await makeCharacter('Other Roller', t);
 
     await postJson('/api/settings', { textingChancePerChar: 1 });
     t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
@@ -184,13 +197,56 @@ describe('Proactive texts: routes', () => {
     await postJson('/api/settings', { textingChancePerChar: 0.002 });
   });
 
+  test('/api/groups/:groupId/send excludes every participant from the roll, includes an outsider', async (t) => {
+    const memberA = await makeCharacter('Group Member A', t);
+    const memberB = await makeCharacter('Group Member B', t);
+    const outsider = await makeCharacter('Group Outsider', t);
+    const { group } = await (await postJson('/api/groups', { name: 'Proactive Group', participantIds: [memberA.id, memberB.id] })).json();
+
+    await postJson('/api/settings', { textingChancePerChar: 1 });
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: 'Some reply.' } }] }), { status: 200 })));
+
+    await postJson(`/api/groups/${group.id}/send`, { text: 'hey everyone' });
+    await settle();
+
+    const memberALog = (await getJson(`/api/texts/${memberA.id}`)).log;
+    const memberBLog = (await getJson(`/api/texts/${memberB.id}`)).log;
+    const outsiderLog = (await getJson(`/api/texts/${outsider.id}`)).log;
+    assert.ok(!memberALog.some((e) => e.proactive), 'a group participant should never get a proactive text from their own group round');
+    assert.ok(!memberBLog.some((e) => e.proactive), 'a group participant should never get a proactive text from their own group round');
+    assert.ok(outsiderLog.some((e) => e.proactive), 'a character outside the group with chance=1 should get a proactive text');
+
+    await postJson('/api/settings', { textingChancePerChar: 0.002 });
+  });
+
+  test('caps how many characters fire per round, even when every one of them rolls a hit', async (t) => {
+    const sender = await makeCharacter('Burst Sender', t);
+    const bystanders = await Promise.all(
+      Array.from({ length: 5 }, (_, i) => makeCharacter(`Burst Bystander ${i}`, t)),
+    );
+
+    await postJson('/api/settings', { textingChancePerChar: 1 }); // every non-excluded character rolls a hit
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: 'Some reply.' } }] }), { status: 200 })));
+
+    await postJson(`/api/texts/${sender.id}/send`, { text: 'hi everyone' });
+    await settle();
+
+    const logs = await Promise.all(bystanders.map((c) => getJson(`/api/texts/${c.id}`).then((r) => r.log)));
+    const firedCount = logs.filter((log) => log.some((e) => e.proactive)).length;
+    assert.ok(firedCount <= 3, `expected at most 3 proactive texts to fire, got ${firedCount}`);
+
+    await postJson('/api/settings', { textingChancePerChar: 0.002 });
+  });
+
   test('a chance of 0 never fires a proactive text', async (t) => {
-    const bystander = await makeCharacter('Never Rolls');
+    const bystander = await makeCharacter('Never Rolls', t);
     await postJson('/api/settings', { textingChancePerChar: 0 });
     t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
       new Response(JSON.stringify({ choices: [{ message: { content: 'Should not appear.' } }] }), { status: 200 })));
 
-    const other = await makeCharacter('Zero Chance Sender');
+    const other = await makeCharacter('Zero Chance Sender', t);
     await postJson(`/api/texts/${other.id}/send`, { text: 'hi' });
     await settle();
 

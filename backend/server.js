@@ -680,6 +680,12 @@ app.put('/api/worlds/:id', (req, res) => {
 app.delete('/api/worlds/:id', async (req, res) => {
   try {
     const result = await registry.remove(req.params.id);
+    // Drop the cached avatar static handler and the two per-world caches
+    // above too — otherwise all three grow by one entry per world ever
+    // created-then-deleted, for the life of the process.
+    avatarStatics.delete(req.params.id);
+    metCharacterIdsCache.delete(req.params.id);
+    unreadProactiveCountCache.delete(req.params.id);
     res.json({ ok: true, defaultWorldId: result.defaultWorldId });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
@@ -726,10 +732,15 @@ app.post('/api/worlds/:id/export', async (req, res) => {
 // ever needing the embedding model during the zip-extraction step itself.
 app.post('/api/worlds/import', uploadWorldBundle.single('bundle'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'A world bundle (.zip) file is required.' });
+  // Tracks the just-created empty world so a failure partway through (a
+  // corrupt zip, an embedding rebuild error) can clean it up in the catch
+  // below, rather than leaving an orphaned empty "Imported World" save slot
+  // with no indication the import actually failed.
+  let entry = null;
   try {
     const manifest = await peekManifest(req.file.buffer);
     const name = (req.body?.name || '').trim() || manifest.worldName || 'Imported World';
-    const entry = await registry.create({ name, mode: 'empty' });
+    entry = await registry.create({ name, mode: 'empty' });
     const dest = registry.get(entry.id);
 
     const { warnings } = await importWorldBundle(req.file.buffer, dest);
@@ -746,6 +757,11 @@ app.post('/api/worlds/import', uploadWorldBundle.single('bundle'), async (req, r
 
     res.status(201).json({ world: entry, warnings });
   } catch (err) {
+    if (entry) {
+      await registry.remove(entry.id).catch((removeErr) => {
+        logger.error('world', `failed to clean up orphaned world ${entry.id} after a failed import: ${removeErr.message}`);
+      });
+    }
     res.status(err.status || 500).json({ error: err.message });
   }
 });
@@ -971,6 +987,26 @@ app.delete('/api/characters/:id', (req, res) => {
     if (idx !== -1) { p.ownerIds.splice(idx, 1); placesChanged = true; }
   });
   if (placesChanged) savePlaces(w, places);
+
+  // Drop this character from every group's roster too — same 2-participant
+  // minimum enforced at group creation/editing means a group left below
+  // that floor no longer makes sense, so it's removed entirely (message log
+  // included) rather than left in a state POST/PUT /api/groups would reject.
+  const groups = loadGroups(w);
+  const remainingGroups = [];
+  let groupsChanged = false;
+  groups.forEach((g) => {
+    if (!g.participantIds.includes(id)) { remainingGroups.push(g); return; }
+    groupsChanged = true;
+    const trimmedParticipantIds = g.participantIds.filter((pid) => pid !== id);
+    if (trimmedParticipantIds.length < 2) {
+      deleteTextsLog(w, g.id);
+      logger.info('chat', `deleted group "${g.name}" — dropped below 2 participants after removing ${target.name}`);
+    } else {
+      remainingGroups.push({ ...g, participantIds: trimmedParticipantIds });
+    }
+  });
+  if (groupsChanged) saveGroups(w, remainingGroups);
 
   // Clean up the character's memories, relationships either way, and
   // identity embedding.
@@ -1497,7 +1533,7 @@ app.delete('/api/places/:id', (req, res) => {
   });
   if (changed) saveWorld(w, world);
 
-  deleteChatLog(w.chatDir, id);
+  deletePlaceChatLog(w, id);
 
   res.json({ ok: true });
 });
@@ -1590,7 +1626,7 @@ async function runTextingReply({ w, cfg, characterId, character, onEvent = null 
     const entry = { type: 'char', charId: characterId, name: character.name, text: (text || '').trim() };
     const stats = buildGenerationStats(usage, timing);
     if (stats) entry.stats = stats;
-    appendChatEntries(w.textsDir, characterId, [entry]);
+    appendTextsEntries(w, characterId, [entry]);
     if (onEvent) onEvent({ type: 'turn', entries: [entry] });
 
     recordTurn({
@@ -1649,7 +1685,7 @@ async function generateProactiveText({ w, cfg, characterId, character }) {
   const entry = { type: 'char', charId: characterId, name: character.name, text: (text || '').trim(), proactive: true };
   const stats = buildGenerationStats(usage, timing);
   if (stats) entry.stats = stats;
-  appendChatEntries(w.textsDir, characterId, [entry]);
+  appendTextsEntries(w, characterId, [entry]);
 
   await addCharacterMemory({
     db: w.db, embedFn: embed, characterId, personaId: activePersonaId || null,
@@ -1660,6 +1696,12 @@ async function generateProactiveText({ w, cfg, characterId, character }) {
   logger.info('chat', `proactive text: ${character.name} -> ${personaLabel}`);
   return entry;
 }
+
+// A world with many characters and a high textingChancePerChar could
+// otherwise roll positive for most of them at once and burst that many
+// concurrent OpenRouter calls off a single user input — cap how many
+// actually fire per round regardless of how many rolled.
+const MAX_PROACTIVE_TEXTS_PER_ROUND = 3;
 
 // Rolls once per character not already part of the current exchange —
 // present at the place being said in, or the one being texted — and
@@ -1673,11 +1715,45 @@ function maybeSendProactiveTexts(w, excludeIds) {
   if (!cfg.apiKey || !(cfg.textingChancePerChar > 0)) return;
 
   const characters = loadCharacters(w).filter((c) => !excludeIds.includes(c.id));
-  for (const character of characters) {
-    if (!rollsProactiveText(cfg.textingChancePerChar)) continue;
+  const rolled = characters.filter((c) => rollsProactiveText(cfg.textingChancePerChar));
+  // Shuffle before capping — loadCharacters returns a stable (creation-order)
+  // list, so taking a plain slice(0, N) would let a world past the cap
+  // permanently favor whichever characters happen to be oldest, starving
+  // every character added after it of ever texting first.
+  for (let i = rolled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [rolled[i], rolled[j]] = [rolled[j], rolled[i]];
+  }
+  rolled.slice(0, MAX_PROACTIVE_TEXTS_PER_ROUND).forEach((character) => {
     generateProactiveText({ w, cfg, characterId: character.id, character })
       .catch((err) => logger.warn('chat', `proactive text failed for ${character.name}: ${err.message}`));
-  }
+  });
+}
+
+// Cached per-world rather than reading + parsing every texting/group log
+// file on every GET /api/texts/unread, which the frontend polls every 20s
+// (see FreeroamView.vue) — invalidated by every texts/group-log write below,
+// same idea (and same "invalidate rather than incrementally track" tradeoff)
+// as metCharacterIds above.
+const unreadProactiveCountCache = new Map(); // worldId -> number
+function invalidateUnreadProactiveCount(w) {
+  unreadProactiveCountCache.delete(w.id);
+}
+// Every texting/group-log mutation goes through one of these three instead
+// of calling chatStore.js's append/save/delete directly against
+// w.textsDir, so the cache above can never go stale. Param named `key`
+// (not characterId/groupId) since it's shared by both.
+function appendTextsEntries(w, key, entries) {
+  appendChatEntries(w.textsDir, key, entries);
+  invalidateUnreadProactiveCount(w);
+}
+function saveTextsLog(w, key, log) {
+  saveChatLog(w.textsDir, key, log);
+  invalidateUnreadProactiveCount(w);
+}
+function deleteTextsLog(w, key) {
+  deleteChatLog(w.textsDir, key);
+  invalidateUnreadProactiveCount(w);
 }
 
 // Every proactive (unprompted) char entry, across every 1-on-1 texting
@@ -1686,17 +1762,19 @@ function maybeSendProactiveTexts(w, excludeIds) {
 // excluded without any special-casing. Registered before the
 // :characterId route below so "unread" is never captured as a param.
 function countUnreadProactiveTexts(w) {
+  if (unreadProactiveCountCache.has(w.id)) return unreadProactiveCountCache.get(w.id);
   let files;
   try {
     files = fs.readdirSync(w.textsDir).filter((f) => f.endsWith('.json'));
   } catch {
-    return 0;
+    return 0; // not cached — a transient/first-run read failure, not a real "0" count
   }
   let total = 0;
   for (const file of files) {
     const id = file.slice(0, -'.json'.length);
     total += loadChatLog(w.textsDir, id).filter((e) => e.type === 'char' && e.proactive && !e.read).length;
   }
+  unreadProactiveCountCache.set(w.id, total);
   return total;
 }
 
@@ -1716,7 +1794,7 @@ app.get('/api/texts/:characterId', (req, res) => {
   const log = loadChatLog(w.textsDir, characterId);
   if (log.some((e) => e.proactive && !e.read)) {
     log.forEach((e) => { if (e.proactive) e.read = true; });
-    saveChatLog(w.textsDir, characterId, log);
+    saveTextsLog(w, characterId, log);
   }
   res.json({ log });
 });
@@ -1757,7 +1835,7 @@ app.post('/api/texts/:characterId/send', async (req, res) => {
   const character = loadCharacters(w).find((c) => c.id === characterId);
   if (!character) return res.status(404).json({ error: 'Character not found.' });
 
-  appendChatEntries(w.textsDir, characterId, [{ type: 'user', text: text.trim() }]);
+  appendTextsEntries(w, characterId, [{ type: 'user', text: text.trim() }]);
   logger.info('chat', `text -> ${character.name}`);
   maybeSendProactiveTexts(w, [characterId]);
 
@@ -1836,7 +1914,7 @@ app.delete('/api/texts/:characterId/messages/:entryId', async (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Message not found.' });
 
   log.splice(idx, 1);
-  saveChatLog(w.textsDir, characterId, log);
+  saveTextsLog(w, characterId, log);
   logger.info('chat', `deleted text message ${entryId} @ ${characterId}`);
 
   const { personas, activePersonaId } = loadPersonas(w);
@@ -1891,7 +1969,7 @@ app.delete('/api/groups/:groupId', (req, res) => {
   const group = groups.find((g) => g.id === req.params.groupId);
   if (!group) return res.status(404).json({ error: 'Group not found.' });
   saveGroups(w, groups.filter((g) => g.id !== group.id));
-  deleteChatLog(w.textsDir, group.id);
+  deleteTextsLog(w, group.id);
   res.json({ ok: true });
 });
 
@@ -1943,7 +2021,7 @@ async function generateGroupReply({ w, cfg, group, replierId, character, charact
   const entry = { type: 'char', charId: replierId, name: character.name, text: (text || '').trim() };
   const stats = buildGenerationStats(usage, timing);
   if (stats) entry.stats = stats;
-  appendChatEntries(w.textsDir, group.id, [entry]);
+  appendTextsEntries(w, group.id, [entry]);
   if (onEvent) onEvent({ type: 'turn', entries: [entry] });
   return entry;
 }
@@ -2029,8 +2107,12 @@ app.post('/api/groups/:groupId/send', async (req, res) => {
   loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
 
   const userEntry = { type: 'user', text: text.trim() };
-  appendChatEntries(w.textsDir, groupId, [userEntry]);
+  appendTextsEntries(w, groupId, [userEntry]);
   logger.info('chat', `group text -> ${group.name}`);
+  // Mirrors /say and 1-on-1 texting's /send — a group's own participants are
+  // excluded since the cascade below already covers them; this only gives
+  // OTHER characters (not in this group) a chance to spontaneously text in.
+  maybeSendProactiveTexts(w, group.participantIds);
 
   const cfg = loadConfig();
   const { personas, activePersonaId } = loadPersonas(w);
@@ -2131,7 +2213,7 @@ app.delete('/api/groups/:groupId/messages/:entryId', async (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Message not found.' });
 
   log.splice(idx, 1);
-  saveChatLog(w.textsDir, groupId, log);
+  saveTextsLog(w, groupId, log);
   logger.info('chat', `deleted group message ${entryId} @ ${groupId}`);
 
   const { personas, activePersonaId } = loadPersonas(w);
@@ -2231,7 +2313,7 @@ app.post('/api/calls/:characterId/start', (req, res) => {
   calls[placeId] = { charId: characterId, name: character.name, bystanders, transcript: [], roundCount: 0 };
   saveCalls(w, calls);
 
-  appendChatEntries(w.chatDir, placeId, [{ type: 'system', text: `📞 You call ${character.name}.`, call: true }]);
+  appendPlaceChatEntries(w, placeId, [{ type: 'system', text: `📞 You call ${character.name}.`, call: true }]);
   logger.info('chat', `call started: ${character.name} @ ${place.name} (${presentIds.length} bystander(s))`);
 
   res.json({ log: loadChatLog(w.chatDir, placeId), placements: world.placements, callee: { id: character.id, name: character.name } });
@@ -2291,7 +2373,7 @@ async function runCallReply({ w, cfg, placeId, place, characterId, character, ca
     const entry = { type: 'char', charId: characterId, name: character.name, text: (text || '').trim(), call: true };
     const stats = buildGenerationStats(usage, timing);
     if (stats) entry.stats = stats;
-    appendChatEntries(w.chatDir, placeId, [entry]);
+    appendPlaceChatEntries(w, placeId, [entry]);
     if (onEvent) onEvent({ type: 'turn', entries: [entry] });
 
     callState.transcript.push({ type: 'char', text: entry.text });
@@ -2332,7 +2414,7 @@ async function runCallReply({ w, cfg, placeId, place, characterId, character, ca
       });
       if (narration) {
         const narratorEntry = { ...narration, call: true };
-        appendChatEntries(w.chatDir, placeId, [narratorEntry]);
+        appendPlaceChatEntries(w, placeId, [narratorEntry]);
         if (onEvent) onEvent({ type: 'turn', entries: [narratorEntry] });
       }
     }
@@ -2341,6 +2423,17 @@ async function runCallReply({ w, cfg, placeId, place, characterId, character, ca
   } catch (err) {
     return { error: err.message };
   }
+}
+
+// Persists this place's (already in-place-mutated) callState without
+// clobbering another place's call that may have saved its own changes to
+// calls.json during the awaited LLM call above — reloads fresh and only
+// writes this place's entry back if the call is still active there (a
+// concurrent /end could have removed it, which this must not resurrect).
+function saveCallStateIfStillActive(w, placeId, callState) {
+  const freshCalls = loadCalls(w);
+  if (freshCalls[placeId]) freshCalls[placeId] = callState;
+  saveCalls(w, freshCalls);
 }
 
 app.post('/api/calls/:characterId/say', async (req, res) => {
@@ -2363,7 +2456,7 @@ app.post('/api/calls/:characterId/say', async (req, res) => {
   if (!place) return res.status(404).json({ error: 'Place not found.' });
 
   const userEntry = { type: 'user', text: text.trim(), call: true };
-  appendChatEntries(w.chatDir, placeId, [userEntry]);
+  appendPlaceChatEntries(w, placeId, [userEntry]);
   callState.transcript.push({ type: 'user', text: userEntry.text, entryId: userEntry.id });
   saveCalls(w, calls);
   logger.info('chat', `call say -> ${character.name}`);
@@ -2378,13 +2471,13 @@ app.post('/api/calls/:characterId/say', async (req, res) => {
     send({ type: 'ack', log: loadChatLog(w.chatDir, placeId) });
 
     const result = await runCallReply({ w, cfg, placeId, place, characterId, character, callState, onEvent: send });
-    saveCalls(w, calls);
+    saveCallStateIfStillActive(w, placeId, callState);
     send({ type: 'done', log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
     return res.end();
   }
 
   const result = await runCallReply({ w, cfg, placeId, place, characterId, character, callState });
-  saveCalls(w, calls);
+  saveCallStateIfStillActive(w, placeId, callState);
   res.json({ log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
 });
 
@@ -2412,7 +2505,7 @@ app.post('/api/calls/:characterId/end', (req, res) => {
   saveCalls(w, calls);
 
   const calleeName = character ? character.name : callState.name;
-  appendChatEntries(w.chatDir, placeId, [{ type: 'system', text: `📞 Call with ${calleeName} ended.`, call: true }]);
+  appendPlaceChatEntries(w, placeId, [{ type: 'system', text: `📞 Call with ${calleeName} ended.`, call: true }]);
   logger.info('chat', `call ended: ${calleeName} @ ${place ? place.name : placeId}`);
 
   res.json({ log: loadChatLog(w.chatDir, placeId), placements: world.placements });
@@ -2420,18 +2513,47 @@ app.post('/api/calls/:characterId/end', (req, res) => {
 
 // --- World / placement routes ------------------------------------------
 
+// Cached per-world rather than rescanning every place's entire chat log on
+// every GET /api/world (which the frontend calls on most view navigations) —
+// invalidated (not incrementally updated) by every place-chat write below,
+// simpler and safer than tracking exactly which writes could add/remove a
+// "met" character, at the cost of one extra full rescan on the next read
+// after any write.
+const metCharacterIdsCache = new Map(); // worldId -> string[]
+function invalidateMetCharacterIds(w) {
+  metCharacterIdsCache.delete(w.id);
+}
+// Every place-chat mutation goes through one of these three instead of
+// calling chatStore.js's append/save/delete directly against w.chatDir, so
+// the cache above can never go stale.
+function appendPlaceChatEntries(w, placeId, entries) {
+  appendChatEntries(w.chatDir, placeId, entries);
+  invalidateMetCharacterIds(w);
+}
+function savePlaceChatLog(w, placeId, log) {
+  saveChatLog(w.chatDir, placeId, log);
+  invalidateMetCharacterIds(w);
+}
+function deletePlaceChatLog(w, placeId) {
+  deleteChatLog(w.chatDir, placeId);
+  invalidateMetCharacterIds(w);
+}
+
 // Every character id that has ever spoken (a type:'char' entry) in any
 // place's chat log — used by the Phone contacts list to only surface
 // characters the user has actually met in a scene, rather than every
 // character that exists in the world (see PhoneContacts.vue).
 function metCharacterIds(w) {
+  if (metCharacterIdsCache.has(w.id)) return metCharacterIdsCache.get(w.id);
   const ids = new Set();
   for (const place of loadPlaces(w)) {
     for (const entry of loadChatLog(w.chatDir, place.id)) {
       if (entry.type === 'char' && entry.charId) ids.add(entry.charId);
     }
   }
-  return [...ids];
+  const result = [...ids];
+  metCharacterIdsCache.set(w.id, result);
+  return result;
 }
 
 app.get('/api/world', (req, res) => {
@@ -2857,6 +2979,28 @@ function completionHeaders(cfg) {
   };
 }
 
+// Both callOpenRouter and streamOpenRouter abort if the endpoint goes fully
+// unresponsive — generous enough that a slow-but-working model never trips
+// it (streamOpenRouter's timer resets on every chunk received, so a long but
+// actively-producing generation is never killed), this only guards against
+// a genuinely hung connection: no response at all, or a stream that stops
+// producing chunks mid-generation and never closes.
+const LLM_TIMEOUT_MS = 120_000;
+
+// A resettable AbortController-backed deadline — reset() pushes the abort
+// out by another full LLM_TIMEOUT_MS, used by streamOpenRouter's read loop
+// to implement "no more than N seconds between chunks" rather than one
+// fixed deadline for the whole (potentially long) stream.
+function timeoutController(ms) {
+  const controller = new AbortController();
+  let timer = setTimeout(() => controller.abort(), ms);
+  return {
+    signal: controller.signal,
+    reset() { clearTimeout(timer); timer = setTimeout(() => controller.abort(), ms); },
+    cancel() { clearTimeout(timer); },
+  };
+}
+
 // Non-streaming completion. `meta` is logging context only (who/where).
 // Returns { text, reasoning, usage, timing } — reasoning is present when the
 // endpoint returned a reasoning/thinking trace (OpenRouter normalizes it);
@@ -2868,16 +3012,24 @@ async function callOpenRouter(cfg, messages, maxTokens, meta = '') {
   logger.debug('llm', 'request payload', payload);
 
   const startedAt = Date.now();
+  const timeout = timeoutController(LLM_TIMEOUT_MS);
   let r;
   try {
     r = await fetch(`${cfg.apiBase || DEFAULT_API_BASE}/chat/completions`, {
       method: 'POST',
       headers: completionHeaders(cfg),
       body: JSON.stringify(payload),
+      signal: timeout.signal,
     });
   } catch (err) {
+    if (err.name === 'AbortError') {
+      logger.error('llm', `request timed out after ${LLM_TIMEOUT_MS}ms with no response`);
+      throw new Error(`Endpoint timed out after ${LLM_TIMEOUT_MS / 1000}s with no response.`);
+    }
     logger.error('llm', `endpoint unreachable: ${err.message}`);
     throw new Error(`Endpoint unreachable: ${err.message}`);
+  } finally {
+    timeout.cancel();
   }
 
   const data = await r.json().catch(() => ({}));
@@ -2908,19 +3060,32 @@ async function streamOpenRouter(cfg, messages, maxTokens, meta, onDelta) {
   logger.debug('llm', 'request payload', payload);
 
   const startedAt = Date.now();
+  const timeout = timeoutController(LLM_TIMEOUT_MS);
   let r;
   try {
     r = await fetch(`${cfg.apiBase || DEFAULT_API_BASE}/chat/completions`, {
       method: 'POST',
       headers: completionHeaders(cfg),
       body: JSON.stringify(payload),
+      signal: timeout.signal,
     });
   } catch (err) {
+    timeout.cancel();
+    if (err.name === 'AbortError') {
+      logger.error('llm', `stream request timed out after ${LLM_TIMEOUT_MS}ms with no response`);
+      throw new Error(`Endpoint timed out after ${LLM_TIMEOUT_MS / 1000}s with no response.`);
+    }
     logger.error('llm', `endpoint unreachable: ${err.message}`);
     throw new Error(`Endpoint unreachable: ${err.message}`);
   }
+  // Fresh full window for the read loop below, distinct from the
+  // just-used initial-connect window — reset() on every chunk received from
+  // here on implements "no more than LLM_TIMEOUT_MS between chunks", not one
+  // fixed deadline for the whole (potentially long) generation.
+  timeout.reset();
 
   if (!r.ok) {
+    timeout.cancel();
     const data = await r.json().catch(() => ({}));
     const message = data?.error?.message || `Endpoint responded ${r.status}`;
     logger.error('llm', `stream request failed (${r.status}): ${message}`);
@@ -2936,32 +3101,45 @@ async function streamOpenRouter(cfg, messages, maxTokens, meta, onDelta) {
   let usage = null;
   let firstTokenAt = null;
   const reader = r.body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let nl;
-    while ((nl = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, nl).trim();
-      buffer = buffer.slice(nl + 1);
-      if (!line.startsWith('data:')) continue;
-      const body = line.slice(5).trim();
-      if (body === '[DONE]') continue;
-      let json;
-      try { json = JSON.parse(body); } catch { continue; }
-      if (json.usage) usage = normalizeUsage(json.usage);
-      const delta = json?.choices?.[0]?.delta || {};
-      if (delta.content) {
-        if (firstTokenAt === null) firstTokenAt = Date.now();
-        text += delta.content;
-        onDelta({ text: delta.content });
+  try {
+    for (;;) {
+      let done, value;
+      try {
+        ({ done, value } = await reader.read());
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          throw new Error(`Endpoint stopped responding mid-stream (no data for ${LLM_TIMEOUT_MS / 1000}s).`);
+        }
+        throw err;
       }
-      if (delta.reasoning) {
-        if (firstTokenAt === null) firstTokenAt = Date.now();
-        reasoning += delta.reasoning;
-        onDelta({ reasoning: delta.reasoning });
+      if (done) break;
+      timeout.reset(); // got data — the connection is alive, push the deadline out again
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const body = line.slice(5).trim();
+        if (body === '[DONE]') continue;
+        let json;
+        try { json = JSON.parse(body); } catch { continue; }
+        if (json.usage) usage = normalizeUsage(json.usage);
+        const delta = json?.choices?.[0]?.delta || {};
+        if (delta.content) {
+          if (firstTokenAt === null) firstTokenAt = Date.now();
+          text += delta.content;
+          onDelta({ text: delta.content });
+        }
+        if (delta.reasoning) {
+          if (firstTokenAt === null) firstTokenAt = Date.now();
+          reasoning += delta.reasoning;
+          onDelta({ reasoning: delta.reasoning });
+        }
       }
     }
+  } finally {
+    timeout.cancel();
   }
   return {
     text,
@@ -3076,7 +3254,12 @@ async function relationshipKnowledge(w, speakerId, charactersById, placesById, w
 // (persona + relationships + memories + scene/time/world setting), the
 // budget-trimmed transcript, and token limits. Shared by the non-streaming
 // and streaming generation paths and by regenerate.
-async function buildTurnRequest({ w, place, speakerId, presentIds, charactersById, log }) {
+// Everything about a world that's invariant across every character's turn
+// within one round (or a single /regenerate call) — config, active
+// persona/preset, world state, and a places-by-id lookup. Callers load this
+// ONCE per round (not once per reacting character — see runReactionRound)
+// and pass it into buildTurnRequest.
+function loadTurnContext(w) {
   const cfg = loadConfig();
   const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
@@ -3085,6 +3268,11 @@ async function buildTurnRequest({ w, place, speakerId, presentIds, charactersByI
   const world = loadWorld(w);
   const placesById = {};
   loadPlaces(w).forEach((p) => { placesById[p.id] = p; });
+  return { cfg, world, placesById, activePersona, activePersonaId, activePreset };
+}
+
+async function buildTurnRequest({ w, place, speakerId, presentIds, charactersById, log, turnContext }) {
+  const { cfg, world, placesById, activePersona, activePersonaId, activePreset } = turnContext;
 
   const speaker = charactersById[speakerId];
   const userLabel = activePersona ? activePersona.name : 'Visitor';
@@ -3217,7 +3405,7 @@ async function turnEntriesFrom(w, text, reasoning, request, usage, timing, place
 // branch (used by /say) so /regenerate gets the same live text+reasoning
 // streaming instead of only ever waiting for the full reply.
 async function generateCharacterTurn({ w, cfg, place, speakerId, presentIds, charactersById, log, onEvent = null, backgroundIds = [] }) {
-  const request = await buildTurnRequest({ w, place, speakerId, presentIds, charactersById, log });
+  const request = await buildTurnRequest({ w, place, speakerId, presentIds, charactersById, log, turnContext: loadTurnContext(w) });
   if (onEvent) onEvent({ type: 'speaker', charId: speakerId, name: request.speaker.name });
   try {
     let text, reasoning, usage, timing;
@@ -3307,7 +3495,7 @@ async function narrateEmptyPlaceOrEcho({ w, placeId, place }) {
     }
   }
   if (!note) note = { type: 'system', text: 'Your words echo. No one is here to answer.' };
-  appendChatEntries(w.chatDir, placeId, [note]);
+  appendPlaceChatEntries(w, placeId, [note]);
 }
 
 // Present characters can all be inactive at once (everyone's in the room
@@ -3328,7 +3516,7 @@ async function recordSilentRound({ w, placeId, place, presentIds, charactersById
   }
   if (!note) note = { type: 'system', text: 'No one reacts.' };
 
-  appendChatEntries(w.chatDir, placeId, [note]);
+  appendPlaceChatEntries(w, placeId, [note]);
   const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
   recordRound(w, {
@@ -3360,9 +3548,15 @@ async function runReactionRound({ w, placeId, place, reactIds, presentIds, chara
   let time = null;
   const backgroundIds = presentIds.filter((id) => !reactIds.includes(id));
 
+  // Loaded once for the whole round, not once per reacting character — world/
+  // personas/presets are invariant for the round's duration; only the chat
+  // log itself needs re-reading each iteration, since each character's turn
+  // appends entries the next character should see.
+  const turnContext = loadTurnContext(w);
+
   for (const speakerId of reactIds) {
     const log = loadChatLog(w.chatDir, placeId);
-    const request = await buildTurnRequest({ w, place, speakerId, presentIds, charactersById, log });
+    const request = await buildTurnRequest({ w, place, speakerId, presentIds, charactersById, log, turnContext });
     userLabel = request.userLabel;
     activePersonaId = request.activePersonaId;
     time = request.time;
@@ -3384,7 +3578,7 @@ async function runReactionRound({ w, placeId, place, reactIds, presentIds, chara
     }
 
     const entries = await turnEntriesFrom(w, text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode, backgroundIds);
-    appendChatEntries(w.chatDir, placeId, entries);
+    appendPlaceChatEntries(w, placeId, entries);
     roundEntries.push(...entries);
     if (onEvent) onEvent({ type: 'turn', entries });
   }
@@ -3399,7 +3593,7 @@ async function runReactionRound({ w, placeId, place, reactIds, presentIds, chara
     if (shouldNarrate({ placeType: place.type, presentCount: presentIds.length, backgroundCount: backgroundIds.length, log })) {
       const narration = await attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, charactersById, log });
       if (narration) {
-        appendChatEntries(w.chatDir, placeId, [narration]);
+        appendPlaceChatEntries(w, placeId, [narration]);
         roundEntries.push(narration);
         if (onEvent) onEvent({ type: 'turn', entries: [narration] });
       }
@@ -3461,7 +3655,7 @@ app.post('/api/places/:placeId/enter', (req, res) => {
     }
   });
 
-  appendChatEntries(w.chatDir, placeId, turnEntries);
+  appendPlaceChatEntries(w, placeId, turnEntries);
   logger.info('chat', `first arrival at ${place.name} (${greetedIds.size} greeting${greetedIds.size === 1 ? '' : 's'})`);
 
   if (greetedIds.size) {
@@ -3512,7 +3706,7 @@ app.post('/api/places/:placeId/say', async (req, res) => {
     turnEntries.push({ type: 'system', text: `You return to ${place.name}.` });
   }
   turnEntries.push({ type: 'user', text: text.trim() });
-  appendChatEntries(w.chatDir, placeId, turnEntries);
+  appendPlaceChatEntries(w, placeId, turnEntries);
   logger.info('chat', `say @ ${place.name}: ${charIds.length} character(s) present, ${activeIds.length} active`);
   maybeSendProactiveTexts(w, charIds);
 
@@ -3710,22 +3904,35 @@ app.post('/api/places/:placeId/regenerate', async (req, res) => {
   }
 
   result.entries.forEach((e) => { if (!e.id) e.id = crypto.randomUUID(); });
-  log.splice(idx, 1, ...result.entries);
-  saveChatLog(w.chatDir, placeId, log);
+
+  // Re-load and re-locate the target entry rather than reusing the `log`/`idx`
+  // captured before the awaited generation above — a concurrent request (a new
+  // message, another edit/delete) could have appended to or changed this same
+  // place's log during that window, and splicing into the stale array would
+  // silently discard whatever it added.
+  const freshLog = loadChatLog(w.chatDir, placeId);
+  const freshIdx = freshLog.findIndex((e) => e.id === entryId);
+  if (freshIdx === -1) {
+    const err = 'This message no longer exists — it may have been deleted while the reply was generating.';
+    if (send) { send({ type: 'done', log: freshLog, error: err }); return res.end(); }
+    return res.status(409).json({ error: err });
+  }
+  freshLog.splice(freshIdx, 1, ...result.entries);
+  savePlaceChatLog(w, placeId, freshLog);
   logger.info('chat', `regenerated message ${entryId} @ ${place.name}`);
 
   await attachEntriesToMemories({
     db: w.db, embedFn: embed, memoryIds,
     newEntryIds: result.entries.map((e) => e.id),
-    log, userLabel, formatEntry: formatLogEntry,
+    log: freshLog, userLabel, formatEntry: formatLogEntry,
   }).catch((err) => logger.error('memory', `regen memory sync failed: ${err.message}`));
 
   if (send) {
     send({ type: 'turn', entries: result.entries });
-    send({ type: 'done', log });
+    send({ type: 'done', log: freshLog });
     return res.end();
   }
-  res.json({ log });
+  res.json({ log: freshLog });
 });
 
 // --- Message edit / delete ---------------------------------------------------
@@ -3750,7 +3957,7 @@ app.put('/api/places/:placeId/messages/:entryId', async (req, res) => {
   }
 
   entry.text = text.trim();
-  saveChatLog(w.chatDir, placeId, log);
+  savePlaceChatLog(w, placeId, log);
   logger.info('chat', `edited message ${entryId} @ ${placeId}`);
 
   const { personas, activePersonaId } = loadPersonas(w);
@@ -3774,7 +3981,7 @@ app.delete('/api/places/:placeId/messages/:entryId', async (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Message not found.' });
 
   log.splice(idx, 1);
-  saveChatLog(w.chatDir, placeId, log);
+  savePlaceChatLog(w, placeId, log);
   logger.info('chat', `deleted message ${entryId} @ ${placeId}`);
 
   const { personas, activePersonaId } = loadPersonas(w);

@@ -8,15 +8,18 @@ describe('shouldNarrate', () => {
     assert.equal(shouldNarrate({ placeType: 'private', presentCount: 0, backgroundCount: 0, log: [] }), true);
   });
 
-  test('a private place with exactly one person present never narrates, even if that person is background', () => {
+  test('a private place with exactly one active person present never narrates — that person IS the scene', () => {
     assert.equal(shouldNarrate({ placeType: 'private', presentCount: 1, backgroundCount: 0, log: [] }), false);
-    assert.equal(shouldNarrate({ placeType: 'private', presentCount: 1, backgroundCount: 1, log: [] }), false);
   });
 
-  test('anyone present-but-background always narrates, regardless of cadence', () => {
+  test('anyone present-but-background always narrates, regardless of cadence — even a private room\'s sole occupant', () => {
     const recentLog = [{ type: 'narrator', text: 'Just narrated.' }, { type: 'user', text: 'Hi' }];
     assert.equal(shouldNarrate({ placeType: 'communal', presentCount: 1, backgroundCount: 1, log: recentLog }), true);
     assert.equal(shouldNarrate({ placeType: 'communal', presentCount: 3, backgroundCount: 2, log: recentLog }), true);
+    // A private room's only occupant demoted to background is the exact scenario that would
+    // otherwise leave the user with total silence (no active character replies, no narrator either) —
+    // the background check must win over the private-room-of-one rule.
+    assert.equal(shouldNarrate({ placeType: 'private', presentCount: 1, backgroundCount: 1, log: [] }), true);
   });
 
   test('a solo active conversation (public, no background cast) is throttled to every 3rd round', () => {

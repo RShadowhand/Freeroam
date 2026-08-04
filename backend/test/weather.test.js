@@ -22,6 +22,14 @@ describe('nextCondition', () => {
     assert.equal(nextCondition('clear'), 'windy');
     mock.restoreAll();
   });
+
+  test('snowy is reachable from another condition, not just itself (no longer a one-way trap)', () => {
+    // TRANSITIONS.overcast = { overcast: 3, clear: 2, rainy: 2, foggy: 1, windy: 1, snowy: 1 }, total weight 10 —
+    // snowy is last, so a near-1.0 roll (weight-sum 9 exhausted, tipping into snowy's own slice) lands on it.
+    mock.method(Math, 'random', () => 0.99);
+    assert.equal(nextCondition('overcast'), 'snowy');
+    mock.restoreAll();
+  });
 });
 
 describe('rollAutoWeather', () => {
