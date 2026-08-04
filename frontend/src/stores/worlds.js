@@ -2,6 +2,9 @@ import { defineStore } from 'pinia';
 import router from '../router';
 import { useChatStore } from './chat';
 import { useWorldStore } from './world';
+import { usePhoneStore } from './phone';
+import { useGroupsStore } from './groups';
+import { useUiStore } from './ui';
 import { getWorlds, createWorld, renameWorld, deleteWorld, duplicateWorld, exportWorld, importWorld } from '../api/worlds';
 import { getStoredWorldId, setStoredWorldId } from '../api/worldId';
 
@@ -56,7 +59,13 @@ export const useWorldsStore = defineStore('worlds', {
     // on Freeroam to re-enter fresh. $reset() re-runs each store's state()
     // factory, which is what actually gives chat's Sets a clean slate again
     // rather than leaving stale entries in an already-constructed Set.
+    // Returns true once the world is actually current (including the
+    // already-there no-op case), false when the switch didn't happen —
+    // callers that have their own "did this succeed" UI step (the boot-time
+    // picker closing itself, for one) need this to tell "actually switched"
+    // apart from "blocked, nothing changed."
     async switchWorld(id) {
+      if (id === this.currentWorldId) return true;
       // Each WorldCard's own "busy" ref is per-component, not shared — it
       // disables that card's own buttons while its switch is in flight, but
       // does nothing to stop a *different* card's Switch button being
@@ -64,16 +73,36 @@ export const useWorldsStore = defineStore('worlds', {
       // overlapping switches interleave their $reset()/setCurrent() calls
       // and initFreeroam() ends up racing against whichever world id
       // happens to be current by the time each one's fetches actually fire.
-      if (id === this.currentWorldId || this.switching) return;
+      if (this.switching) return false;
+
+      // $reset() would wipe chat/phone/groups' own tracking of an in-flight
+      // generation (abortController, loadingIds, streamingState) without
+      // actually stopping it server-side — the abandoned request's eventual
+      // response handler would still fire later and write into whichever
+      // store now belongs to the *new* world, corrupting its freshly-reset
+      // state with data from the old one. Same idea as chat.js's existing
+      // "hang up before going somewhere else" activeCall guard, just for
+      // worlds instead of places.
+      const chat = useChatStore();
+      const phone = usePhoneStore();
+      const groups = useGroupsStore();
+      if (chat.isGenerating || phone.loadingIds.size > 0 || groups.loadingIds.size > 0) {
+        useUiStore().showError('Stop the current generation before switching worlds.');
+        return false;
+      }
+
       this.switching = true;
       try {
         this.setCurrent(id);
 
-        useChatStore().$reset();
+        chat.$reset();
         useWorldStore().$reset();
+        phone.$reset();
+        groups.$reset();
 
         await router.push('/');
-        await useChatStore().initFreeroam();
+        await chat.initFreeroam();
+        return true;
       } finally {
         this.switching = false;
       }

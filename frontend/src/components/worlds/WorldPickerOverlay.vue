@@ -1,4 +1,5 @@
 <script setup>
+import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useWorldsStore } from '../../stores/worlds';
 import { useWorldPicker } from '../../composables/useWorldPicker';
@@ -6,14 +7,26 @@ import { useWorldPicker } from '../../composables/useWorldPicker';
 const worlds = useWorldsStore();
 const picker = useWorldPicker();
 const router = useRouter();
+const error = ref('');
 
 function formatDate(iso) {
   return iso ? new Date(iso).toLocaleString() : '';
 }
 
 async function pick(id) {
-  if (id !== worlds.currentWorldId) await worlds.switchWorld(id);
-  picker.close();
+  // Only close on an actual switch (or the already-there no-op) — if the
+  // switch was blocked (e.g. a generation is in flight — see worlds.js's
+  // switchWorld), the picker used to close anyway, silently discarding
+  // whatever the block reason was and leaving no way to tell the click did
+  // nothing. worlds.js's own showError() is a global banner, but this is a
+  // full-viewport modal-overlay at a higher z-index than that banner, which
+  // has none of its own — it renders, just completely hidden behind this
+  // one, same reason every other modal in this app shows its own local
+  // error/status text instead of relying on the global banner.
+  error.value = '';
+  const ok = await worlds.switchWorld(id);
+  if (ok) picker.close();
+  else error.value = 'Stop the current generation before switching worlds.';
 }
 
 function manage() {
@@ -47,6 +60,7 @@ function manage() {
 
       <div class="form-actions">
         <button class="btn secondary small" type="button" @click="manage">Manage worlds</button>
+        <span class="form-status" v-if="error">{{ error }}</span>
       </div>
     </div>
   </div>
