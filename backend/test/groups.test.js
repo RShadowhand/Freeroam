@@ -128,6 +128,46 @@ describe('Groups: sending without an API key', () => {
   });
 });
 
+describe('Groups: cancelling a send', () => {
+  test('a genuinely cancelled send records no memory for the trigger message', async (t) => {
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real', textingChancePerChar: 0 });
+    const { group } = await (await postJson('/api/groups', { name: 'Cancel Memory Test', participantIds: ['ezra', 'mireille'] })).json();
+
+    // Hangs until the request's own AbortSignal fires, then rejects the
+    // same way a real aborted fetch would — exercises the full real
+    // cancellation path (res.on('close') -> signal abort -> combined
+    // timeoutController signal -> this fetch rejecting) rather than
+    // faking the error shape directly.
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch((url, opts) => new Promise((resolve, reject) => {
+      opts.signal?.addEventListener('abort', () => {
+        reject(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }));
+      });
+    })));
+    t.mock.method(Math, 'random', mockRandomSequence([0, 0]));
+
+    const controller = new AbortController();
+    const sendPromise = fetch(`${baseUrl}/api/groups/${group.id}/send`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Cancel me.' }), signal: controller.signal,
+    });
+    await new Promise((r) => setTimeout(r, 30)); // let the request land and start the (hung) OpenRouter call
+    controller.abort();
+    await assert.rejects(sendPromise);
+
+    // The server-side abort happens asynchronously relative to the
+    // client's own rejection above — poll briefly rather than assume it's
+    // already finished recording (or not) the instant our fetch rejects.
+    let ezraMemories = [];
+    for (let i = 0; i < 40; i++) {
+      ezraMemories = (await getJson('/api/memory/ezra')).memories;
+      if (ezraMemories.some((m) => m.text.includes('Cancel me.'))) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    assert.ok(!ezraMemories.some((m) => m.text.includes('Cancel me.')), 'a cancelled send should not have recorded the trigger message into memory');
+
+    await postJson('/api/settings/clear-key', {});
+  });
+});
+
 describe('Groups: the cascade (OpenRouter + Math.random mocked)', () => {
   let group;
 

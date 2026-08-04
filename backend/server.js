@@ -2172,9 +2172,16 @@ app.post('/api/groups/:groupId/send', async (req, res) => {
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
   const userLabel = activePersona ? activePersona.name : 'Visitor';
 
-  const finish = (result) => recordGroupRound(w, {
-    group, triggerEntry: userEntry, cascadeEntries: result.entries, userLabel, activePersonaId, time,
-  });
+  // A cancelled cascade shouldn't leave any memory trace, same as a
+  // cancelled reaction round (runReactionRound) or 1-on-1 text
+  // (runTextingReply) — a dice-rolled zero-reply cascade is still
+  // genuinely recorded (the room "heard" the trigger message even if
+  // nobody answered, same philosophy as recordSilentRound), only a real
+  // user-initiated Stop skips it.
+  const finish = (result) => {
+    if (result.cancelled) return;
+    recordGroupRound(w, { group, triggerEntry: userEntry, cascadeEntries: result.entries, userLabel, activePersonaId, time });
+  };
 
   const signal = requestCancelSignal(req, res);
 
@@ -2235,9 +2242,11 @@ app.post('/api/groups/:groupId/retry', async (req, res) => {
   const userLabel = activePersona ? activePersona.name : 'Visitor';
   const time = loadWorld(w).time;
 
-  const finish = (result) => recordGroupRound(w, {
-    group, triggerEntry, cascadeEntries: result.entries, userLabel, activePersonaId, time,
-  });
+  // Same cancel guard as /send's finish — see its comment.
+  const finish = (result) => {
+    if (result.cancelled) return;
+    recordGroupRound(w, { group, triggerEntry, cascadeEntries: result.entries, userLabel, activePersonaId, time });
+  };
 
   const signal = requestCancelSignal(req, res);
 
