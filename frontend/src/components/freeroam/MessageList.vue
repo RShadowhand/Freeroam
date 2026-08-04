@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue';
 import { useChatStore } from '../../stores/chat';
 import { useThemeStore } from '../../stores/theme';
 import { formatMessage } from '../../utils/format';
+import { dayDividerLabels } from '../../utils/time';
 import Avatar from '../shared/Avatar.vue';
 import MessageItem from './MessageItem.vue';
 
@@ -37,6 +38,14 @@ const lastRealIndex = computed(() => {
   return -1;
 });
 
+// A date divider wherever day/timeOfDay changes from the previous entry —
+// a room's log can span many in-world days between visits, and there was
+// previously no way to tell when a given message was actually said. Scene
+// chat keeps the sparse-divider approach; PhoneThread.vue/GroupThread.vue
+// moved to a per-message timestamp instead (per feedback that the divider
+// alone was too easy to miss there) — see their own use of formatDayTime.
+const dividerLabels = computed(() => dayDividerLabels(chat.currentLog));
+
 function scrollToBottom() {
   if (box.value) box.value.scrollTop = box.value.scrollHeight;
 }
@@ -51,10 +60,10 @@ watch(() => chat.currentPlace, () => nextTick(scrollToBottom));
 
 <template>
   <div class="messages" id="messages" ref="box">
-    <MessageItem
-      v-for="(m, i) in chat.currentLog" :key="m.id || i"
-      :message="m" :is-last="i === lastRealIndex" :offer-save="offerSaveByIndex[i]"
-    />
+    <template v-for="(m, i) in chat.currentLog" :key="m.id || i">
+      <div class="chat-day-divider" v-if="dividerLabels[i]">{{ dividerLabels[i] }}</div>
+      <MessageItem :message="m" :is-last="i === lastRealIndex" :offer-save="offerSaveByIndex[i]" />
+    </template>
     <div class="msg char" v-if="chat.streamingState">
       <div class="msg-avatar"><Avatar :char-id="chat.streamingState.charId" :size="38" /></div>
       <div class="msg-body">
