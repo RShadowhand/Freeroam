@@ -38,6 +38,11 @@ export const useChatStore = defineStore('chat', {
     loading: false,
     entering: false, // synchronous re-entrancy guard for enterPlace
     streamingState: null, // { placeId, charId, name, text, reasoning } | null
+    // The AbortController backing whichever say/retry/regenerate/call-say
+    // request is currently in flight — a single field, not a Map keyed by
+    // conversation, since chat.js only ever has one thing in flight at once
+    // (there's exactly one "current place"), unlike phone.js/groups.js.
+    abortController: null,
     activeCall: null, // { charId, name } | null — a phone call in progress at currentPlace (Phase 3)
     savedNpcNames: new Set(), // lowercased names already promoted to real characters this session
     pendingReturnMarker: new Set(), // places needing a "You return to X." marker once engaged
@@ -49,10 +54,23 @@ export const useChatStore = defineStore('chat', {
   }),
   getters: {
     currentLog: (state) => state.logs[state.currentPlace] || [],
+    // Whether there's an actual generation in flight right now (say/retry/
+    // regenerate/call-say) — narrower than `loading`, which is also true
+    // while merely entering a place (nothing to cancel there). Drives the
+    // Stop button's visibility.
+    isGenerating: (state) => !!state.abortController,
   },
   actions: {
     setLoading(v) {
       this.loading = v;
+    },
+
+    // Aborts whichever generation is currently in flight — the backend
+    // treats the resulting client disconnect as a genuine cancel (see
+    // requestCancelSignal in server.js) and stops the round after whatever
+    // reply was already in progress, not just hiding it client-side.
+    cancelGeneration() {
+      this.abortController?.abort();
     },
 
     async moveCharacter(charId, placeId) {
@@ -215,14 +233,16 @@ export const useChatStore = defineStore('chat', {
       if (this.loading || this.entering || this.currentPlace === null) return;
       const placeId = this.currentPlace;
       this.setLoading(true);
+      this.abortController = new AbortController();
+      const { signal } = this.abortController;
 
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
         let result;
         if (cfg.streaming) {
-          result = await this.consumeReactionSse(placeId, await retryStreamRequest(placeId));
+          result = await this.consumeReactionSse(placeId, await retryStreamRequest(placeId, signal));
         } else {
-          const { ok, data } = await retryApi(placeId);
+          const { ok, data } = await retryApi(placeId, signal);
           if (!ok) throw new Error(data.error || 'request failed');
           this.logs[placeId] = data.log;
           result = { error: data.error };
@@ -233,10 +253,16 @@ export const useChatStore = defineStore('chat', {
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something went wrong trying to reach the room. (${err.message})` }];
-        useUiStore().showError(err.message);
+        // A user-initiated Stop is not a failure — the AbortError it
+        // produces (fetch itself, or a mid-stream read once the backend's
+        // own connection-close signal fires) shouldn't render as one.
+        if (err.name !== 'AbortError') {
+          this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something went wrong trying to reach the room. (${err.message})` }];
+          useUiStore().showError(err.message);
+        }
       } finally {
         this.streamingState = null;
+        this.abortController = null;
         this.setLoading(false);
       }
     },
@@ -253,14 +279,16 @@ export const useChatStore = defineStore('chat', {
       // runs; the authoritative log from the response replaces it.
       this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'user', text }];
       this.setLoading(true);
+      this.abortController = new AbortController();
+      const { signal } = this.abortController;
 
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
         let result;
         if (cfg.streaming) {
-          result = await this.consumeReactionSse(placeId, await sayStreamRequest(placeId, { text, announceArrival }));
+          result = await this.consumeReactionSse(placeId, await sayStreamRequest(placeId, { text, announceArrival }, signal));
         } else {
-          const { ok, data } = await sayApi(placeId, { text, announceArrival });
+          const { ok, data } = await sayApi(placeId, { text, announceArrival }, signal);
           if (!ok) throw new Error(data.error || 'request failed');
           this.logs[placeId] = data.log;
           result = { error: data.error };
@@ -272,10 +300,13 @@ export const useChatStore = defineStore('chat', {
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something went wrong trying to reach the room. (${err.message})` }];
-        useUiStore().showError(err.message);
+        if (err.name !== 'AbortError') {
+          this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something went wrong trying to reach the room. (${err.message})` }];
+          useUiStore().showError(err.message);
+        }
       } finally {
         this.streamingState = null;
+        this.abortController = null;
         this.setLoading(false);
       }
     },
@@ -310,14 +341,16 @@ export const useChatStore = defineStore('chat', {
 
       this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'user', text, call: true }];
       this.setLoading(true);
+      this.abortController = new AbortController();
+      const { signal } = this.abortController;
 
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
         let result;
         if (cfg.streaming) {
-          result = await this.consumeReactionSse(placeId, await callSayStreamRequest(characterId, { placeId, text }));
+          result = await this.consumeReactionSse(placeId, await callSayStreamRequest(characterId, { placeId, text }, signal));
         } else {
-          const { ok, data } = await callSayApi(characterId, { placeId, text });
+          const { ok, data } = await callSayApi(characterId, { placeId, text }, signal);
           if (!ok) throw new Error(data.error || 'request failed');
           this.logs[placeId] = data.log;
           result = { error: data.error };
@@ -328,10 +361,13 @@ export const useChatStore = defineStore('chat', {
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something went wrong on the call. (${err.message})` }];
-        useUiStore().showError(err.message);
+        if (err.name !== 'AbortError') {
+          this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something went wrong on the call. (${err.message})` }];
+          useUiStore().showError(err.message);
+        }
       } finally {
         this.streamingState = null;
+        this.abortController = null;
         this.setLoading(false);
       }
     },
@@ -362,6 +398,8 @@ export const useChatStore = defineStore('chat', {
       if (this.loading || this.entering || this.currentPlace === null) return;
       const placeId = this.currentPlace;
       this.setLoading(true);
+      this.abortController = new AbortController();
+      const { signal } = this.abortController;
 
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
@@ -371,17 +409,20 @@ export const useChatStore = defineStore('chat', {
           // until `done` restores the authoritative log with the new text
           // back in its original slot.
           this.logs[placeId] = (this.logs[placeId] || []).filter((m) => m.id !== entryId);
-          const result = await this.consumeReactionSse(placeId, await regenerateStreamRequest(placeId, entryId), { appendOnTurn: false });
+          const result = await this.consumeReactionSse(placeId, await regenerateStreamRequest(placeId, entryId, signal), { appendOnTurn: false });
           if (result.error) throw new Error(result.error);
         } else {
-          const { ok, data } = await regenerateApi(placeId, entryId);
+          const { ok, data } = await regenerateApi(placeId, entryId, signal);
           if (!ok) throw new Error(data.error || 'request failed');
           this.logs[placeId] = data.log;
         }
       } catch (err) {
-        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Could not regenerate. (${err.message})` }];
+        if (err.name !== 'AbortError') {
+          this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Could not regenerate. (${err.message})` }];
+        }
       } finally {
         this.streamingState = null;
+        this.abortController = null;
         this.setLoading(false);
       }
     },

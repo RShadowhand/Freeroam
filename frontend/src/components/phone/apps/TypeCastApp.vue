@@ -26,6 +26,10 @@ function nudge(characterId) {
     <PhoneContacts @select="activeContactId = $event">
       <template #trailing="{ character }">
         <span
+          class="phone-contact-unread-badge" v-if="phone.unreadByCharacterId[character.id] > 0"
+          title="Unread text"
+        >{{ phone.unreadByCharacterId[character.id] }}</span>
+        <span
           class="phone-nudge-btn" role="button" tabindex="0"
           title="Nudge them to text you now" @click.stop="nudge(character.id)"
         >📨</span>

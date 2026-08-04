@@ -147,11 +147,13 @@ describe('Proactive texts: routes', () => {
     await postJson(`/api/texts/${character.id}/trigger`, {});
 
     const afterTrigger = await getJson('/api/texts/unread');
-    assert.equal(afterTrigger.count, before.count + 1);
+    assert.equal(afterTrigger.total, before.total + 1);
+    assert.equal(afterTrigger.byCharacterId[character.id], 1, 'the per-contact breakdown should attribute the unread text to this character');
 
     await getJson(`/api/texts/${character.id}`); // opening the conversation marks it read
     const afterOpen = await getJson('/api/texts/unread');
-    assert.equal(afterOpen.count, before.count);
+    assert.equal(afterOpen.total, before.total);
+    assert.equal(afterOpen.byCharacterId[character.id], undefined, 'a fully-read contact should not appear in the breakdown at all');
   });
 
   test('/say excludes present characters from the roll, includes absent ones', async (t) => {

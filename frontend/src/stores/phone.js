@@ -26,8 +26,20 @@ export const usePhoneStore = defineStore('phone', {
     loadedIds: new Set(), // characters whose log has been fetched at least once this session
     openingIds: new Set(), // characterIds whose log GET is currently in flight (re-entrancy guard)
     unreadCount: 0, // proactive texts (Phase 5) not yet seen — badge count
+    unreadByCharacterId: {}, // characterId -> unread count, for the per-contact badge (only non-zero entries present)
+    // The AbortController backing each characterId's in-flight send/retry —
+    // a Map, not a single field, same keying as loadingIds, since more than
+    // one conversation can be generating at once.
+    abortControllers: new Map(),
   }),
   actions: {
+    // Aborts characterId's in-flight send/retry, if any — the backend's own
+    // connection-close signal (requestCancelSignal in server.js) turns this
+    // into a genuine server-side cancel, not just hiding it client-side.
+    cancelText(characterId) {
+      this.abortControllers.get(characterId)?.abort();
+    },
+
     async openConversation(characterId) {
       // loadedIds alone isn't a re-entrancy guard — it's only set *after* the
       // GET below resolves, so two calls before that (e.g. rapid navigation)
@@ -53,7 +65,10 @@ export const usePhoneStore = defineStore('phone', {
 
     async refreshUnreadCount() {
       const { ok, data } = await getUnreadTextCount();
-      if (ok) this.unreadCount = data.count;
+      if (ok) {
+        this.unreadCount = data.total;
+        this.unreadByCharacterId = data.byCharacterId || {};
+      }
     },
 
     // Manual "nudge" — same generation path as a real automatic hit, just
@@ -123,14 +138,16 @@ export const usePhoneStore = defineStore('phone', {
       if (!text || this.loadingIds.has(characterId)) return;
       this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'user', text }];
       this.loadingIds.add(characterId);
+      const controller = new AbortController();
+      this.abortControllers.set(characterId, controller);
 
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
         let result;
         if (cfg.streaming) {
-          result = await this._consumeSse(characterId, await sendTextStreamRequest(characterId, { text }));
+          result = await this._consumeSse(characterId, await sendTextStreamRequest(characterId, { text }, controller.signal));
         } else {
-          const { ok, data } = await sendTextApi(characterId, { text });
+          const { ok, data } = await sendTextApi(characterId, { text }, controller.signal);
           if (!ok) throw new Error(data.error || 'request failed');
           this.logs[characterId] = data.log;
           result = { error: data.error };
@@ -141,10 +158,13 @@ export const usePhoneStore = defineStore('phone', {
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't send that. (${err.message})` }];
-        useUiStore().showError(err.message);
+        if (err.name !== 'AbortError') {
+          this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't send that. (${err.message})` }];
+          useUiStore().showError(err.message);
+        }
       } finally {
         this.streamingState = null;
+        this.abortControllers.delete(characterId);
         this.loadingIds.delete(characterId);
       }
     },
@@ -155,14 +175,16 @@ export const usePhoneStore = defineStore('phone', {
     async retryText(characterId) {
       if (this.loadingIds.has(characterId)) return;
       this.loadingIds.add(characterId);
+      const controller = new AbortController();
+      this.abortControllers.set(characterId, controller);
 
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
         let result;
         if (cfg.streaming) {
-          result = await this._consumeSse(characterId, await retryTextStreamRequest(characterId));
+          result = await this._consumeSse(characterId, await retryTextStreamRequest(characterId, controller.signal));
         } else {
-          const { ok, data } = await retryTextApi(characterId);
+          const { ok, data } = await retryTextApi(characterId, controller.signal);
           if (!ok) throw new Error(data.error || 'request failed');
           this.logs[characterId] = data.log;
           result = { error: data.error };
@@ -173,10 +195,13 @@ export const usePhoneStore = defineStore('phone', {
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't retry. (${err.message})` }];
-        useUiStore().showError(err.message);
+        if (err.name !== 'AbortError') {
+          this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't retry. (${err.message})` }];
+          useUiStore().showError(err.message);
+        }
       } finally {
         this.streamingState = null;
+        this.abortControllers.delete(characterId);
         this.loadingIds.delete(characterId);
       }
     },

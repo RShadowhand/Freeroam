@@ -5,6 +5,7 @@ import { useGroupsStore } from '../../stores/groups';
 import { useSettingsStore } from '../../stores/settings';
 import { useThemeStore } from '../../stores/theme';
 import { formatMessage } from '../../utils/format';
+import { dayDividerLabels } from '../../utils/time';
 import CardAvatar from '../shared/CardAvatar.vue';
 import GroupInfoPanel from './GroupInfoPanel.vue';
 
@@ -41,6 +42,11 @@ const typingName = computed(() => (
 // in flight — groups.js tracks loadingIds per-groupId precisely so a
 // different open thread's request can't make this one look busy.
 const isLoadingHere = computed(() => groups.loadingIds.has(props.groupId));
+
+// A date divider between messages wherever day/timeOfDay changes from the
+// previous one — see utils/time.js's dayDividerLabels and PhoneThread.vue's
+// identical use of it.
+const dividerLabels = computed(() => dayDividerLabels(log.value));
 
 // A trailing generation-failure error (type 'error', client-only, never
 // persisted — see stores/groups.js) shouldn't hide Retry on the user
@@ -109,6 +115,9 @@ function deleteMessage(entryId) {
 function retry() {
   groups.retryText(props.groupId);
 }
+function stop() {
+  groups.cancelText(props.groupId);
+}
 function dismissError(entryId) {
   groups.removeError(props.groupId, entryId);
 }
@@ -127,6 +136,7 @@ function dismissError(entryId) {
     <div class="messages" ref="box">
       <div class="empty-note" v-if="!log.length">No messages yet — say hello to the group.</div>
       <template v-for="(m, i) in log" :key="m.id || i">
+        <div class="chat-day-divider" v-if="dividerLabels[i]">{{ dividerLabels[i] }}</div>
         <div class="msg error" v-if="m.type === 'error'">
           {{ m.text }}
           <button class="msg-delete-btn error-dismiss" title="Dismiss" @click="dismissError(m.id)">✕</button>
@@ -171,7 +181,12 @@ function dismissError(entryId) {
         :disabled="isLoadingHere"
         @input="autoGrow" @keydown="onKeydown"
       ></textarea>
-      <button :disabled="isLoadingHere" @click="send">Send</button>
+      <button v-if="isLoadingHere" class="stop-btn" @click="stop">Stop</button>
+      <button v-else @click="send">Send</button>
     </div>
   </div>
 </template>
+
+<style scoped>
+.stop-btn{ background:var(--rose); color:var(--parchment); }
+</style>

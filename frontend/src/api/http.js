@@ -40,11 +40,12 @@ export function apiGet(path) {
   return request(path);
 }
 
-export function apiJson(path, method, body) {
+export function apiJson(path, method, body, { signal } = {}) {
   return request(path, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body ?? {}),
+    signal,
   });
 }
 

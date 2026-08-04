@@ -118,6 +118,14 @@ describe('Groups: sending without an API key', () => {
     assert.equal(data.log[0].type, 'user');
     assert.equal(data.log.length, 1); // no cascade replies landed
   });
+
+  test('the user line carries the current in-world day/timeOfDay', async () => {
+    await postJson('/api/world/time', { day: 12, timeOfDay: 'sunset' });
+    const { group } = await (await postJson('/api/groups', { name: 'Timestamped Group', participantIds: ['ezra', 'mireille'] })).json();
+    const { log } = await (await postJson(`/api/groups/${group.id}/send`, { text: 'hi all' })).json();
+    assert.equal(log[0].day, 12);
+    assert.equal(log[0].timeOfDay, 'sunset');
+  });
 });
 
 describe('Groups: the cascade (OpenRouter + Math.random mocked)', () => {

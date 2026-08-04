@@ -23,8 +23,19 @@ export const useGroupsStore = defineStore('groups', {
     streamingState: null, // { groupId, charId, name } | null
     loadedIds: new Set(),
     openingIds: new Set(), // groupIds whose log GET is currently in flight (re-entrancy guard)
+    // The AbortController backing each groupId's in-flight send/retry — a
+    // Map, not a single field, same keying as loadingIds, since more than
+    // one group conversation can be generating at once.
+    abortControllers: new Map(),
   }),
   actions: {
+    // Aborts groupId's in-flight send/retry, if any — the backend's own
+    // connection-close signal (requestCancelSignal in server.js) turns this
+    // into a genuine server-side cancel, not just hiding it client-side.
+    cancelText(groupId) {
+      this.abortControllers.get(groupId)?.abort();
+    },
+
     async loadGroups() {
       const { ok, data } = await getGroups();
       if (ok) this.groups = data.groups;
@@ -130,14 +141,16 @@ export const useGroupsStore = defineStore('groups', {
       if (!text || this.loadingIds.has(groupId)) return;
       this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'user', text }];
       this.loadingIds.add(groupId);
+      const controller = new AbortController();
+      this.abortControllers.set(groupId, controller);
 
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
         let result;
         if (cfg.streaming) {
-          result = await this._consumeSse(groupId, await sendGroupTextStreamRequest(groupId, { text }));
+          result = await this._consumeSse(groupId, await sendGroupTextStreamRequest(groupId, { text }, controller.signal));
         } else {
-          const { ok, data } = await sendGroupTextApi(groupId, { text });
+          const { ok, data } = await sendGroupTextApi(groupId, { text }, controller.signal);
           if (!ok) throw new Error(data.error || 'request failed');
           this.logs[groupId] = data.log;
           result = { error: data.error };
@@ -148,10 +161,13 @@ export const useGroupsStore = defineStore('groups', {
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't send that. (${err.message})` }];
-        useUiStore().showError(err.message);
+        if (err.name !== 'AbortError') {
+          this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't send that. (${err.message})` }];
+          useUiStore().showError(err.message);
+        }
       } finally {
         this.streamingState = null;
+        this.abortControllers.delete(groupId);
         this.loadingIds.delete(groupId);
       }
     },
@@ -162,14 +178,16 @@ export const useGroupsStore = defineStore('groups', {
     async retryText(groupId) {
       if (this.loadingIds.has(groupId)) return;
       this.loadingIds.add(groupId);
+      const controller = new AbortController();
+      this.abortControllers.set(groupId, controller);
 
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
         let result;
         if (cfg.streaming) {
-          result = await this._consumeSse(groupId, await retryGroupStreamRequest(groupId));
+          result = await this._consumeSse(groupId, await retryGroupStreamRequest(groupId, controller.signal));
         } else {
-          const { ok, data } = await retryGroupApi(groupId);
+          const { ok, data } = await retryGroupApi(groupId, controller.signal);
           if (!ok) throw new Error(data.error || 'request failed');
           this.logs[groupId] = data.log;
           result = { error: data.error };
@@ -180,10 +198,13 @@ export const useGroupsStore = defineStore('groups', {
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't retry. (${err.message})` }];
-        useUiStore().showError(err.message);
+        if (err.name !== 'AbortError') {
+          this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'error', id: crypto.randomUUID(), text: `Couldn't retry. (${err.message})` }];
+          useUiStore().showError(err.message);
+        }
       } finally {
         this.streamingState = null;
+        this.abortControllers.delete(groupId);
         this.loadingIds.delete(groupId);
       }
     },

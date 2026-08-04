@@ -2,8 +2,8 @@ import { apiGet, apiJson, apiDelete } from './http';
 import { getStoredWorldId } from './worldId';
 
 export const getTextLog = (characterId) => apiGet(`/api/texts/${encodeURIComponent(characterId)}`);
-export const sendTextApi = (characterId, body) => apiJson(`/api/texts/${encodeURIComponent(characterId)}/send`, 'POST', body);
-export const retryTextApi = (characterId) => apiJson(`/api/texts/${encodeURIComponent(characterId)}/retry`, 'POST', {});
+export const sendTextApi = (characterId, body, signal) => apiJson(`/api/texts/${encodeURIComponent(characterId)}/send`, 'POST', body, { signal });
+export const retryTextApi = (characterId, signal) => apiJson(`/api/texts/${encodeURIComponent(characterId)}/retry`, 'POST', {}, { signal });
 export const deleteTextMessageApi = (characterId, entryId) =>
   apiDelete(`/api/texts/${encodeURIComponent(characterId)}/messages/${encodeURIComponent(entryId)}`);
 export const triggerTextApi = (characterId) => apiJson(`/api/texts/${encodeURIComponent(characterId)}/trigger`, 'POST', {});
@@ -16,7 +16,7 @@ function streamHeaders() {
   const worldId = getStoredWorldId();
   return { 'Content-Type': 'application/json', ...(worldId ? { 'X-World-Id': worldId } : {}) };
 }
-export const sendTextStreamRequest = (characterId, body) =>
-  fetch(`/api/texts/${encodeURIComponent(characterId)}/send`, { method: 'POST', headers: streamHeaders(), body: JSON.stringify(body) });
-export const retryTextStreamRequest = (characterId) =>
-  fetch(`/api/texts/${encodeURIComponent(characterId)}/retry`, { method: 'POST', headers: streamHeaders(), body: '{}' });
+export const sendTextStreamRequest = (characterId, body, signal) =>
+  fetch(`/api/texts/${encodeURIComponent(characterId)}/send`, { method: 'POST', headers: streamHeaders(), body: JSON.stringify(body), signal });
+export const retryTextStreamRequest = (characterId, signal) =>
+  fetch(`/api/texts/${encodeURIComponent(characterId)}/retry`, { method: 'POST', headers: streamHeaders(), body: '{}', signal });

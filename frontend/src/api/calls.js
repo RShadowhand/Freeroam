@@ -3,8 +3,8 @@ import { getStoredWorldId } from './worldId';
 
 export const startCallApi = (characterId, placeId) =>
   apiJson(`/api/calls/${encodeURIComponent(characterId)}/start`, 'POST', { placeId });
-export const callSayApi = (characterId, body) =>
-  apiJson(`/api/calls/${encodeURIComponent(characterId)}/say`, 'POST', body);
+export const callSayApi = (characterId, body, signal) =>
+  apiJson(`/api/calls/${encodeURIComponent(characterId)}/say`, 'POST', body, { signal });
 export const endCallApi = (characterId, placeId) =>
   apiJson(`/api/calls/${encodeURIComponent(characterId)}/end`, 'POST', { placeId });
 
@@ -15,5 +15,5 @@ function streamHeaders() {
   const worldId = getStoredWorldId();
   return { 'Content-Type': 'application/json', ...(worldId ? { 'X-World-Id': worldId } : {}) };
 }
-export const callSayStreamRequest = (characterId, body) =>
-  fetch(`/api/calls/${encodeURIComponent(characterId)}/say`, { method: 'POST', headers: streamHeaders(), body: JSON.stringify(body) });
+export const callSayStreamRequest = (characterId, body, signal) =>
+  fetch(`/api/calls/${encodeURIComponent(characterId)}/say`, { method: 'POST', headers: streamHeaders(), body: JSON.stringify(body), signal });

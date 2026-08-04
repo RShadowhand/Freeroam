@@ -6,6 +6,8 @@ import './styles/shared.css';
 import './styles/main.css';
 import { useThemeStore } from './stores/theme';
 import { useWorldsStore } from './stores/worlds';
+import { useOnboardingModal } from './composables/useOnboardingModal';
+import { useWorldPicker } from './composables/useWorldPicker';
 
 const app = createApp(App);
 app.use(createPinia());
@@ -38,5 +40,7 @@ useThemeStore().apply();
     await import('./mock/mockBackend.js');
   }
   await useWorldsStore().init();
+  await useOnboardingModal().init();
+  useWorldPicker().initFromWorldsList();
   app.mount('#app');
 })();

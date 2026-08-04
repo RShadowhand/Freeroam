@@ -5,6 +5,7 @@ import { usePhoneStore } from '../../stores/phone';
 import { useSettingsStore } from '../../stores/settings';
 import { useThemeStore } from '../../stores/theme';
 import { formatMessage } from '../../utils/format';
+import { dayDividerLabels } from '../../utils/time';
 import CardAvatar from '../shared/CardAvatar.vue';
 
 // Calling lives in its own app (Wavelength) now, not a button bolted onto
@@ -36,6 +37,12 @@ const showTyping = computed(() => (
 // flight — phone.js tracks loadingIds per-characterId precisely so a
 // different open thread's request can't make this one look busy.
 const isLoadingHere = computed(() => phone.loadingIds.has(props.characterId));
+
+// A date divider between messages wherever day/timeOfDay changes from the
+// previous one — a texting conversation can span many in-world days, unlike
+// a single scene visit. See utils/time.js's dayDividerLabels for why older
+// history (no day/timeOfDay stamp) just shows no divider.
+const dividerLabels = computed(() => dayDividerLabels(log.value));
 
 // A trailing generation-failure error (type 'error', client-only, never
 // persisted — see stores/phone.js) shouldn't hide Retry on the user message
@@ -100,6 +107,9 @@ function deleteMessage(entryId) {
 function retry() {
   phone.retryText(props.characterId);
 }
+function stop() {
+  phone.cancelText(props.characterId);
+}
 function dismissError(entryId) {
   phone.removeError(props.characterId, entryId);
 }
@@ -116,6 +126,7 @@ function dismissError(entryId) {
     <div class="messages" ref="box">
       <div class="empty-note" v-if="!log.length">No messages yet — say hello.</div>
       <template v-for="(m, i) in log" :key="m.id || i">
+        <div class="chat-day-divider" v-if="dividerLabels[i]">{{ dividerLabels[i] }}</div>
         <div class="msg error" v-if="m.type === 'error'">
           {{ m.text }}
           <button class="msg-delete-btn error-dismiss" title="Dismiss" @click="dismissError(m.id)">✕</button>
@@ -142,7 +153,12 @@ function dismissError(entryId) {
         :disabled="isLoadingHere"
         @input="autoGrow" @keydown="onKeydown"
       ></textarea>
-      <button :disabled="isLoadingHere" @click="send">Send</button>
+      <button v-if="isLoadingHere" class="stop-btn" @click="stop">Stop</button>
+      <button v-else @click="send">Send</button>
     </div>
   </div>
 </template>
+
+<style scoped>
+.stop-btn{ background:var(--rose); color:var(--parchment); }
+</style>

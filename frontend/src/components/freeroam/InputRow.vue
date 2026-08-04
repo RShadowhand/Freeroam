@@ -38,6 +38,11 @@ function onKeydown(e) {
       :disabled="chat.loading"
       @input="autoGrow" @keydown="onKeydown"
     ></textarea>
-    <button :disabled="chat.loading" @click="send">Send</button>
+    <button v-if="chat.isGenerating" class="stop-btn" @click="chat.cancelGeneration()">Stop</button>
+    <button v-else :disabled="chat.loading" @click="send">Send</button>
   </div>
 </template>
+
+<style scoped>
+.stop-btn{ background:var(--rose); color:var(--parchment); }
+</style>

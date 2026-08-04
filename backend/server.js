@@ -161,6 +161,7 @@ const DEFAULT_CONFIG = {
   cascadeDecayRate: DEFAULT_CASCADE_DECAY_RATE,
   cascadePerCharacterCap: DEFAULT_CASCADE_PER_CHARACTER_CAP,
   textingChancePerChar: 0.002,           // Phase 5 — per-character odds of a spontaneous text on each user input
+  onboarded: false,                     // whether the first-run tour has been seen/skipped — global, not per-browser
 };
 
 // The model in use before embeddingModelVersion existed — configs saved
@@ -533,6 +534,7 @@ function publicConfig(cfg) {
     cascadeDecayRate: Number.isFinite(cfg.cascadeDecayRate) ? cfg.cascadeDecayRate : DEFAULT_CASCADE_DECAY_RATE,
     cascadePerCharacterCap: Number.isInteger(cfg.cascadePerCharacterCap) ? cfg.cascadePerCharacterCap : DEFAULT_CASCADE_PER_CHARACTER_CAP,
     textingChancePerChar: Number.isFinite(cfg.textingChancePerChar) ? cfg.textingChancePerChar : DEFAULT_CONFIG.textingChancePerChar,
+    onboarded: !!cfg.onboarded,
   };
 }
 
@@ -545,7 +547,7 @@ app.post('/api/settings', (req, res) => {
   const {
     apiKey, model, apiBase, streaming, reasoning, providers, memoryMinScore, suggestedActionsMode,
     draftPersonaPrompt, narratorEnabled, textingPromptTemplate, textingTypingIndicator,
-    cascadeBaseChance, cascadeDecayRate, cascadePerCharacterCap, textingChancePerChar,
+    cascadeBaseChance, cascadeDecayRate, cascadePerCharacterCap, textingChancePerChar, onboarded,
   } = req.body || {};
   if (typeof apiKey === 'string' && apiKey.trim()) cfg.apiKey = apiKey.trim();
   if (typeof model === 'string' && model.trim()) cfg.model = model.trim();
@@ -577,6 +579,7 @@ app.post('/api/settings', (req, res) => {
   if (typeof textingChancePerChar === 'number' && Number.isFinite(textingChancePerChar)) {
     cfg.textingChancePerChar = Math.max(0, Math.min(1, textingChancePerChar));
   }
+  if (typeof onboarded === 'boolean') cfg.onboarded = onboarded;
   saveConfig(cfg);
   res.json(publicConfig(cfg));
 });
@@ -1585,7 +1588,7 @@ app.post('/api/weather/:area', (req, res) => {
 // why. onEvent (when given) streams speaker/delta/turn events, the same
 // shape /say's SSE path uses. placeId is null for texting memories (no
 // physical place involved) — recordTurn already treats that as "no place."
-async function runTextingReply({ w, cfg, characterId, character, onEvent = null }) {
+async function runTextingReply({ w, cfg, characterId, character, onEvent = null, signal }) {
   if (!cfg.apiKey) return { error: 'No API key configured. Add one in Settings.' };
 
   try {
@@ -1625,12 +1628,15 @@ async function runTextingReply({ w, cfg, characterId, character, onEvent = null 
     let text, usage, timing;
     if (onEvent && cfg.streaming) {
       ({ text, usage, timing } = await streamOpenRouter(cfg, messages, undefined, `${character.name} (text)`,
-        (delta) => onEvent({ type: 'delta', ...delta })));
+        (delta) => onEvent({ type: 'delta', ...delta }), signal));
     } else {
-      ({ text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (text)`));
+      ({ text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (text)`, signal));
     }
 
-    const entry = { type: 'char', charId: characterId, name: character.name, text: (text || '').trim() };
+    const entry = {
+      type: 'char', charId: characterId, name: character.name, text: (text || '').trim(),
+      day: world.time.day, timeOfDay: world.time.timeOfDay,
+    };
     const stats = buildGenerationStats(usage, timing);
     if (stats) entry.stats = stats;
     appendTextsEntries(w, characterId, [entry]);
@@ -1645,7 +1651,7 @@ async function runTextingReply({ w, cfg, characterId, character, onEvent = null 
 
     return { entries: [entry] };
   } catch (err) {
-    return { error: err.message };
+    return { error: err.message, cancelled: !!err.cancelled };
   }
 }
 
@@ -1689,7 +1695,10 @@ async function generateProactiveText({ w, cfg, characterId, character }) {
 
   const { text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (proactive text)`);
 
-  const entry = { type: 'char', charId: characterId, name: character.name, text: (text || '').trim(), proactive: true };
+  const entry = {
+    type: 'char', charId: characterId, name: character.name, text: (text || '').trim(), proactive: true,
+    day: world.time.day, timeOfDay: world.time.timeOfDay,
+  };
   const stats = buildGenerationStats(usage, timing);
   if (stats) entry.stats = stats;
   appendTextsEntries(w, characterId, [entry]);
@@ -1742,7 +1751,7 @@ function maybeSendProactiveTexts(w, excludeIds) {
 // (see FreeroamView.vue) — invalidated by every texts/group-log write below,
 // same idea (and same "invalidate rather than incrementally track" tradeoff)
 // as metCharacterIds above.
-const unreadProactiveCountCache = new Map(); // worldId -> number
+const unreadProactiveCountCache = new Map(); // worldId -> { total, byCharacterId }
 function invalidateUnreadProactiveCount(w) {
   unreadProactiveCountCache.delete(w.id);
 }
@@ -1766,27 +1775,35 @@ function deleteTextsLog(w, key) {
 // Every proactive (unprompted) char entry, across every 1-on-1 texting
 // log, that hasn't been marked read yet — group logs live in the same
 // dir but their entries never get `proactive` set, so they're already
-// excluded without any special-casing. Registered before the
-// :characterId route below so "unread" is never captured as a param.
+// excluded without any special-casing (their id just never appears in
+// byCharacterId, since only non-zero counts are recorded). Registered
+// before the :characterId route below so "unread" is never captured as a
+// param. Returns both the world-wide total (the phone app's badge) and a
+// per-characterId breakdown (so the contacts list can show which contact
+// it's actually from) from the same single scan.
 function countUnreadProactiveTexts(w) {
   if (unreadProactiveCountCache.has(w.id)) return unreadProactiveCountCache.get(w.id);
   let files;
   try {
     files = fs.readdirSync(w.textsDir).filter((f) => f.endsWith('.json'));
   } catch {
-    return 0; // not cached — a transient/first-run read failure, not a real "0" count
+    return { total: 0, byCharacterId: {} }; // not cached — a transient/first-run read failure, not a real "0" count
   }
   let total = 0;
+  const byCharacterId = {};
   for (const file of files) {
     const id = file.slice(0, -'.json'.length);
-    total += loadChatLog(w.textsDir, id).filter((e) => e.type === 'char' && e.proactive && !e.read).length;
+    const count = loadChatLog(w.textsDir, id).filter((e) => e.type === 'char' && e.proactive && !e.read).length;
+    if (count) byCharacterId[id] = count;
+    total += count;
   }
-  unreadProactiveCountCache.set(w.id, total);
-  return total;
+  const result = { total, byCharacterId };
+  unreadProactiveCountCache.set(w.id, result);
+  return result;
 }
 
 app.get('/api/texts/unread', (req, res) => {
-  res.json({ count: countUnreadProactiveTexts(req.world) });
+  res.json(countUnreadProactiveTexts(req.world));
 });
 
 // Opening a conversation marks any proactive texts in it as read — the
@@ -1842,10 +1859,12 @@ app.post('/api/texts/:characterId/send', async (req, res) => {
   const character = loadCharacters(w).find((c) => c.id === characterId);
   if (!character) return res.status(404).json({ error: 'Character not found.' });
 
-  appendTextsEntries(w, characterId, [{ type: 'user', text: text.trim() }]);
+  const { day, timeOfDay } = loadWorld(w).time;
+  appendTextsEntries(w, characterId, [{ type: 'user', text: text.trim(), day, timeOfDay }]);
   logger.info('chat', `text -> ${character.name}`);
   maybeSendProactiveTexts(w, [characterId]);
 
+  const signal = requestCancelSignal(req, res);
   const cfg = loadConfig();
   if (cfg.streaming && cfg.apiKey) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -1855,13 +1874,17 @@ app.post('/api/texts/:characterId/send', async (req, res) => {
     const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
     send({ type: 'ack', log: loadChatLog(w.textsDir, characterId) });
 
-    const result = await runTextingReply({ w, cfg, characterId, character, onEvent: send });
-    send({ type: 'done', log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error } : {}) });
+    const result = await runTextingReply({ w, cfg, characterId, character, onEvent: send, signal });
+    if (!signal.aborted) {
+      send({ type: 'done', log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+    }
     return res.end();
   }
 
-  const result = await runTextingReply({ w, cfg, characterId, character });
-  res.json({ log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error } : {}) });
+  const result = await runTextingReply({ w, cfg, characterId, character, signal });
+  if (!signal.aborted) {
+    res.json({ log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+  }
 });
 
 // Re-runs generation for the trailing user message when nothing replied —
@@ -1889,6 +1912,7 @@ app.post('/api/texts/:characterId/retry', async (req, res) => {
     pruneReplylessMemories(w.db, findMemoriesWitnessing(w.db, userEntryId), log);
   }
 
+  const signal = requestCancelSignal(req, res);
   const cfg = loadConfig();
   if (cfg.streaming && cfg.apiKey) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -1898,13 +1922,17 @@ app.post('/api/texts/:characterId/retry', async (req, res) => {
     const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
     send({ type: 'ack', log });
 
-    const result = await runTextingReply({ w, cfg, characterId, character, onEvent: send });
-    send({ type: 'done', log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error } : {}) });
+    const result = await runTextingReply({ w, cfg, characterId, character, onEvent: send, signal });
+    if (!signal.aborted) {
+      send({ type: 'done', log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+    }
     return res.end();
   }
 
-  const result = await runTextingReply({ w, cfg, characterId, character });
-  res.json({ log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error } : {}) });
+  const result = await runTextingReply({ w, cfg, characterId, character, signal });
+  if (!signal.aborted) {
+    res.json({ log: loadChatLog(w.textsDir, characterId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+  }
 });
 
 // Deletes one message from a 1-on-1 texting conversation — mirrors
@@ -1980,17 +2008,30 @@ app.delete('/api/groups/:groupId', (req, res) => {
   res.json({ ok: true });
 });
 
+// personas/world/places are invariant for a whole cascade (only the chat
+// log itself needs re-reading between replies, since each one appends an
+// entry the next should see) — loaded once by runGroupCascade and passed
+// down, instead of generateGroupReply reloading all three from disk on
+// every single reply. Same idea (and same fix) as loadTurnContext/
+// buildTurnRequest already do for the scene-chat reaction round.
+function loadGroupTurnContext(w) {
+  const { personas, activePersonaId } = loadPersonas(w);
+  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+  const world = loadWorld(w);
+  const placesById = {};
+  loadPlaces(w).forEach((p) => { placesById[p.id] = p; });
+  return { world, placesById, activePersona, activePersonaId };
+}
+
 // One cascade reply, generation-wise close to runTextingReply but scoped to
 // whichever member is replying within the group — see groupHistoryFromLog
 // for why the history shaping differs from 1-on-1 (a plain chat-completion
 // API has no "third party" role, so everyone else's lines, including the
 // user's, fold into 'user' turns; only the replying character's own past
 // lines come back as 'assistant').
-async function generateGroupReply({ w, cfg, group, replierId, character, charactersById, onEvent = null, selfContinuation = false }) {
-  const { personas, activePersonaId } = loadPersonas(w);
-  const activePersona = personas.find((p) => p.id === activePersonaId) || null;
+async function generateGroupReply({ w, cfg, group, replierId, character, charactersById, turnContext, onEvent = null, selfContinuation = false, signal }) {
+  const { world, placesById, activePersona } = turnContext;
   const personaLabel = activePersona ? activePersona.name : 'Visitor';
-  const world = loadWorld(w);
   const log = loadChatLog(w.textsDir, group.id);
 
   const latestEntry = [...log].reverse().find((m) => m.type === 'user' || m.type === 'char');
@@ -2003,8 +2044,6 @@ async function generateGroupReply({ w, cfg, group, replierId, character, charact
     logger.warn('memory', `group retrieval failed, continuing without memories: ${err.message}`);
   }
 
-  const placesById = {};
-  loadPlaces(w).forEach((p) => { placesById[p.id] = p; });
   const relationships = await relationshipKnowledge(w, replierId, charactersById, placesById, world, activePersona ? activePersona.name : null, memoryQuery);
   const groupMembers = group.participantIds.filter((id) => id !== replierId).map((id) => charactersById[id]?.name).filter(Boolean);
 
@@ -2020,12 +2059,15 @@ async function generateGroupReply({ w, cfg, group, replierId, character, charact
   let text, usage, timing;
   if (onEvent && cfg.streaming) {
     ({ text, usage, timing } = await streamOpenRouter(cfg, messages, undefined, `${character.name} (group)`,
-      (delta) => onEvent({ type: 'delta', ...delta })));
+      (delta) => onEvent({ type: 'delta', ...delta }), signal));
   } else {
-    ({ text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (group)`));
+    ({ text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (group)`, signal));
   }
 
-  const entry = { type: 'char', charId: replierId, name: character.name, text: (text || '').trim() };
+  const entry = {
+    type: 'char', charId: replierId, name: character.name, text: (text || '').trim(),
+    day: world.time.day, timeOfDay: world.time.timeOfDay,
+  };
   const stats = buildGenerationStats(usage, timing);
   if (stats) entry.stats = stats;
   appendTextsEntries(w, group.id, [entry]);
@@ -2042,13 +2084,15 @@ async function generateGroupReply({ w, cfg, group, replierId, character, charact
 // reply cap (eligibleReplierIds). Stops on the first failed roll, on
 // running out of eligible repliers, or at MAX_CASCADE_REPLIES regardless
 // of how the dice keep landing.
-async function runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId, onEvent = null }) {
+async function runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId, onEvent = null, signal }) {
   if (!cfg.apiKey) return { entries: [], error: 'No API key configured. Add one in Settings.' };
 
   const cascadeEntries = [];
   let lastSpeakerId = charactersById[triggerSpeakerId] ? triggerSpeakerId : null;
   let lastSpeakerStreak = lastSpeakerId ? 1 : 0;
   let repliesSoFar = 0;
+  let error, cancelled = false;
+  const turnContext = loadGroupTurnContext(w);
 
   while (repliesSoFar < MAX_CASCADE_REPLIES) {
     const chance = nextCascadeChance(cfg.cascadeBaseChance, cfg.cascadeDecayRate, repliesSoFar);
@@ -2070,9 +2114,10 @@ async function runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId
 
     let entry;
     try {
-      entry = await generateGroupReply({ w, cfg, group, replierId, character, charactersById, onEvent, selfContinuation });
+      entry = await generateGroupReply({ w, cfg, group, replierId, character, charactersById, turnContext, onEvent, selfContinuation, signal });
     } catch (err) {
-      logger.warn('chat', `group cascade reply failed, stopping the cascade here: ${err.message}`);
+      cancelled = !!err.cancelled;
+      if (!cancelled) { error = err.message; logger.warn('chat', `group cascade reply failed, stopping the cascade here: ${err.message}`); }
       break;
     }
     cascadeEntries.push(entry);
@@ -2082,7 +2127,7 @@ async function runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId
     repliesSoFar += 1;
   }
 
-  return { entries: cascadeEntries };
+  return { entries: cascadeEntries, ...(error ? { error } : {}), cancelled };
 }
 
 // One shared memory row for the whole round (trigger + every cascade
@@ -2113,7 +2158,8 @@ app.post('/api/groups/:groupId/send', async (req, res) => {
   const charactersById = {};
   loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
 
-  const userEntry = { type: 'user', text: text.trim() };
+  const time = loadWorld(w).time;
+  const userEntry = { type: 'user', text: text.trim(), day: time.day, timeOfDay: time.timeOfDay };
   appendTextsEntries(w, groupId, [userEntry]);
   logger.info('chat', `group text -> ${group.name}`);
   // Mirrors /say and 1-on-1 texting's /send — a group's own participants are
@@ -2125,11 +2171,12 @@ app.post('/api/groups/:groupId/send', async (req, res) => {
   const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
   const userLabel = activePersona ? activePersona.name : 'Visitor';
-  const time = loadWorld(w).time;
 
   const finish = (result) => recordGroupRound(w, {
     group, triggerEntry: userEntry, cascadeEntries: result.entries, userLabel, activePersonaId, time,
   });
+
+  const signal = requestCancelSignal(req, res);
 
   if (cfg.streaming && cfg.apiKey) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -2139,15 +2186,19 @@ app.post('/api/groups/:groupId/send', async (req, res) => {
     const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
     send({ type: 'ack', log: loadChatLog(w.textsDir, groupId) });
 
-    const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user', onEvent: send });
+    const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user', onEvent: send, signal });
     finish(result);
-    send({ type: 'done', log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error } : {}) });
+    if (!signal.aborted) {
+      send({ type: 'done', log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+    }
     return res.end();
   }
 
-  const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user' });
+  const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user', signal });
   finish(result);
-  res.json({ log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error } : {}) });
+  if (!signal.aborted) {
+    res.json({ log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+  }
 });
 
 // Re-runs the cascade for the trailing user message when nothing replied —
@@ -2188,6 +2239,8 @@ app.post('/api/groups/:groupId/retry', async (req, res) => {
     group, triggerEntry, cascadeEntries: result.entries, userLabel, activePersonaId, time,
   });
 
+  const signal = requestCancelSignal(req, res);
+
   if (cfg.streaming && cfg.apiKey) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -2196,15 +2249,19 @@ app.post('/api/groups/:groupId/retry', async (req, res) => {
     const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
     send({ type: 'ack', log });
 
-    const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user', onEvent: send });
+    const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user', onEvent: send, signal });
     finish(result);
-    send({ type: 'done', log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error } : {}) });
+    if (!signal.aborted) {
+      send({ type: 'done', log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+    }
     return res.end();
   }
 
-  const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user' });
+  const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user', signal });
   finish(result);
-  res.json({ log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error } : {}) });
+  if (!signal.aborted) {
+    res.json({ log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+  }
 });
 
 // Deletes one message from a group's log — mirrors
@@ -2333,7 +2390,7 @@ app.post('/api/calls/:characterId/start', (req, res) => {
 // narrator mechanism a turn for the bystanders, explicitly told they're
 // overhearing one side of a call rather than part of it. Mutates
 // callState.transcript/roundCount in place; the caller persists it.
-async function runCallReply({ w, cfg, placeId, place, characterId, character, callState, onEvent = null }) {
+async function runCallReply({ w, cfg, placeId, place, characterId, character, callState, onEvent = null, signal }) {
   if (!cfg.apiKey) return { error: 'No API key configured. Add one in Settings.' };
 
   try {
@@ -2372,9 +2429,9 @@ async function runCallReply({ w, cfg, placeId, place, characterId, character, ca
     let text, usage, timing;
     if (onEvent && cfg.streaming) {
       ({ text, usage, timing } = await streamOpenRouter(cfg, messages, undefined, `${character.name} (call)`,
-        (delta) => onEvent({ type: 'delta', ...delta })));
+        (delta) => onEvent({ type: 'delta', ...delta }), signal));
     } else {
-      ({ text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (call)`));
+      ({ text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (call)`, signal));
     }
 
     const entry = { type: 'char', charId: characterId, name: character.name, text: (text || '').trim(), call: true };
@@ -2417,7 +2474,7 @@ async function runCallReply({ w, cfg, placeId, place, characterId, character, ca
       const callVisibleLog = log.filter((e) => !(e.type === 'char' && e.call));
       const narration = await attemptNarratorTurn({
         w, cfg, place, presentIds: bystanderIds, backgroundIds: bystanderIds, charactersById, log: callVisibleLog,
-        callContext: { calleeName: character.name },
+        callContext: { calleeName: character.name }, signal,
       });
       if (narration) {
         const narratorEntry = { ...narration, call: true };
@@ -2428,7 +2485,7 @@ async function runCallReply({ w, cfg, placeId, place, characterId, character, ca
 
     return { entries: [entry] };
   } catch (err) {
-    return { error: err.message };
+    return { error: err.message, cancelled: !!err.cancelled };
   }
 }
 
@@ -2468,6 +2525,7 @@ app.post('/api/calls/:characterId/say', async (req, res) => {
   saveCalls(w, calls);
   logger.info('chat', `call say -> ${character.name}`);
 
+  const signal = requestCancelSignal(req, res);
   const cfg = loadConfig();
   if (cfg.streaming && cfg.apiKey) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -2477,15 +2535,19 @@ app.post('/api/calls/:characterId/say', async (req, res) => {
     const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
     send({ type: 'ack', log: loadChatLog(w.chatDir, placeId) });
 
-    const result = await runCallReply({ w, cfg, placeId, place, characterId, character, callState, onEvent: send });
+    const result = await runCallReply({ w, cfg, placeId, place, characterId, character, callState, onEvent: send, signal });
     saveCallStateIfStillActive(w, placeId, callState);
-    send({ type: 'done', log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
+    if (!signal.aborted) {
+      send({ type: 'done', log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+    }
     return res.end();
   }
 
-  const result = await runCallReply({ w, cfg, placeId, place, characterId, character, callState });
+  const result = await runCallReply({ w, cfg, placeId, place, characterId, character, callState, signal });
   saveCallStateIfStillActive(w, placeId, callState);
-  res.json({ log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
+  if (!signal.aborted) {
+    res.json({ log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+  }
 });
 
 app.post('/api/calls/:characterId/end', (req, res) => {
@@ -2997,15 +3059,51 @@ const LLM_TIMEOUT_MS = 120_000;
 // A resettable AbortController-backed deadline — reset() pushes the abort
 // out by another full LLM_TIMEOUT_MS, used by streamOpenRouter's read loop
 // to implement "no more than N seconds between chunks" rather than one
-// fixed deadline for the whole (potentially long) stream.
-function timeoutController(ms) {
+// fixed deadline for the whole (potentially long) stream. Also forwards an
+// optional externalSignal (a client-initiated "Stop generating" — see
+// requestCancelSignal below) into the same controller, so callers only ever
+// need to look at timeout.signal/cancel() and don't have to combine two
+// signals themselves.
+function timeoutController(ms, externalSignal) {
   const controller = new AbortController();
   let timer = setTimeout(() => controller.abort(), ms);
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener('abort', onExternalAbort);
+  }
   return {
     signal: controller.signal,
     reset() { clearTimeout(timer); timer = setTimeout(() => controller.abort(), ms); },
-    cancel() { clearTimeout(timer); },
+    cancel() {
+      clearTimeout(timer);
+      if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
+    },
   };
+}
+
+// Wires an AbortController to abort as soon as the client gives up on this
+// request — aborts its own fetch, navigates away mid-stream, etc. — so a
+// "Stop" button genuinely cancels the outbound OpenRouter call too, not
+// just the client-side wait. Listening on req's own 'close' is a trap: that
+// fires as soon as the *request* finishes being read (often immediately,
+// well before the handler even starts), not when the connection actually
+// goes away — every request would look "cancelled" from the first tick.
+// res's 'close' is the reliable one: it fires on a genuine client
+// disconnect same as req's does, but also fires after an ordinary response
+// finishes, so it's gated on res.writableEnded to tell the two apart.
+function requestCancelSignal(req, res) {
+  const controller = new AbortController();
+  res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+  return controller.signal;
+}
+
+// A distinguishable error for callOpenRouter/streamOpenRouter's AbortError
+// catch blocks to throw when the abort came from an externalSignal (a real
+// user-initiated cancel) rather than the internal LLM_TIMEOUT_MS deadline —
+// callers can check `err.cancelled` to skip surfacing this as a failure.
+function cancelledError() {
+  return Object.assign(new Error('Generation cancelled.'), { cancelled: true });
 }
 
 // Non-streaming completion. `meta` is logging context only (who/where).
@@ -3013,13 +3111,13 @@ function timeoutController(ms) {
 // endpoint returned a reasoning/thinking trace (OpenRouter normalizes it);
 // usage is token counts (null fields if the endpoint didn't report them);
 // timing is wall-clock duration for tokens/sec display.
-async function callOpenRouter(cfg, messages, maxTokens, meta = '') {
+async function callOpenRouter(cfg, messages, maxTokens, meta = '', externalSignal) {
   const payload = completionPayload(cfg, messages, maxTokens);
   logger.info('llm', `→ ${cfg.apiBase || DEFAULT_API_BASE} model=${cfg.model}${cfg.providers?.length ? ` providers=${cfg.providers.join(',')}` : ''}${meta ? ` — ${meta}` : ''}`);
   logger.debug('llm', 'request payload', payload);
 
   const startedAt = Date.now();
-  const timeout = timeoutController(LLM_TIMEOUT_MS);
+  const timeout = timeoutController(LLM_TIMEOUT_MS, externalSignal);
   let r;
   try {
     r = await fetch(`${cfg.apiBase || DEFAULT_API_BASE}/chat/completions`, {
@@ -3030,6 +3128,10 @@ async function callOpenRouter(cfg, messages, maxTokens, meta = '') {
     });
   } catch (err) {
     if (err.name === 'AbortError') {
+      if (externalSignal?.aborted) {
+        logger.info('llm', `request cancelled by user${meta ? ` — ${meta}` : ''}`);
+        throw cancelledError();
+      }
       logger.error('llm', `request timed out after ${LLM_TIMEOUT_MS}ms with no response`);
       throw new Error(`Endpoint timed out after ${LLM_TIMEOUT_MS / 1000}s with no response.`);
     }
@@ -3061,13 +3163,13 @@ async function callOpenRouter(cfg, messages, maxTokens, meta = '') {
 // — usage comes from the final chunk (stream_options.include_usage above);
 // timing includes time-to-first-token alongside total duration, since
 // that's only observable while actually streaming.
-async function streamOpenRouter(cfg, messages, maxTokens, meta, onDelta) {
+async function streamOpenRouter(cfg, messages, maxTokens, meta, onDelta, externalSignal) {
   const payload = completionPayload(cfg, messages, maxTokens, true);
   logger.info('llm', `→ ${cfg.apiBase || DEFAULT_API_BASE} model=${cfg.model} (streaming)${meta ? ` — ${meta}` : ''}`);
   logger.debug('llm', 'request payload', payload);
 
   const startedAt = Date.now();
-  const timeout = timeoutController(LLM_TIMEOUT_MS);
+  const timeout = timeoutController(LLM_TIMEOUT_MS, externalSignal);
   let r;
   try {
     r = await fetch(`${cfg.apiBase || DEFAULT_API_BASE}/chat/completions`, {
@@ -3079,6 +3181,10 @@ async function streamOpenRouter(cfg, messages, maxTokens, meta, onDelta) {
   } catch (err) {
     timeout.cancel();
     if (err.name === 'AbortError') {
+      if (externalSignal?.aborted) {
+        logger.info('llm', `stream request cancelled by user${meta ? ` — ${meta}` : ''}`);
+        throw cancelledError();
+      }
       logger.error('llm', `stream request timed out after ${LLM_TIMEOUT_MS}ms with no response`);
       throw new Error(`Endpoint timed out after ${LLM_TIMEOUT_MS / 1000}s with no response.`);
     }
@@ -3115,6 +3221,10 @@ async function streamOpenRouter(cfg, messages, maxTokens, meta, onDelta) {
         ({ done, value } = await reader.read());
       } catch (err) {
         if (err.name === 'AbortError') {
+          if (externalSignal?.aborted) {
+            logger.info('llm', `stream cancelled by user mid-stream${meta ? ` — ${meta}` : ''}`);
+            throw cancelledError();
+          }
           throw new Error(`Endpoint stopped responding mid-stream (no data for ${LLM_TIMEOUT_MS / 1000}s).`);
         }
         throw err;
@@ -3411,21 +3521,21 @@ async function turnEntriesFrom(w, text, reasoning, request, usage, timing, place
 // non-streaming completion call. Mirrors runReactionRound's per-character
 // branch (used by /say) so /regenerate gets the same live text+reasoning
 // streaming instead of only ever waiting for the full reply.
-async function generateCharacterTurn({ w, cfg, place, speakerId, presentIds, charactersById, log, onEvent = null, backgroundIds = [] }) {
+async function generateCharacterTurn({ w, cfg, place, speakerId, presentIds, charactersById, log, onEvent = null, backgroundIds = [], signal }) {
   const request = await buildTurnRequest({ w, place, speakerId, presentIds, charactersById, log, turnContext: loadTurnContext(w) });
   if (onEvent) onEvent({ type: 'speaker', charId: speakerId, name: request.speaker.name });
   try {
     let text, reasoning, usage, timing;
     if (onEvent && cfg.streaming) {
       ({ text, reasoning, usage, timing } = await streamOpenRouter(cfg, request.messages, request.maxReplyTokens,
-        `${request.speaker.name} @ ${place.name}`, (delta) => onEvent({ type: 'delta', ...delta })));
+        `${request.speaker.name} @ ${place.name}`, (delta) => onEvent({ type: 'delta', ...delta }), signal));
     } else {
       ({ text, reasoning, usage, timing } = await callOpenRouter(cfg, request.messages, request.maxReplyTokens,
-        `${request.speaker.name} @ ${place.name}`));
+        `${request.speaker.name} @ ${place.name}`, signal));
     }
     return { entries: await turnEntriesFrom(w, text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode, backgroundIds) };
   } catch (err) {
-    return { error: err.message };
+    return { error: err.message, cancelled: !!err.cancelled };
   }
 }
 
@@ -3454,7 +3564,7 @@ function recordRound(w, { placeId, presentIds, turnEntries, userLabel, activePer
 // a missing key, a failed request, or the model choosing NARRATOR_SILENCE
 // all just mean "no narration this round" (null) rather than an error, so
 // callers never let a narrator hiccup block or fail an otherwise-fine round.
-async function attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, charactersById, log, callContext = null }) {
+async function attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, charactersById, log, callContext = null, signal }) {
   if (!cfg.apiKey) return null;
   try {
     const { personas, activePersonaId } = loadPersonas(w);
@@ -3480,7 +3590,15 @@ async function attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, c
       callContext,
     });
 
-    const { text } = await callOpenRouter(cfg, messages, 150, `Narrator @ ${place.name}`);
+    // Same reply-token budget a real character turn gets (the active
+    // preset's maxReplyTokens, or the app default) — there's no way to
+    // predict how long a good narration should be, so this shouldn't have
+    // its own separate, arbitrary cap.
+    const { presets, activePresetId } = loadPresets();
+    const activePreset = presets.find((p) => p.id === activePresetId) || null;
+    const { maxReplyTokens } = contextSettingsFor(activePreset);
+
+    const { text } = await callOpenRouter(cfg, messages, maxReplyTokens, `Narrator @ ${place.name}`, signal);
     if (isNarratorSilent(text)) return null;
     return { type: 'narrator', text: text.trim() };
   } catch (err) {
@@ -3492,13 +3610,13 @@ async function attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, c
 // Nobody's present at all: tries a narrator line describing the empty
 // scene before falling back to the flat echo note. No characters means
 // nothing to record into memory either way.
-async function narrateEmptyPlaceOrEcho({ w, placeId, place }) {
+async function narrateEmptyPlaceOrEcho({ w, placeId, place, signal }) {
   const cfg = loadConfig();
   let note = null;
   if (cfg.narratorEnabled !== false) {
     const log = loadChatLog(w.chatDir, placeId);
     if (shouldNarrate({ placeType: place.type, presentCount: 0, backgroundCount: 0, log })) {
-      note = await attemptNarratorTurn({ w, cfg, place, presentIds: [], backgroundIds: [], charactersById: {}, log });
+      note = await attemptNarratorTurn({ w, cfg, place, presentIds: [], backgroundIds: [], charactersById: {}, log, signal });
     }
   }
   if (!note) note = { type: 'system', text: 'Your words echo. No one is here to answer.' };
@@ -3512,13 +3630,13 @@ async function narrateEmptyPlaceOrEcho({ w, placeId, place }) {
 // case); falls back to a flat note if the narrator is off, unavailable, or
 // has nothing to add. Either way the round is recorded into every present
 // character's memory, same as a normal round would, minus any replies.
-async function recordSilentRound({ w, placeId, place, presentIds, charactersById, turnEntries }) {
+async function recordSilentRound({ w, placeId, place, presentIds, charactersById, turnEntries, signal }) {
   const cfg = loadConfig();
   let note = null;
   if (cfg.narratorEnabled !== false) {
     const log = loadChatLog(w.chatDir, placeId);
     if (shouldNarrate({ placeType: place.type, presentCount: presentIds.length, backgroundCount: presentIds.length, log })) {
-      note = await attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds: presentIds, charactersById, log });
+      note = await attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds: presentIds, charactersById, log, signal });
     }
   }
   if (!note) note = { type: 'system', text: 'No one reacts.' };
@@ -3542,7 +3660,7 @@ async function recordSilentRound({ w, placeId, place, presentIds, charactersById
 // `onEvent`, when provided, streams progress (speaker/delta/turn events)
 // — the SSE path of /say. Returns { error } from the first failed turn;
 // earlier turns stay persisted.
-async function runReactionRound({ w, placeId, place, reactIds, presentIds, charactersById, turnEntriesSoFar, onEvent = null }) {
+async function runReactionRound({ w, placeId, place, reactIds, presentIds, charactersById, turnEntriesSoFar, onEvent = null, signal }) {
   const cfg = loadConfig();
   if (!cfg.apiKey) {
     return { error: 'No API key configured. Add one in Settings.' };
@@ -3550,6 +3668,7 @@ async function runReactionRound({ w, placeId, place, reactIds, presentIds, chara
 
   const roundEntries = [];
   let error = null;
+  let cancelled = false;
   let userLabel = 'Visitor';
   let activePersonaId = null;
   let time = null;
@@ -3574,13 +3693,14 @@ async function runReactionRound({ w, placeId, place, reactIds, presentIds, chara
     try {
       if (onEvent && cfg.streaming) {
         ({ text, reasoning, usage, timing } = await streamOpenRouter(cfg, request.messages, request.maxReplyTokens,
-          `${request.speaker.name} @ ${place.name}`, (delta) => onEvent({ type: 'delta', ...delta })));
+          `${request.speaker.name} @ ${place.name}`, (delta) => onEvent({ type: 'delta', ...delta }), signal));
       } else {
         ({ text, reasoning, usage, timing } = await callOpenRouter(cfg, request.messages, request.maxReplyTokens,
-          `${request.speaker.name} @ ${place.name}`));
+          `${request.speaker.name} @ ${place.name}`, signal));
       }
     } catch (err) {
       error = err.message;
+      cancelled = !!err.cancelled;
       break;
     }
 
@@ -3598,7 +3718,7 @@ async function runReactionRound({ w, placeId, place, reactIds, presentIds, chara
   if (!error && cfg.narratorEnabled !== false) {
     const log = loadChatLog(w.chatDir, placeId);
     if (shouldNarrate({ placeType: place.type, presentCount: presentIds.length, backgroundCount: backgroundIds.length, log })) {
-      const narration = await attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, charactersById, log });
+      const narration = await attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, charactersById, log, signal });
       if (narration) {
         appendPlaceChatEntries(w, placeId, [narration]);
         roundEntries.push(narration);
@@ -3615,7 +3735,7 @@ async function runReactionRound({ w, placeId, place, reactIds, presentIds, chara
     });
   }
 
-  return error ? { error } : {};
+  return error ? { error, cancelled } : {};
 }
 
 app.get('/api/places/:placeId/chat', (req, res) => {
@@ -3717,13 +3837,15 @@ app.post('/api/places/:placeId/say', async (req, res) => {
   logger.info('chat', `say @ ${place.name}: ${charIds.length} character(s) present, ${activeIds.length} active`);
   maybeSendProactiveTexts(w, charIds);
 
+  const signal = requestCancelSignal(req, res);
+
   if (!charIds.length) {
-    await narrateEmptyPlaceOrEcho({ w, placeId, place });
+    await narrateEmptyPlaceOrEcho({ w, placeId, place, signal });
     return res.json({ log: loadChatLog(w.chatDir, placeId) });
   }
 
   if (!activeIds.length) {
-    await recordSilentRound({ w, placeId, place, presentIds: charIds, charactersById, turnEntries });
+    await recordSilentRound({ w, placeId, place, presentIds: charIds, charactersById, turnEntries, signal });
     return res.json({ log: loadChatLog(w.chatDir, placeId) });
   }
 
@@ -3740,16 +3862,22 @@ app.post('/api/places/:placeId/say', async (req, res) => {
 
     const result = await runReactionRound({
       w, placeId, place, reactIds: activeIds, presentIds: charIds, charactersById,
-      turnEntriesSoFar: turnEntries, onEvent: send,
+      turnEntriesSoFar: turnEntries, onEvent: send, signal,
     });
-    send({ type: 'done', log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
+    // A cancelled round isn't a failure worth alarming the user over — the
+    // frontend checks `cancelled` to skip its usual error banner for this case.
+    if (!signal.aborted) {
+      send({ type: 'done', log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+    }
     return res.end();
   }
 
   const result = await runReactionRound({
-    w, placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar: turnEntries,
+    w, placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar: turnEntries, signal,
   });
-  res.json({ log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
+  if (!signal.aborted) {
+    res.json({ log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+  }
 });
 
 // Re-runs generation for the trailing user message when nobody replied —
@@ -3791,15 +3919,17 @@ app.post('/api/places/:placeId/retry', async (req, res) => {
     pruneReplylessMemories(w.db, findMemoriesWitnessing(w.db, userEntryId), log);
   }
 
+  const signal = requestCancelSignal(req, res);
+
   if (!charIds.length) {
-    await narrateEmptyPlaceOrEcho({ w, placeId, place });
+    await narrateEmptyPlaceOrEcho({ w, placeId, place, signal });
     return res.json({ log: loadChatLog(w.chatDir, placeId) });
   }
 
   const turnEntriesSoFar = [log[lastUserIdx]];
 
   if (!activeIds.length) {
-    await recordSilentRound({ w, placeId, place, presentIds: charIds, charactersById, turnEntries: turnEntriesSoFar });
+    await recordSilentRound({ w, placeId, place, presentIds: charIds, charactersById, turnEntries: turnEntriesSoFar, signal });
     return res.json({ log: loadChatLog(w.chatDir, placeId) });
   }
 
@@ -3813,16 +3943,20 @@ app.post('/api/places/:placeId/retry', async (req, res) => {
     send({ type: 'ack', log });
 
     const result = await runReactionRound({
-      w, placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar, onEvent: send,
+      w, placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar, onEvent: send, signal,
     });
-    send({ type: 'done', log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
+    if (!signal.aborted) {
+      send({ type: 'done', log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+    }
     return res.end();
   }
 
   const result = await runReactionRound({
-    w, placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar,
+    w, placeId, place, reactIds: activeIds, presentIds: charIds, charactersById, turnEntriesSoFar, signal,
   });
-  res.json({ log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error } : {}) });
+  if (!signal.aborted) {
+    res.json({ log: loadChatLog(w.chatDir, placeId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+  }
 });
 
 // Regenerates one generated message in place: rebuilds the speaking
@@ -3901,12 +4035,15 @@ app.post('/api/places/:placeId/regenerate', async (req, res) => {
     })()
     : null;
 
+  const signal = requestCancelSignal(req, res);
+
   const result = await generateCharacterTurn({
     w, cfg, place, speakerId: target.charId, presentIds, charactersById,
-    log: log.slice(0, idx), onEvent: send, backgroundIds,
+    log: log.slice(0, idx), onEvent: send, backgroundIds, signal,
   });
   if (result.error) {
-    if (send) { send({ type: 'done', log, error: result.error }); return res.end(); }
+    if (signal.aborted) return res.end();
+    if (send) { send({ type: 'done', log, error: result.error, cancelled: result.cancelled }); return res.end(); }
     return res.status(502).json({ error: result.error });
   }
 

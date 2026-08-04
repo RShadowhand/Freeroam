@@ -24,3 +24,30 @@ export function scheduledSlotFor(character, day, timeOfDay) {
   const weekday = weekdayFor(day);
   return character?.schedule?.[weekday]?.[timeOfDay] || null;
 }
+
+// "Day N (Weekday) · timeOfDay" — same phrasing TimeWidget.vue uses for the
+// world clock, reused for the date dividers in PhoneThread.vue/GroupThread.vue.
+export function formatDayTime(day, timeOfDay) {
+  const weekday = weekdayFor(day);
+  return `Day ${day}${weekday ? ` (${weekday})` : ''} · ${timeOfDay}`;
+}
+
+// A parallel array of divider labels (or null), one per entry in `log` — a
+// non-null label at index i means "show a date divider right before this
+// entry." A texting/group conversation (unlike one scene visit) can span
+// many in-world days, so PhoneThread.vue/GroupThread.vue render one of
+// these wherever day/timeOfDay actually changes from the previous *stamped*
+// entry, iMessage-style, rather than repeating it on every line. Entries
+// from before this feature existed carry no day/timeOfDay at all and are
+// simply skipped — no divider, no retroactive backfill.
+export function dayDividerLabels(log) {
+  const labels = new Array(log.length).fill(null);
+  let lastKey = null;
+  log.forEach((entry, i) => {
+    if (entry.day == null || entry.timeOfDay == null) return;
+    const key = `${entry.day}|${entry.timeOfDay}`;
+    if (key !== lastKey) labels[i] = formatDayTime(entry.day, entry.timeOfDay);
+    lastKey = key;
+  });
+  return labels;
+}

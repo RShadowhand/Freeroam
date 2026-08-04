@@ -1229,6 +1229,14 @@ describe('Texting: GET/POST /api/texts/:characterId (validation paths — no rea
     assert.equal(logA.length, 1);
     assert.equal(logB.length, 0);
   });
+
+  test('a new text entry carries the current in-world day/timeOfDay', async () => {
+    await postJson('/api/world/time', { day: 7, timeOfDay: 'evening' });
+    const character = await makeCharacter('Timestamped Contact');
+    const { log } = await (await postJson(`/api/texts/${character.id}/send`, { text: 'What time is it there?' })).json();
+    assert.equal(log[0].day, 7);
+    assert.equal(log[0].timeOfDay, 'evening');
+  });
 });
 
 describe('Texting: delete message (DELETE /api/texts/:characterId/messages/:entryId)', () => {
@@ -1520,6 +1528,59 @@ describe('Active participants (promote/demote)', () => {
     const { error, log: afterRetry } = await (await postJson(`/api/places/${place.id}/retry`, {})).json();
     assert.equal(error, undefined);
     assert.match(afterRetry[afterRetry.length - 1].text, /no one reacts/i);
+  });
+});
+
+describe("Narrator uses the active preset's maxReplyTokens, not a fixed cap", () => {
+  const realFetch = globalThis.fetch;
+  function mockOpenRouterFetch(handler) {
+    return async (url, opts) => {
+      if (typeof url === 'string' && url.includes('/chat/completions')) return handler(url, opts);
+      return realFetch(url, opts);
+    };
+  }
+  async function makePlace(name) {
+    const res = await postJson('/api/places', { name, type: 'communal' });
+    return (await res.json()).place;
+  }
+  async function placeCharacter(name, placeId) {
+    const { character } = await (await postJson('/api/characters', { name, description: 'Present.' })).json();
+    await fetch(`${baseUrl}/api/characters/${character.id}/place`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ placeId }),
+    });
+    return character;
+  }
+  async function setActive(charId, active) {
+    return fetch(`${baseUrl}/api/characters/${charId}/place`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active }),
+    });
+  }
+
+  test('a demoted sole occupant triggers a narrator turn whose max_tokens matches the active preset, not the old fixed 150', async (t) => {
+    const { preset } = await (await postJson('/api/presets', {
+      name: 'Narrator Budget Test', prompts: [], maxReplyTokens: 777,
+    })).json();
+    await postJson('/api/presets/active', { id: preset.id });
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+
+    const place = await makePlace('Narrator Budget Hall');
+    const char = await placeCharacter('Sole Occupant', place.id);
+    await setActive(char.id, false); // background-only -> shouldNarrate() fires unconditionally (see #13's fix)
+    await postJson(`/api/places/${place.id}/enter`, {});
+
+    let capturedBody = null;
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async (url, opts) => {
+      capturedBody = JSON.parse(opts.body);
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'A narrator line.' } }] }), { status: 200 });
+    }));
+
+    const { log } = await (await postJson(`/api/places/${place.id}/say`, { text: 'Hello?' })).json();
+
+    assert.ok(capturedBody, 'expected the narrator to actually call the (mocked) endpoint');
+    assert.equal(capturedBody.max_tokens, 777);
+    assert.ok(log.some((e) => e.type === 'narrator' && e.text === 'A narrator line.'));
+
+    await postJson('/api/settings/clear-key', {});
   });
 });
 
