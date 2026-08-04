@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { useUiStore } from './ui';
 import { getSettings } from '../api/settings';
 import { handleUnknownWorld } from '../api/http';
+import { parseSseEvents } from '../utils/sse';
 import {
   getGroups, createGroupApi, getGroupLog, updateGroupApi, sendGroupTextApi, sendGroupTextStreamRequest,
   retryGroupApi, retryGroupStreamRequest, deleteGroupApi, deleteGroupMessageApi,
@@ -9,9 +10,8 @@ import {
 
 // Group text conversations — same stored-log shape as stores/phone.js's
 // 1-on-1 threads, just keyed by group id, plus a `groups` list carrying
-// each group's name/participantIds. Its own _parseSseEvents/consume
-// method rather than sharing phone.js's, matching this codebase's existing
-// convention (chat.js and phone.js each already keep their own copy).
+// each group's name/participantIds. Shares parseSseEvents (utils/sse.js)
+// and the same consume-loop shape with phone.js's _consumeSse.
 export const useGroupsStore = defineStore('groups', {
   state: () => ({
     groups: [], // [{id, name, participantIds, createdAt}]
@@ -82,20 +82,6 @@ export const useGroupsStore = defineStore('groups', {
       }
     },
 
-    _parseSseEvents(buffer) {
-      const events = [];
-      let idx;
-      while ((idx = buffer.indexOf('\n\n')) !== -1) {
-        const chunk = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        const line = chunk.split('\n').find((l) => l.startsWith('data:'));
-        if (line) {
-          try { events.push(JSON.parse(line.slice(5).trim())); } catch { /* ignore malformed chunk */ }
-        }
-      }
-      return { events, rest: buffer };
-    },
-
     async _consumeSse(groupId, res) {
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
@@ -117,7 +103,7 @@ export const useGroupsStore = defineStore('groups', {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const parsed = this._parseSseEvents(buffer);
+        const parsed = parseSseEvents(buffer);
         buffer = parsed.rest;
 
         parsed.events.forEach((evt) => {

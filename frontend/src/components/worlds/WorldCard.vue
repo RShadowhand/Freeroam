@@ -125,7 +125,7 @@ function formatDate(iso) {
       </div>
       <div class="world-card-meta">Last played {{ formatDate(world.lastPlayedAt) }}</div>
       <div class="world-card-actions">
-        <button class="btn small" :disabled="busy || isCurrent" @click="switchTo">{{ isCurrent ? 'Current' : 'Switch' }}</button>
+        <button class="btn small" :disabled="busy || isCurrent || worlds.switching" @click="switchTo">{{ isCurrent ? 'Current' : 'Switch' }}</button>
         <button class="btn secondary small" :disabled="busy" @click="startRename">Rename</button>
         <button class="btn secondary small" :disabled="busy" @click="startDuplicate">Duplicate</button>
         <button class="btn secondary small" :disabled="busy" @click="startExport">Export</button>

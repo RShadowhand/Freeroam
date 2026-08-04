@@ -18,6 +18,7 @@ export const useWorldsStore = defineStore('worlds', {
     defaultWorldId: null,
     currentWorldId: getStoredWorldId(),
     loaded: false,
+    switching: false, // true while a switchWorld() is in flight
   }),
   getters: {
     current: (state) => state.list.find((w) => w.id === state.currentWorldId) || null,
@@ -56,14 +57,26 @@ export const useWorldsStore = defineStore('worlds', {
     // factory, which is what actually gives chat's Sets a clean slate again
     // rather than leaving stale entries in an already-constructed Set.
     async switchWorld(id) {
-      if (id === this.currentWorldId) return;
-      this.setCurrent(id);
+      // Each WorldCard's own "busy" ref is per-component, not shared — it
+      // disables that card's own buttons while its switch is in flight, but
+      // does nothing to stop a *different* card's Switch button being
+      // clicked in the meantime. Without this store-level lock, two
+      // overlapping switches interleave their $reset()/setCurrent() calls
+      // and initFreeroam() ends up racing against whichever world id
+      // happens to be current by the time each one's fetches actually fire.
+      if (id === this.currentWorldId || this.switching) return;
+      this.switching = true;
+      try {
+        this.setCurrent(id);
 
-      useChatStore().$reset();
-      useWorldStore().$reset();
+        useChatStore().$reset();
+        useWorldStore().$reset();
 
-      await router.push('/');
-      await useChatStore().initFreeroam();
+        await router.push('/');
+        await useChatStore().initFreeroam();
+      } finally {
+        this.switching = false;
+      }
     },
 
     async create(opts) {

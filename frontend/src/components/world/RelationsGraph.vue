@@ -4,6 +4,7 @@ import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import { useWorldStore } from '../../stores/world';
 import { useThemeStore } from '../../stores/theme';
+import { useUiStore } from '../../stores/ui';
 import { useCharacterModal } from '../../composables/useCharacterModal';
 import { usePersonaModal } from '../../composables/usePersonaModal';
 import { buildInitialsAvatarDataUrl } from '../../utils/graphAvatar';
@@ -12,6 +13,7 @@ cytoscape.use(fcose);
 
 const world = useWorldStore();
 const theme = useThemeStore();
+const ui = useUiStore();
 const characterModal = useCharacterModal();
 const personaModal = usePersonaModal();
 const graphEl = ref(null);
@@ -124,7 +126,11 @@ onMounted(() => {
   cy.on('tap', 'node', (evt) => {
     const id = evt.target.id();
     if (id === 'user') {
+      // The "You" node can appear from a relationship targeting the user
+      // even with no persona currently active — clicking it then has
+      // nothing to open, so say so rather than doing nothing visibly.
       if (world.activePersonaId) personaModal.open(world.activePersonaId);
+      else ui.showError('No active persona to show — set one active under Cast to open it here.');
       return;
     }
     characterModal.open(id);

@@ -74,6 +74,31 @@ describe('getCharacterEmbeddingChunks', () => {
     assert.deepEqual(second, first);
   }));
 
+  test('two concurrent calls for the same not-yet-embedded character compute only once', () => withDb(async (db) => {
+    const char = { id: 'wren', name: 'Wren', description: 'Blue eyes.' };
+    let calls = 0;
+    const countingEmbedFn = async (t) => { calls += 1; return fakeEmbed(t); };
+
+    const [first, second] = await Promise.all([
+      getCharacterEmbeddingChunks({ db, embedFn: countingEmbedFn, char }),
+      getCharacterEmbeddingChunks({ db, embedFn: countingEmbedFn, char }),
+    ]);
+
+    assert.deepEqual(first, second);
+    assert.equal(calls, 1, `expected the embedder to run once (shared in-flight computation), ran ${calls} time(s)`);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM character_embeddings WHERE character_id = ?').get('wren').n, 1);
+  }));
+
+  test('a fresh call after the in-flight one has settled computes again (the guard only covers overlap, not caching)', () => withDb(async (db) => {
+    const char = { id: 'wren', name: 'Wren', description: 'Blue eyes.' };
+    await getCharacterEmbeddingChunks({ db, embedFn, char });
+    deleteCharacterEmbedding(db, 'wren'); // simulate the stored rows being gone again
+    let calls = 0;
+    const countingEmbedFn = async (t) => { calls += 1; return fakeEmbed(t); };
+    await getCharacterEmbeddingChunks({ db, embedFn: countingEmbedFn, char });
+    assert.equal(calls, 1);
+  }));
+
   test('a long description is split into multiple stored chunk rows, capped at MAX_CHUNKS_PER_TEXT', () => withDb(async (db) => {
     const sentence = 'She has a distinctive trait worth describing in some detail here. ';
     const char = { id: 'lindsey', name: 'Lindsey', description: sentence.repeat(20) }; // forces multiple chunks

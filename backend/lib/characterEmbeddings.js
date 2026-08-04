@@ -45,6 +45,13 @@ async function computeAndStoreCharacterEmbeddings(db, embedFn, char) {
   return vectors;
 }
 
+// Two concurrent requests needing the same not-yet-embedded character's
+// identity vectors would otherwise both compute and DELETE+INSERT
+// independently — not corrupting (last write wins, no duplicate rows), just
+// a redundant local-model computation. A concurrent call for the same
+// character instead awaits the one already in flight.
+const inFlightIdentityCompute = new Map(); // characterId -> Promise<vectors>
+
 // Returns the character's identity chunk vectors, computing and storing
 // them on first use — new and imported characters get embedded lazily, the
 // same way legacy relationship rows are backfilled during retrieval.
@@ -53,7 +60,13 @@ async function computeAndStoreCharacterEmbeddings(db, embedFn, char) {
 export async function getCharacterEmbeddingChunks({ db, embedFn, char }) {
   const rows = db.prepare('SELECT embedding FROM character_embeddings WHERE character_id = ?').all(char.id);
   if (rows.length) return rows.map((r) => decodeEmbedding(r.embedding));
-  return computeAndStoreCharacterEmbeddings(db, embedFn, char);
+
+  const pending = inFlightIdentityCompute.get(char.id);
+  if (pending) return pending;
+  const promise = computeAndStoreCharacterEmbeddings(db, embedFn, char)
+    .finally(() => inFlightIdentityCompute.delete(char.id));
+  inFlightIdentityCompute.set(char.id, promise);
+  return promise;
 }
 
 // Recomputes the identity chunk vectors after a character's name/

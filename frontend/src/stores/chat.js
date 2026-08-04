@@ -5,6 +5,7 @@ import { placeCharacter } from '../api/characters';
 import { getSettings } from '../api/settings';
 import { getStoredWorldId } from '../api/worldId';
 import { handleUnknownWorld } from '../api/http';
+import { parseSseEvents } from '../utils/sse';
 import {
   enterPlaceApi, sayApi, retryApi, regenerateApi,
   sayStreamRequest, retryStreamRequest, regenerateStreamRequest,
@@ -152,22 +153,6 @@ export const useChatStore = defineStore('chat', {
       await this.checkApiKeyBanner();
     },
 
-    // parseSseEvents: splits an accumulating text buffer on SSE's blank-line
-    // frame separator and parses each frame's `data:` line as JSON.
-    _parseSseEvents(buffer) {
-      const events = [];
-      let idx;
-      while ((idx = buffer.indexOf('\n\n')) !== -1) {
-        const chunk = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        const line = chunk.split('\n').find((l) => l.startsWith('data:'));
-        if (line) {
-          try { events.push(JSON.parse(line.slice(5).trim())); } catch { /* ignore malformed chunk */ }
-        }
-      }
-      return { events, rest: buffer };
-    },
-
     // Consumes an SSE reaction-round stream (shared shape across say/retry/
     // regenerate: ack/speaker/delta/turn/done), updating `logs` and the live
     // streaming bubble as events arrive. Returns { error } once the stream
@@ -196,7 +181,7 @@ export const useChatStore = defineStore('chat', {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const parsed = this._parseSseEvents(buffer);
+        const parsed = parseSseEvents(buffer);
         buffer = parsed.rest;
 
         parsed.events.forEach((evt) => {

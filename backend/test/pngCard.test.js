@@ -45,6 +45,47 @@ describe('appendOrReplaceTextChunk', () => {
     const keyworded = readChunks(withBoth).filter((c) => (c.type === 'tEXt' || c.type === 'zTXt'));
     assert.equal(keyworded.length, 2);
   });
+
+  // Builds a raw (uncompressed) iTXt chunk by hand — tavernCard.js's reader
+  // already supports cards stored this way, but until now appendOrReplace-
+  // TextChunk's same-keyword strip only recognized tEXt/zTXt.
+  function rawChunk(type, data) {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length, 0);
+    const typeBuf = Buffer.from(type, 'ascii');
+    const crcBuf = Buffer.alloc(4);
+    crcBuf.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0);
+    return Buffer.concat([length, typeBuf, data, crcBuf]);
+  }
+  function buildRawITXtChunk(keyword, text) {
+    const data = Buffer.concat([
+      Buffer.from(keyword, 'utf8'), Buffer.from([0]), // keyword + NUL
+      Buffer.from([0, 0]),                             // compression flag + method (both 0 — not compressed)
+      Buffer.from([0]),                                 // language tag (empty) + NUL
+      Buffer.from([0]),                                 // translated keyword (empty) + NUL
+      Buffer.from(text, 'utf8'),
+    ]);
+    return rawChunk('iTXt', data);
+  }
+  function insertBeforeIEND(pngBuffer, chunkBuffer) {
+    const parts = [pngBuffer.subarray(0, 8)]; // PNG signature
+    for (const chunk of readChunks(pngBuffer)) {
+      if (chunk.type === 'IEND') parts.push(chunkBuffer);
+      parts.push(rawChunk(chunk.type, chunk.data));
+    }
+    return Buffer.concat(parts);
+  }
+
+  test('also strips a same-keyword iTXt chunk, not just tEXt/zTXt', () => {
+    const base = buildPlaceholderPng({ color: 'hsl(0,50%,50%)' });
+    const withStaleITXt = insertBeforeIEND(base, buildRawITXtChunk('chara', 'stale-itxt-payload'));
+    assert.ok(readChunks(withStaleITXt).some((c) => c.type === 'iTXt'), 'test setup sanity check');
+
+    const result = appendOrReplaceTextChunk(withStaleITXt, 'chara', Buffer.from('fresh').toString('base64'));
+    const keyworded = readChunks(result).filter((c) => c.type === 'tEXt' || c.type === 'zTXt' || c.type === 'iTXt');
+    assert.equal(keyworded.length, 1, 'the stale iTXt chunk should have been stripped, leaving only the fresh zTXt chunk');
+    assert.equal(keyworded[0].type, 'zTXt');
+  });
 });
 
 describe('buildCharacterCardPng / extractCharacterCard round trip', () => {

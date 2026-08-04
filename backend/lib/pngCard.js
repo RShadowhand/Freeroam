@@ -47,10 +47,18 @@ function buildTextChunk(keyword, text) {
   return writeChunk('zTXt', data);
 }
 
+// Recognizes tEXt/zTXt/iTXt (matching tavernCard.js's own readTextChunks)
+// so appendOrReplaceTextChunk's same-keyword filter below also catches and
+// strips a same-keyword iTXt chunk, not just tEXt/zTXt — a card whose
+// avatar PNG originally carried its data as iTXt (a form the reader side
+// already supports) would otherwise keep that stale copy forever, growing
+// the file with duplicate data on every re-export.
 function chunkKeyword(chunk) {
-  if (chunk.type !== 'tEXt' && chunk.type !== 'zTXt') return null;
+  if (chunk.type !== 'tEXt' && chunk.type !== 'zTXt' && chunk.type !== 'iTXt') return null;
   const nul = chunk.data.indexOf(0);
-  return nul === -1 ? null : chunk.data.toString('latin1', 0, nul);
+  if (nul === -1) return null;
+  // iTXt's keyword is UTF-8; tEXt/zTXt's is latin1.
+  return chunk.data.toString(chunk.type === 'iTXt' ? 'utf8' : 'latin1', 0, nul);
 }
 
 // Strips any existing chunk with the same keyword first, so a re-export
