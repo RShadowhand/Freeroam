@@ -20,6 +20,7 @@ const scenario = ref('');
 const exampleDialogue = ref('');
 const avatarInput = ref(null);
 const status = ref('');
+const saving = ref(false);
 
 const character = computed(() => characterModal.editingId.value ? world.charactersById[characterModal.editingId.value] : null);
 
@@ -47,31 +48,37 @@ watch(characterModal.isOpen, (open) => {
   status.value = '';
   activeTab.value = 'details';
   memoryCount.value = null;
+  saving.value = false;
 });
 
 async function save() {
-  if (!name.value.trim()) { status.value = 'Name is required.'; return; }
-  const body = {
-    name: name.value.trim(),
-    description: description.value.trim(),
-    personality: personality.value.trim(),
-    scenario: scenario.value.trim(),
-    exampleDialogue: exampleDialogue.value.trim(),
-  };
-  if (characterModal.mode.value === 'create') {
-    const { ok, data } = await createCharacter(body);
-    if (!ok) { status.value = data.error || 'request failed'; return; }
-    world.charactersList.push(data.character);
-    world.charactersById[data.character.id] = data.character;
-  } else {
-    const avatarFile = avatarInput.value?.files?.[0] || null;
-    const { ok, data } = await updateCharacter(characterModal.editingId.value, { ...body, avatarFile });
-    if (!ok) { status.value = data.error || 'request failed'; return; }
-    const idx = world.charactersList.findIndex((c) => c.id === characterModal.editingId.value);
-    if (idx !== -1) world.charactersList[idx] = data.character;
-    world.charactersById[characterModal.editingId.value] = data.character;
+  if (!name.value.trim() || saving.value) { if (!name.value.trim()) status.value = 'Name is required.'; return; }
+  saving.value = true;
+  try {
+    const body = {
+      name: name.value.trim(),
+      description: description.value.trim(),
+      personality: personality.value.trim(),
+      scenario: scenario.value.trim(),
+      exampleDialogue: exampleDialogue.value.trim(),
+    };
+    if (characterModal.mode.value === 'create') {
+      const { ok, data } = await createCharacter(body);
+      if (!ok) { status.value = data.error || 'request failed'; return; }
+      world.charactersList.push(data.character);
+      world.charactersById[data.character.id] = data.character;
+    } else {
+      const avatarFile = avatarInput.value?.files?.[0] || null;
+      const { ok, data } = await updateCharacter(characterModal.editingId.value, { ...body, avatarFile });
+      if (!ok) { status.value = data.error || 'request failed'; return; }
+      const idx = world.charactersList.findIndex((c) => c.id === characterModal.editingId.value);
+      if (idx !== -1) world.charactersList[idx] = data.character;
+      world.charactersById[characterModal.editingId.value] = data.character;
+    }
+    characterModal.close();
+  } finally {
+    saving.value = false;
   }
-  characterModal.close();
 }
 
 // Same { characters: [...] } wire shape /api/characters/import expects —
@@ -198,7 +205,7 @@ async function remove() {
       </div>
 
       <div class="modal-tab-foot">
-        <button class="btn" @click="save">Save</button>
+        <button class="btn" :disabled="saving" @click="save">Save</button>
         <button class="btn secondary" @click="characterModal.close()">Cancel</button>
         <button class="btn secondary" v-if="character" @click="exportJson">Export</button>
         <button class="btn secondary" v-if="character" @click="exportPng">Export as PNG</button>

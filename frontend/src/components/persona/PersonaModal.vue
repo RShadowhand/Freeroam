@@ -13,6 +13,7 @@ const name = ref('');
 const description = ref('');
 const avatarInput = ref(null);
 const status = ref('');
+const saving = ref(false);
 
 const persona = computed(() => (
   personaModal.editingId.value ? world.personasList.find((p) => p.id === personaModal.editingId.value) || null : null
@@ -24,27 +25,33 @@ watch(personaModal.isOpen, (open) => {
   name.value = p ? p.name : '';
   description.value = p ? (p.description || '') : '';
   status.value = '';
+  saving.value = false;
 });
 
 async function save() {
-  if (!name.value.trim()) { status.value = 'Name is required.'; return; }
-  if (personaModal.mode.value === 'create') {
-    const { ok, data } = await createPersona({
-      name: name.value.trim(), description: description.value.trim(),
-      avatarFile: avatarInput.value?.files?.[0] || null,
-    });
-    if (!ok) { status.value = data.error || 'Could not add persona.'; return; }
-    world.personasList.push(data.persona);
-  } else {
-    const avatarFile = avatarInput.value?.files?.[0] || null;
-    const { ok, data } = await updatePersona(personaModal.editingId.value, {
-      name: name.value.trim(), description: description.value.trim(), avatarFile,
-    });
-    if (!ok) { status.value = data.error || 'Could not save changes.'; return; }
-    const idx = world.personasList.findIndex((p) => p.id === personaModal.editingId.value);
-    if (idx !== -1) world.personasList[idx] = data.persona;
+  if (!name.value.trim() || saving.value) { if (!name.value.trim()) status.value = 'Name is required.'; return; }
+  saving.value = true;
+  try {
+    if (personaModal.mode.value === 'create') {
+      const { ok, data } = await createPersona({
+        name: name.value.trim(), description: description.value.trim(),
+        avatarFile: avatarInput.value?.files?.[0] || null,
+      });
+      if (!ok) { status.value = data.error || 'Could not add persona.'; return; }
+      world.personasList.push(data.persona);
+    } else {
+      const avatarFile = avatarInput.value?.files?.[0] || null;
+      const { ok, data } = await updatePersona(personaModal.editingId.value, {
+        name: name.value.trim(), description: description.value.trim(), avatarFile,
+      });
+      if (!ok) { status.value = data.error || 'Could not save changes.'; return; }
+      const idx = world.personasList.findIndex((p) => p.id === personaModal.editingId.value);
+      if (idx !== -1) world.personasList[idx] = data.persona;
+    }
+    personaModal.close();
+  } finally {
+    saving.value = false;
   }
-  personaModal.close();
 }
 
 // Same { personas: [...] } wire shape /api/personas/import expects — see
@@ -107,7 +114,7 @@ async function remove() {
       </div>
 
       <div class="modal-tab-foot">
-        <button class="btn" @click="save">Save</button>
+        <button class="btn" :disabled="saving" @click="save">Save</button>
         <button class="btn secondary" @click="personaModal.close()">Cancel</button>
         <button class="btn secondary" v-if="persona" @click="exportJson">Export</button>
         <button class="btn danger" v-if="persona" @click="remove">Remove persona</button>

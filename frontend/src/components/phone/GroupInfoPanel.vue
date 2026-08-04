@@ -44,23 +44,39 @@ async function saveName() {
   }
 }
 
+// Same re-entrancy guard as saveName, and for the same reason: both
+// compute their new participantIds array from group.value, which doesn't
+// update until this same request resolves — two rapid clicks (e.g.
+// removing two different members quickly) would otherwise both read the
+// same stale array, and whichever request resolves last silently
+// overwrites the roster, reverting the other change.
 async function addMember() {
-  if (!addingId.value || !group.value) return;
+  if (!addingId.value || !group.value || saving.value) return;
+  saving.value = true;
   error.value = '';
-  const { ok, data } = await groups.updateGroup(props.groupId, {
-    participantIds: [...group.value.participantIds, addingId.value],
-  });
-  if (!ok) error.value = data.error || 'Could not add them.';
-  addingId.value = '';
+  try {
+    const { ok, data } = await groups.updateGroup(props.groupId, {
+      participantIds: [...group.value.participantIds, addingId.value],
+    });
+    if (!ok) error.value = data.error || 'Could not add them.';
+    addingId.value = '';
+  } finally {
+    saving.value = false;
+  }
 }
 
 async function removeMember(id) {
-  if (!group.value) return;
+  if (!group.value || saving.value) return;
   const remaining = group.value.participantIds.filter((pid) => pid !== id);
   if (remaining.length < 2) { error.value = 'A group needs at least 2 participants.'; return; }
+  saving.value = true;
   error.value = '';
-  const { ok, data } = await groups.updateGroup(props.groupId, { participantIds: remaining });
-  if (!ok) error.value = data.error || 'Could not remove them.';
+  try {
+    const { ok, data } = await groups.updateGroup(props.groupId, { participantIds: remaining });
+    if (!ok) error.value = data.error || 'Could not remove them.';
+  } finally {
+    saving.value = false;
+  }
 }
 </script>
 
@@ -80,7 +96,7 @@ async function removeMember(id) {
       <div class="new-group-option" v-for="m in members" :key="m.id" style="cursor:default;">
         <CardAvatar :name="m.name" :avatar-url="m.avatarUrl" :color="m.color" />
         <span style="flex:1;">{{ m.name }}</span>
-        <button class="chip-remove" type="button" title="Remove from group" @click="removeMember(m.id)">✕</button>
+        <button class="chip-remove" type="button" title="Remove from group" :disabled="saving" @click="removeMember(m.id)">✕</button>
       </div>
     </div>
 
@@ -89,7 +105,7 @@ async function removeMember(id) {
         <option value="">+ Add someone…</option>
         <option v-for="c in candidates" :key="c.id" :value="c.id">{{ c.name }}</option>
       </select>
-      <button class="btn secondary small" @click="addMember">Add</button>
+      <button class="btn secondary small" :disabled="saving" @click="addMember">Add</button>
     </div>
 
     <span class="new-group-error" v-if="error">{{ error }}</span>

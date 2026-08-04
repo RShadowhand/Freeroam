@@ -19,6 +19,7 @@ const description = ref('');
 const placement = ref('here');
 const draftStatus = ref('');
 const saveStatus = ref('');
+const saving = ref(false);
 
 watch(npcModal.isOpen, (open) => {
   if (open) {
@@ -27,6 +28,7 @@ watch(npcModal.isOpen, (open) => {
     placement.value = 'here';
     draftStatus.value = '';
     saveStatus.value = '';
+    saving.value = false;
   }
 });
 
@@ -43,26 +45,31 @@ async function draft() {
 }
 
 async function save() {
-  if (!name.value.trim()) { saveStatus.value = 'Name is required.'; return; }
-  const { ok, data } = await createCharacter({ name: name.value.trim(), description: description.value.trim() });
-  if (!ok) { saveStatus.value = data.error || 'Could not save character.'; return; }
+  if (!name.value.trim() || saving.value) { if (!name.value.trim()) saveStatus.value = 'Name is required.'; return; }
+  saving.value = true;
+  try {
+    const { ok, data } = await createCharacter({ name: name.value.trim(), description: description.value.trim() });
+    if (!ok) { saveStatus.value = data.error || 'Could not save character.'; return; }
 
-  world.charactersList.push(data.character);
-  world.charactersById[data.character.id] = data.character;
-  chat.savedNpcNames.add(name.value.trim().toLowerCase());
+    world.charactersList.push(data.character);
+    world.charactersById[data.character.id] = data.character;
+    chat.savedNpcNames.add(name.value.trim().toLowerCase());
 
-  let placeId = null;
-  if (placement.value === 'here' && npcModal.context.value.placeId) {
-    placeId = npcModal.context.value.placeId;
-  } else if (placement.value === 'random' && world.places.length) {
-    placeId = world.places[Math.floor(Math.random() * world.places.length)].id;
+    let placeId = null;
+    if (placement.value === 'here' && npcModal.context.value.placeId) {
+      placeId = npcModal.context.value.placeId;
+    } else if (placement.value === 'random' && world.places.length) {
+      placeId = world.places[Math.floor(Math.random() * world.places.length)].id;
+    }
+    if (placeId) {
+      const placeRes = await placeCharacter(data.character.id, { placeId });
+      if (placeRes.ok) world.placements = placeRes.data.placements;
+    }
+
+    npcModal.close();
+  } finally {
+    saving.value = false;
   }
-  if (placeId) {
-    const placeRes = await placeCharacter(data.character.id, { placeId });
-    if (placeRes.ok) world.placements = placeRes.data.placements;
-  }
-
-  npcModal.close();
 }
 </script>
 
@@ -93,7 +100,7 @@ async function save() {
         </div>
       </div>
       <div class="form-actions">
-        <button class="btn" type="button" @click="save">Save character</button>
+        <button class="btn" type="button" :disabled="saving" @click="save">Save character</button>
         <button class="btn secondary" type="button" @click="npcModal.close()">Cancel</button>
         <span class="form-status">{{ saveStatus }}</span>
       </div>
