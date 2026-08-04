@@ -6,7 +6,7 @@ import { getSettings } from '../api/settings';
 import { handleUnknownWorld } from '../api/http';
 import { parseSseEvents } from '../utils/sse';
 import {
-  enterPlaceApi, sayApi, retryApi, regenerateApi,
+  getChatLog, enterPlaceApi, sayApi, retryApi, regenerateApi,
   sayStreamRequest, retryStreamRequest, regenerateStreamRequest,
   updateMessage, deleteMessageApi,
 } from '../api/chat';
@@ -397,7 +397,16 @@ export const useChatStore = defineStore('chat', {
           this.logs[placeId] = data.log;
         }
       } catch (err) {
-        if (err.name !== 'AbortError') {
+        if (err.name === 'AbortError') {
+          // The streaming branch's optimistic filter above already pulled
+          // the target entry out of view before this abort landed — the
+          // backend never actually deletes it on a cancelled regenerate
+          // (it only splices in the replacement on a successful, non-
+          // aborted completion), so re-fetch the authoritative log rather
+          // than leave the message permanently missing.
+          const { ok, data } = await getChatLog(placeId);
+          if (ok) this.logs[placeId] = data.log;
+        } else {
           this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Could not regenerate. (${err.message})` }];
         }
       } finally {
