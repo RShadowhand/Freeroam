@@ -53,7 +53,17 @@ export const usePhoneStore = defineStore('phone', {
       // GET below resolves, so two calls before that (e.g. rapid navigation)
       // would both pass and fire duplicate requests without also checking
       // openingIds, which is set synchronously before the first await.
-      if (this.loadedIds.has(characterId) || this.openingIds.has(characterId)) return;
+      //
+      // loadedIds alone also isn't a "don't need to fetch again" guard: this
+      // GET is the only thing that marks this contact's proactive texts as
+      // read server-side AND pulls in whatever landed since the first open —
+      // skipping it forever after the first visit left a contact's thread
+      // permanently stale and its badge stuck once a new message arrived
+      // later in the same session. Re-fetch whenever there's known unread
+      // for this contact, even if it was already loaded once.
+      const alreadyLoaded = this.loadedIds.has(characterId);
+      const hasUnread = this.unreadByCharacterId[characterId] > 0;
+      if ((alreadyLoaded && !hasUnread) || this.openingIds.has(characterId)) return;
       this.openingIds.add(characterId);
       try {
         const { ok, data } = await getTextLog(characterId);
