@@ -1147,14 +1147,22 @@ app.post('/api/personas', uploadPersonaAvatar.single('avatar'), (req, res) => {
 // this is just the persona array, not the { personas, activePersonaId }
 // shape GET /api/personas returns — activePersonaId is world-specific and
 // meaningless across an import boundary.
+// lastPlaceId is meaningless across an import boundary — a place id from
+// this world has no reason to exist (or mean the same thing) in whatever
+// world eventually imports this persona — same reasoning the shape comment
+// above already gives for leaving activePersonaId out of the export wrapper.
+function stripPersonaForExport({ lastPlaceId, ...persona }) {
+  return persona;
+}
+
 app.get('/api/personas/:id/export', (req, res) => {
   const persona = loadPersonas(req.world).personas.find((p) => p.id === req.params.id);
   if (!persona) return res.status(404).json({ error: 'Persona not found.' });
-  res.json({ personas: [persona] });
+  res.json({ personas: [stripPersonaForExport(persona)] });
 });
 
 app.get('/api/personas/export', (req, res) => {
-  res.json({ personas: loadPersonas(req.world).personas });
+  res.json({ personas: loadPersonas(req.world).personas.map(stripPersonaForExport) });
 });
 
 // New minimal PNG spec (tavernroam_persona_v1 — see pngCard.js/tavernCard.js).
@@ -1255,6 +1263,21 @@ app.delete('/api/personas/:id', (req, res) => {
 
   res.json({ ok: true });
 });
+
+// Remembers where the active persona left off, so returning to this world
+// later (a fresh session hours later, or switching back from another world)
+// resumes there instead of always landing on the first place in the list.
+// Keyed by persona, not just by world — a browser-side "last place" (the
+// old approach) couldn't tell personas apart and didn't survive a
+// different browser/private window either. A no-op with no active persona;
+// "Visitor" sessions have nothing to key the memory by.
+function recordLastPlaceForActivePersona(w, placeId) {
+  const data = loadPersonas(w);
+  const persona = data.personas.find((p) => p.id === data.activePersonaId);
+  if (!persona || persona.lastPlaceId === placeId) return;
+  persona.lastPlaceId = placeId;
+  savePersonas(w, data);
+}
 
 app.post('/api/personas/active', (req, res) => {
   const w = req.world;
@@ -3765,6 +3788,8 @@ app.post('/api/places/:placeId/enter', (req, res) => {
   const { placeId } = req.params;
   const place = loadPlaces(w).find((p) => p.id === placeId);
   if (!place) return res.status(404).json({ error: 'Place not found.' });
+
+  recordLastPlaceForActivePersona(w, placeId);
 
   const charactersById = {};
   loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });

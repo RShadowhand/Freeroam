@@ -1176,6 +1176,58 @@ describe('Persisted chat: /api/places/:placeId/enter, /say, GET /chat', () => {
   });
 });
 
+describe('Persona-scoped "last place" (recordLastPlaceForActivePersona)', () => {
+  async function makePlace(name) {
+    const res = await postJson('/api/places', { name, type: 'communal' });
+    return (await res.json()).place;
+  }
+  async function makePersona(name) {
+    const { persona } = await (await postJson('/api/personas', { name, description: 'A test persona.' })).json();
+    return persona;
+  }
+
+  test('entering a place records it on the active persona, and updates on the next entry', async () => {
+    const persona = await makePersona('Wanderer');
+    await postJson('/api/personas/active', { id: persona.id });
+    const hallA = await makePlace('Last Place Hall A');
+    const hallB = await makePlace('Last Place Hall B');
+
+    await postJson(`/api/places/${hallA.id}/enter`, {});
+    let { personas } = await (await fetch(`${baseUrl}/api/personas`)).json();
+    assert.equal(personas.find((p) => p.id === persona.id).lastPlaceId, hallA.id);
+
+    await postJson(`/api/places/${hallB.id}/enter`, {});
+    ({ personas } = await (await fetch(`${baseUrl}/api/personas`)).json());
+    assert.equal(personas.find((p) => p.id === persona.id).lastPlaceId, hallB.id);
+
+    await postJson('/api/personas/active', { id: null });
+  });
+
+  test('with no active persona, entering a place is a no-op for lastPlaceId', async () => {
+    await postJson('/api/personas/active', { id: null });
+    const persona = await makePersona('Bystander');
+    const place = await makePlace('No Active Persona Hall');
+    await postJson(`/api/places/${place.id}/enter`, {});
+    const { personas } = await (await fetch(`${baseUrl}/api/personas`)).json();
+    assert.equal(personas.find((p) => p.id === persona.id).lastPlaceId, undefined);
+  });
+
+  test('lastPlaceId is stripped from persona export — meaningless across an import boundary', async () => {
+    const persona = await makePersona('Exported Wanderer');
+    await postJson('/api/personas/active', { id: persona.id });
+    const place = await makePlace('Export Boundary Hall');
+    await postJson(`/api/places/${place.id}/enter`, {});
+
+    const single = await (await fetch(`${baseUrl}/api/personas/${persona.id}/export`)).json();
+    assert.equal(single.personas[0].lastPlaceId, undefined);
+
+    const all = await (await fetch(`${baseUrl}/api/personas/export`)).json();
+    assert.equal(all.personas.find((p) => p.id === persona.id).lastPlaceId, undefined);
+
+    await postJson('/api/personas/active', { id: null });
+  });
+});
+
 describe('Texting: GET/POST /api/texts/:characterId (validation paths — no real OpenRouter call)', () => {
   async function makeCharacter(name) {
     const { character } = await (await postJson('/api/characters', { name, description: 'Texts sometimes.' })).json();

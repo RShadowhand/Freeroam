@@ -3,7 +3,6 @@ import { useWorldStore } from './world';
 import { useUiStore } from './ui';
 import { placeCharacter } from '../api/characters';
 import { getSettings } from '../api/settings';
-import { getStoredWorldId } from '../api/worldId';
 import { handleUnknownWorld } from '../api/http';
 import { parseSseEvents } from '../utils/sse';
 import {
@@ -12,18 +11,6 @@ import {
   updateMessage, deleteMessageApi,
 } from '../api/chat';
 import { startCallApi, callSayApi, callSayStreamRequest, endCallApi } from '../api/calls';
-
-// "Last place" is scoped per-world (each save slot resumes independently) —
-// reads getStoredWorldId() directly rather than the worlds Pinia store, to
-// avoid a store <-> store circular import (worlds.js already depends on
-// this store for switchWorld's $reset()). Pre-worlds installs only ever
-// had the flat LEGACY key; initFreeroam() below copies it forward once so
-// upgrading doesn't lose an existing user's resume point.
-const LEGACY_LAST_PLACE_KEY = 'freeroam.lastPlace';
-function lastPlaceKey() {
-  const worldId = getStoredWorldId();
-  return worldId ? `freeroam.lastPlace.${worldId}` : LEGACY_LAST_PLACE_KEY;
-}
 
 // Chat is persisted and owned by the backend (data/chats/<placeId>.json):
 // entering a place and saying something are single API calls that append
@@ -136,7 +123,6 @@ export const useChatStore = defineStore('chat', {
         this.logs[id] = data.log;
         this.activeCall = data.activeCall || null;
         if (data.returnMarkerPending) this.pendingReturnMarker.add(id); else this.pendingReturnMarker.delete(id);
-        localStorage.setItem(lastPlaceKey(), id);
       } catch (err) {
         this.logs[id] = [...(this.logs[id] || []), { type: 'error', id: crypto.randomUUID(), text: `Something went wrong trying to reach the room. (${err.message})` }];
         useUiStore().showError(`Couldn't enter that place. (${err.message})`);
@@ -150,21 +136,15 @@ export const useChatStore = defineStore('chat', {
       const world = useWorldStore();
       await world.loadWorldState();
 
-      // One-time forward-copy: an existing (pre-worlds) install's flat
-      // "last place" becomes this world's scoped key, so upgrading doesn't
-      // strand the user back at the first place in the list.
-      const key = lastPlaceKey();
-      if (key !== LEGACY_LAST_PLACE_KEY && localStorage.getItem(key) === null) {
-        const legacy = localStorage.getItem(LEGACY_LAST_PLACE_KEY);
-        if (legacy) localStorage.setItem(key, legacy);
-      }
-
       if (world.places.length) {
-        // Resume wherever the visitor left off last session, falling back
-        // to the first place for a genuinely new world. enterPlace() is
-        // idempotent for an already-visited place (no duplicate arrival
+        // Resume wherever the active persona left off last session, falling
+        // back to the first place for a genuinely new world or a session
+        // with no active persona (nothing to key the memory by). Recorded
+        // server-side, per persona, by /api/places/:placeId/enter — see
+        // recordLastPlaceForActivePersona in backend/server.js. enterPlace()
+        // is idempotent for an already-visited place (no duplicate arrival
         // marker, no generation) — it just loads the persisted log.
-        const savedId = localStorage.getItem(key);
+        const savedId = world.activePersona?.lastPlaceId;
         const start = (savedId && world.placeById(savedId)) || world.places[0];
         await this.enterPlace(start.id);
       }
