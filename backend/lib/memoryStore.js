@@ -409,18 +409,25 @@ export async function rebuildAllMemoryEmbeddings({ db, embedFn }) {
 // the row (and its entry links) actually disappear, since nobody's left to
 // recall it.
 export function deleteCharacterMemory(db, characterId, entryId) {
-  const result = db.prepare('DELETE FROM memory_participants WHERE memory_id = ? AND character_id = ?').run(entryId, characterId);
-  if (result.changes === 0) return false;
-  removeMemoryVectorParticipant(db, entryId, characterId);
+  let remaining = null;
+  const run = db.transaction(() => {
+    const result = db.prepare('DELETE FROM memory_participants WHERE memory_id = ? AND character_id = ?').run(entryId, characterId);
+    if (result.changes === 0) return false;
+    removeMemoryVectorParticipant(db, entryId, characterId);
 
-  const { n: remaining } = db.prepare('SELECT COUNT(*) AS n FROM memory_participants WHERE memory_id = ?').get(entryId);
-  if (remaining === 0) {
-    db.prepare('DELETE FROM memories WHERE id = ?').run(entryId);
-    db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(entryId);
-    deleteMemoryVectors(db, entryId);
+    ({ n: remaining } = db.prepare('SELECT COUNT(*) AS n FROM memory_participants WHERE memory_id = ?').get(entryId));
+    if (remaining === 0) {
+      db.prepare('DELETE FROM memories WHERE id = ?').run(entryId);
+      db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(entryId);
+      deleteMemoryVectors(db, entryId);
+    }
+    return true;
+  });
+  const deleted = run();
+  if (deleted) {
+    logger.info('memory', `deleted memory ${entryId} for ${characterId}${remaining === 0 ? ' (last participant — row removed)' : ''}`);
   }
-  logger.info('memory', `deleted memory ${entryId} for ${characterId}${remaining === 0 ? ' (last participant — row removed)' : ''}`);
-  return true;
+  return deleted;
 }
 
 // Removes a character from every memory they participated in — used when
@@ -563,17 +570,20 @@ export async function detachEntryFromMemories({ db, embedFn, memoryIds, entryId,
 // that stale echo doesn't stick around alongside it.
 export function pruneReplylessMemories(db, memoryIds, log) {
   let pruned = 0;
-  for (const mid of memoryIds) {
-    const linkedIds = db.prepare('SELECT entry_id FROM memory_entries WHERE memory_id = ?').all(mid).map((r) => r.entry_id);
-    const hasCharReply = log.some((e) => linkedIds.includes(e.id) && e.type === 'char');
-    if (!hasCharReply) {
-      db.prepare('DELETE FROM memories WHERE id = ?').run(mid);
-      db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(mid);
-      db.prepare('DELETE FROM memory_participants WHERE memory_id = ?').run(mid);
-      deleteMemoryVectors(db, mid);
-      pruned += 1;
+  const run = db.transaction(() => {
+    for (const mid of memoryIds) {
+      const linkedIds = db.prepare('SELECT entry_id FROM memory_entries WHERE memory_id = ?').all(mid).map((r) => r.entry_id);
+      const hasCharReply = log.some((e) => linkedIds.includes(e.id) && e.type === 'char');
+      if (!hasCharReply) {
+        db.prepare('DELETE FROM memories WHERE id = ?').run(mid);
+        db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(mid);
+        db.prepare('DELETE FROM memory_participants WHERE memory_id = ?').run(mid);
+        deleteMemoryVectors(db, mid);
+        pruned += 1;
+      }
     }
-  }
+  });
+  run();
   if (pruned) logger.info('memory', `pruned ${pruned} reply-less memor${pruned === 1 ? 'y' : 'ies'} ahead of retry`);
   return pruned;
 }
