@@ -2409,7 +2409,7 @@ app.post('/api/calls/:characterId/start', (req, res) => {
   calls[placeId] = { charId: characterId, name: character.name, bystanders, transcript: [], roundCount: 0 };
   saveCalls(w, calls);
 
-  appendPlaceChatEntries(w, placeId, [{ type: 'system', text: `📞 You call ${character.name}.`, call: true }]);
+  appendPlaceChatEntries(w, placeId, [{ type: 'system', text: `📞 You call ${character.name}.`, call: true }], world.time);
   logger.info('chat', `call started: ${character.name} @ ${place.name} (${presentIds.length} bystander(s))`);
 
   res.json({ log: loadChatLog(w.chatDir, placeId), placements: world.placements, callee: { id: character.id, name: character.name } });
@@ -2469,7 +2469,7 @@ async function runCallReply({ w, cfg, placeId, place, characterId, character, ca
     const entry = { type: 'char', charId: characterId, name: character.name, text: (text || '').trim(), call: true };
     const stats = buildGenerationStats(usage, timing);
     if (stats) entry.stats = stats;
-    appendPlaceChatEntries(w, placeId, [entry]);
+    appendPlaceChatEntries(w, placeId, [entry], world.time);
     if (onEvent) onEvent({ type: 'turn', entries: [entry] });
 
     callState.transcript.push({ type: 'char', text: entry.text });
@@ -2510,7 +2510,7 @@ async function runCallReply({ w, cfg, placeId, place, characterId, character, ca
       });
       if (narration) {
         const narratorEntry = { ...narration, call: true };
-        appendPlaceChatEntries(w, placeId, [narratorEntry]);
+        appendPlaceChatEntries(w, placeId, [narratorEntry], world.time);
         if (onEvent) onEvent({ type: 'turn', entries: [narratorEntry] });
       }
     }
@@ -2606,7 +2606,7 @@ app.post('/api/calls/:characterId/end', (req, res) => {
   saveCalls(w, calls);
 
   const calleeName = character ? character.name : callState.name;
-  appendPlaceChatEntries(w, placeId, [{ type: 'system', text: `📞 Call with ${calleeName} ended.`, call: true }]);
+  appendPlaceChatEntries(w, placeId, [{ type: 'system', text: `📞 Call with ${calleeName} ended.`, call: true }], world.time);
   logger.info('chat', `call ended: ${calleeName} @ ${place ? place.name : placeId}`);
 
   res.json({ log: loadChatLog(w.chatDir, placeId), placements: world.placements });
@@ -2626,8 +2626,21 @@ function invalidateMetCharacterIds(w) {
 }
 // Every place-chat mutation goes through one of these three instead of
 // calling chatStore.js's append/save/delete directly against w.chatDir, so
-// the cache above can never go stale.
-function appendPlaceChatEntries(w, placeId, entries) {
+// the cache above can never go stale. Stamping day/timeOfDay here — the one
+// chokepoint every new place-chat entry already passes through, across a
+// dozen call sites (user lines, character/narrator turns, call system
+// markers) — means every one of them gets it for free, the same way
+// texting entries do (see appendTextsEntries), without touching each site
+// individually. `day == null` guards against re-stamping an entry that
+// already carries one (there are none today, but a future caller might).
+// `time` is optional — most call sites have nothing else in scope and are
+// fine paying for one small loadWorld() read, but a hot per-turn call site
+// (runReactionRound's loop) already has the round's world loaded via
+// loadTurnContext and can pass its `.time` straight through instead of
+// re-reading world.json redundantly on every reacting character's turn.
+function appendPlaceChatEntries(w, placeId, entries, time = null) {
+  const { day, timeOfDay } = time || loadWorld(w).time;
+  entries.forEach((e) => { if (e.day == null) { e.day = day; e.timeOfDay = timeOfDay; } });
   appendChatEntries(w.chatDir, placeId, entries);
   invalidateMetCharacterIds(w);
 }
@@ -3673,7 +3686,8 @@ async function recordSilentRound({ w, placeId, place, presentIds, charactersById
   }
   if (!note) note = { type: 'system', text: 'No one reacts.' };
 
-  appendPlaceChatEntries(w, placeId, [note]);
+  const time = loadWorld(w).time; // loaded once, reused below — recordRound wants it too
+  appendPlaceChatEntries(w, placeId, [note], time);
   const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
   recordRound(w, {
@@ -3681,7 +3695,7 @@ async function recordSilentRound({ w, placeId, place, presentIds, charactersById
     turnEntries: [...turnEntries, note],
     userLabel: activePersona ? activePersona.name : 'Visitor',
     activePersonaId,
-    time: loadWorld(w).time,
+    time,
   });
 }
 
@@ -3737,7 +3751,7 @@ async function runReactionRound({ w, placeId, place, reactIds, presentIds, chara
     }
 
     const entries = await turnEntriesFrom(w, text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode, backgroundIds);
-    appendPlaceChatEntries(w, placeId, entries);
+    appendPlaceChatEntries(w, placeId, entries, turnContext.world.time);
     roundEntries.push(...entries);
     if (onEvent) onEvent({ type: 'turn', entries });
   }
@@ -3752,7 +3766,7 @@ async function runReactionRound({ w, placeId, place, reactIds, presentIds, chara
     if (shouldNarrate({ placeType: place.type, presentCount: presentIds.length, backgroundCount: backgroundIds.length, log })) {
       const narration = await attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds, charactersById, log, signal });
       if (narration) {
-        appendPlaceChatEntries(w, placeId, [narration]);
+        appendPlaceChatEntries(w, placeId, [narration], turnContext.world.time);
         roundEntries.push(narration);
         if (onEvent) onEvent({ type: 'turn', entries: [narration] });
       }
@@ -3816,7 +3830,7 @@ app.post('/api/places/:placeId/enter', (req, res) => {
     }
   });
 
-  appendPlaceChatEntries(w, placeId, turnEntries);
+  appendPlaceChatEntries(w, placeId, turnEntries, world.time);
   logger.info('chat', `first arrival at ${place.name} (${greetedIds.size} greeting${greetedIds.size === 1 ? '' : 's'})`);
 
   if (greetedIds.size) {

@@ -1031,6 +1031,14 @@ describe('Persisted chat: /api/places/:placeId/enter, /say, GET /chat', () => {
     assert.deepEqual(reread, log);
   });
 
+  test('every new place-chat entry carries the current in-world day/timeOfDay', async () => {
+    await postJson('/api/world/time', { day: 9, timeOfDay: 'sunrise' });
+    const place = await makePlace('Timestamped Hall');
+    const { log } = await (await postJson(`/api/places/${place.id}/enter`, {})).json();
+    assert.equal(log[0].day, 9);
+    assert.equal(log[0].timeOfDay, 'sunrise');
+  });
+
   test('a repeat enter appends NOTHING — a misclick leaves no trace; the return marker is deferred to /say', async () => {
     const place = await makePlace('Revisited Hall');
     await postJson(`/api/places/${place.id}/enter`, {});

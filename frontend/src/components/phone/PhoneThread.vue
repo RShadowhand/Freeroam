@@ -5,7 +5,7 @@ import { usePhoneStore } from '../../stores/phone';
 import { useSettingsStore } from '../../stores/settings';
 import { useThemeStore } from '../../stores/theme';
 import { formatMessage } from '../../utils/format';
-import { dayDividerLabels } from '../../utils/time';
+import { formatDayTime } from '../../utils/time';
 import CardAvatar from '../shared/CardAvatar.vue';
 
 // Calling lives in its own app (Wavelength) now, not a button bolted onto
@@ -38,11 +38,15 @@ const showTyping = computed(() => (
 // different open thread's request can't make this one look busy.
 const isLoadingHere = computed(() => phone.loadingIds.has(props.characterId));
 
-// A date divider between messages wherever day/timeOfDay changes from the
-// previous one — a texting conversation can span many in-world days, unlike
-// a single scene visit. See utils/time.js's dayDividerLabels for why older
-// history (no day/timeOfDay stamp) just shows no divider.
-const dividerLabels = computed(() => dayDividerLabels(log.value));
+// Every message shows its own in-world day/time — a texting conversation
+// can span many in-world days, unlike a single scene visit, and a sparse
+// divider between changes turned out to be too easy to miss (per feedback:
+// each message should carry it, not just the boundary). Older history with
+// no day/timeOfDay stamp just shows nothing, same "no backfill" rule as
+// before.
+function timestamp(m) {
+  return m.day != null ? formatDayTime(m.day, m.timeOfDay) : '';
+}
 
 // A trailing generation-failure error (type 'error', client-only, never
 // persisted — see stores/phone.js) shouldn't hide Retry on the user message
@@ -126,13 +130,15 @@ function dismissError(entryId) {
     <div class="messages" ref="box">
       <div class="empty-note" v-if="!log.length">No messages yet — say hello.</div>
       <template v-for="(m, i) in log" :key="m.id || i">
-        <div class="chat-day-divider" v-if="dividerLabels[i]">{{ dividerLabels[i] }}</div>
         <div class="msg error" v-if="m.type === 'error'">
           {{ m.text }}
           <button class="msg-delete-btn error-dismiss" title="Dismiss" @click="dismissError(m.id)">✕</button>
         </div>
         <div class="msg" :class="m.type === 'user' ? 'user' : 'char'" v-else>
-          <div class="bubble" v-html="html(m.text)"></div>
+          <div class="msg-bubble-col">
+            <div class="bubble" v-html="html(m.text)"></div>
+            <div class="msg-timestamp" v-if="timestamp(m)">{{ timestamp(m) }}</div>
+          </div>
           <div class="msg-actions">
             <button v-if="m.id" class="msg-delete-btn" title="Delete" @click="deleteMessage(m.id)">🗑</button>
             <button
@@ -161,4 +167,14 @@ function dismissError(entryId) {
 
 <style scoped>
 .stop-btn{ background:var(--rose); color:var(--parchment); }
+/* .msg.char is display:flex (see main.css) for the scene-chat avatar+body
+   layout — a plain-column wrapper here keeps the bubble and its timestamp
+   stacked regardless of what the shared .msg/.msg.char/.msg.user rules do,
+   instead of the timestamp becoming a third item squeezed into that row. */
+.msg-bubble-col{ display:flex; flex-direction:column; min-width:0; }
+.msg-timestamp{
+  font-family:'IBM Plex Mono',monospace; font-size:0.62rem; letter-spacing:0.02em;
+  color:var(--dim); opacity:0.75; margin-top:2px;
+}
+.msg.user .msg-timestamp{ text-align:right; }
 </style>

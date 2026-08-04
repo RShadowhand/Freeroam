@@ -5,7 +5,7 @@ import { useGroupsStore } from '../../stores/groups';
 import { useSettingsStore } from '../../stores/settings';
 import { useThemeStore } from '../../stores/theme';
 import { formatMessage } from '../../utils/format';
-import { dayDividerLabels } from '../../utils/time';
+import { formatDayTime } from '../../utils/time';
 import CardAvatar from '../shared/CardAvatar.vue';
 import GroupInfoPanel from './GroupInfoPanel.vue';
 
@@ -43,10 +43,12 @@ const typingName = computed(() => (
 // different open thread's request can't make this one look busy.
 const isLoadingHere = computed(() => groups.loadingIds.has(props.groupId));
 
-// A date divider between messages wherever day/timeOfDay changes from the
-// previous one — see utils/time.js's dayDividerLabels and PhoneThread.vue's
-// identical use of it.
-const dividerLabels = computed(() => dayDividerLabels(log.value));
+// Every message shows its own in-world day/time — see PhoneThread.vue's
+// identical use of formatDayTime and its comment for why this replaced an
+// earlier sparse-divider-only approach.
+function timestamp(m) {
+  return m.day != null ? formatDayTime(m.day, m.timeOfDay) : '';
+}
 
 // A trailing generation-failure error (type 'error', client-only, never
 // persisted — see stores/groups.js) shouldn't hide Retry on the user
@@ -136,13 +138,15 @@ function dismissError(entryId) {
     <div class="messages" ref="box">
       <div class="empty-note" v-if="!log.length">No messages yet — say hello to the group.</div>
       <template v-for="(m, i) in log" :key="m.id || i">
-        <div class="chat-day-divider" v-if="dividerLabels[i]">{{ dividerLabels[i] }}</div>
         <div class="msg error" v-if="m.type === 'error'">
           {{ m.text }}
           <button class="msg-delete-btn error-dismiss" title="Dismiss" @click="dismissError(m.id)">✕</button>
         </div>
         <div class="msg user" v-else-if="m.type === 'user'">
-          <div class="bubble" v-html="html(m.text)"></div>
+          <div class="msg-bubble-col">
+            <div class="bubble" v-html="html(m.text)"></div>
+            <div class="msg-timestamp" v-if="timestamp(m)">{{ timestamp(m) }}</div>
+          </div>
           <div class="msg-actions">
             <button v-if="m.id" class="msg-delete-btn" title="Delete" @click="deleteMessage(m.id)">🗑</button>
             <button
@@ -156,6 +160,7 @@ function dismissError(entryId) {
           <div class="group-char-body">
             <div class="speaker">{{ m.name || charName(m.charId) }}</div>
             <div class="bubble" v-html="html(m.text)"></div>
+            <div class="msg-timestamp" v-if="timestamp(m)">{{ timestamp(m) }}</div>
             <div class="msg-actions">
               <button v-if="m.id" class="msg-delete-btn" title="Delete" @click="deleteMessage(m.id)">🗑</button>
             </div>
@@ -189,4 +194,15 @@ function dismissError(entryId) {
 
 <style scoped>
 .stop-btn{ background:var(--rose); color:var(--parchment); }
+/* .msg.char is display:flex (see main.css) for the scene-chat avatar+body
+   layout — a plain-column wrapper here keeps the user bubble and its
+   timestamp stacked regardless of what the shared .msg/.msg.user rules do.
+   The group-char branch doesn't need this: .group-char-body is already a
+   plain block column. */
+.msg-bubble-col{ display:flex; flex-direction:column; min-width:0; }
+.msg-timestamp{
+  font-family:'IBM Plex Mono',monospace; font-size:0.62rem; letter-spacing:0.02em;
+  color:var(--dim); opacity:0.75; margin-top:2px;
+}
+.msg.user .msg-timestamp{ text-align:right; }
 </style>
