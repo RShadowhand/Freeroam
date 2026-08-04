@@ -1,13 +1,30 @@
 import { getStoredWorldId, setStoredWorldId } from './worldId';
 
+// The world we were pointed at no longer exists — deleted from another tab,
+// most likely. Drop the stale id and reload: the next request goes
+// header-less, which the backend treats as "use the default world," rather
+// than getting stuck failing every request forever. Exported so the
+// streaming SSE helpers in api/chat.js, api/phone.js, api/groups.js, and
+// api/calls.js — which bypass request() below entirely, since they need the
+// raw fetch Response to read its body as a stream — can trigger the same
+// recovery instead of just surfacing a generic error forever.
+export function handleUnknownWorld(res, data) {
+  if (!res.ok && data?.code === 'UNKNOWN_WORLD') {
+    setStoredWorldId(null);
+    location.reload();
+    return true;
+  }
+  return false;
+}
+
 // Every backend route returns JSON (including error bodies, `{ error }`),
 // so this is the one place that shape gets parsed — callers get back
 // `{ ok, status, data }` and decide what to do with a non-ok response
 // themselves, same as the original inline `res.ok` checks did. Also the
 // one place the active world id is attached (X-World-Id) — every api/*.js
 // wrapper funnels through here, so this single chokepoint covers all of
-// them; the 3 SSE streaming helpers in api/chat.js bypass this function
-// entirely and attach the header themselves.
+// them; the SSE streaming helpers across chat/phone/groups/calls bypass
+// this function entirely and attach the header themselves.
 async function request(path, options) {
   const worldId = getStoredWorldId();
   const finalOptions = worldId
@@ -15,14 +32,7 @@ async function request(path, options) {
     : options;
   const res = await fetch(path, finalOptions);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok && data.code === 'UNKNOWN_WORLD') {
-    // The world we were pointed at no longer exists — deleted from another
-    // tab, most likely. Drop the stale id and reload: the next request
-    // goes header-less, which the backend treats as "use the default
-    // world," rather than getting stuck failing every request forever.
-    setStoredWorldId(null);
-    location.reload();
-  }
+  handleUnknownWorld(res, data);
   return { ok: res.ok, status: res.status, data };
 }
 

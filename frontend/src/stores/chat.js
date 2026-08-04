@@ -4,6 +4,7 @@ import { useUiStore } from './ui';
 import { placeCharacter } from '../api/characters';
 import { getSettings } from '../api/settings';
 import { getStoredWorldId } from '../api/worldId';
+import { handleUnknownWorld } from '../api/http';
 import {
   enterPlaceApi, sayApi, retryApi, regenerateApi,
   sayStreamRequest, retryStreamRequest, regenerateStreamRequest,
@@ -41,6 +42,7 @@ export const useChatStore = defineStore('chat', {
     pendingReturnMarker: new Set(), // places needing a "You return to X." marker once engaged
     bannerMessage: null, // the dismissable-free info banner (no API key / can't reach backend)
     editingMessageId: null,
+    pendingMessageIds: new Set(), // entryIds with a save-edit/delete currently in flight
     expandedReasoningIds: new Set(),
     dismissedSuggestionIds: new Set(),
   }),
@@ -117,7 +119,7 @@ export const useChatStore = defineStore('chat', {
         if (data.returnMarkerPending) this.pendingReturnMarker.add(id); else this.pendingReturnMarker.delete(id);
         localStorage.setItem(lastPlaceKey(), id);
       } catch (err) {
-        this.logs[id] = [...(this.logs[id] || []), { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong trying to reach the room. (${err.message})` }];
+        this.logs[id] = [...(this.logs[id] || []), { type: 'error', id: crypto.randomUUID(), text: `Something went wrong trying to reach the room. (${err.message})` }];
         useUiStore().showError(`Couldn't enter that place. (${err.message})`);
       } finally {
         this.entering = false;
@@ -176,6 +178,11 @@ export const useChatStore = defineStore('chat', {
     async consumeReactionSse(placeId, res, { appendOnTurn = true } = {}) {
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
+        // Streaming requests bypass http.js's request(), so this is the
+        // equivalent stale-world recovery for them — without it, a world
+        // deleted from another tab just throws a generic error forever
+        // instead of self-recovering the way non-streaming requests do.
+        if (handleUnknownWorld(res, data)) throw new Error('The active world no longer exists — reloading.');
         throw new Error(data.error || `request failed (${res.status})`);
       }
 
@@ -237,11 +244,11 @@ export const useChatStore = defineStore('chat', {
         }
 
         if (result.error) {
-          this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong trying to reach the room. (${result.error})` }];
+          this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something went wrong trying to reach the room. (${result.error})` }];
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong trying to reach the room. (${err.message})` }];
+        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something went wrong trying to reach the room. (${err.message})` }];
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
@@ -276,11 +283,11 @@ export const useChatStore = defineStore('chat', {
 
         this.pendingReturnMarker.delete(placeId);
         if (result.error) {
-          this.logs[placeId] = [...this.logs[placeId], { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong trying to reach the room. (${result.error})` }];
+          this.logs[placeId] = [...this.logs[placeId], { type: 'error', id: crypto.randomUUID(), text: `Something went wrong trying to reach the room. (${result.error})` }];
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong trying to reach the room. (${err.message})` }];
+        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something went wrong trying to reach the room. (${err.message})` }];
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
@@ -332,11 +339,11 @@ export const useChatStore = defineStore('chat', {
         }
 
         if (result.error) {
-          this.logs[placeId] = [...this.logs[placeId], { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong on the call. (${result.error})` }];
+          this.logs[placeId] = [...this.logs[placeId], { type: 'error', id: crypto.randomUUID(), text: `Something went wrong on the call. (${result.error})` }];
           useUiStore().showError(result.error);
         }
       } catch (err) {
-        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something goes wrong on the call. (${err.message})` }];
+        this.logs[placeId] = [...(this.logs[placeId] || []), { type: 'error', id: crypto.randomUUID(), text: `Something went wrong on the call. (${err.message})` }];
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
@@ -345,7 +352,11 @@ export const useChatStore = defineStore('chat', {
     },
 
     async endCall() {
-      if (!this.activeCall || this.currentPlace === null) return;
+      // Same re-entrancy guard as startCall — without checking `loading`,
+      // hanging up while sendCallMessage's reply is still in flight fires
+      // endCallApi concurrently with it, and whichever resolves last silently
+      // overwrites logs[placeId]/activeCall, possibly dropping the reply.
+      if (!this.activeCall || this.currentPlace === null || this.loading || this.entering) return;
       const placeId = this.currentPlace;
       const characterId = this.activeCall.charId;
       this.setLoading(true);
@@ -391,7 +402,12 @@ export const useChatStore = defineStore('chat', {
     },
 
     async saveMessageEdit(entryId, text) {
-      if (!text) return;
+      // Without this, double-clicking Save (or clicking one of EditRow's two
+      // Save buttons twice) fires two concurrent requests for the same entry;
+      // if responses resolve out of order, the earlier one can land after the
+      // later one and silently overwrite the log with the stale edit.
+      if (!text || this.pendingMessageIds.has(entryId)) return;
+      this.pendingMessageIds.add(entryId);
       const placeId = this.currentPlace;
       try {
         const { ok, data } = await updateMessage(placeId, entryId, text);
@@ -401,10 +417,13 @@ export const useChatStore = defineStore('chat', {
         useUiStore().showError(`Could not save the edit. (${err.message})`);
       } finally {
         this.editingMessageId = null;
+        this.pendingMessageIds.delete(entryId);
       }
     },
 
     async deleteMessage(entryId) {
+      if (this.pendingMessageIds.has(entryId)) return;
+      this.pendingMessageIds.add(entryId);
       const placeId = this.currentPlace;
       try {
         const { ok, data } = await deleteMessageApi(placeId, entryId);
@@ -412,6 +431,8 @@ export const useChatStore = defineStore('chat', {
         this.logs[placeId] = data.log;
       } catch (err) {
         useUiStore().showError(`Could not delete the message. (${err.message})`);
+      } finally {
+        this.pendingMessageIds.delete(entryId);
       }
     },
 

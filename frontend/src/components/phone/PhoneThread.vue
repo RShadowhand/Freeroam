@@ -32,6 +32,11 @@ const showTyping = computed(() => (
   && phone.streamingState && phone.streamingState.characterId === props.characterId
 ));
 
+// Whether THIS conversation (not some other one) has a send/retry in
+// flight — phone.js tracks loadingIds per-characterId precisely so a
+// different open thread's request can't make this one look busy.
+const isLoadingHere = computed(() => phone.loadingIds.has(props.characterId));
+
 // A trailing generation-failure error (type 'error', client-only, never
 // persisted — see stores/phone.js) shouldn't hide Retry on the user message
 // it followed; scan back past any of those to find the last *real* entry.
@@ -43,9 +48,12 @@ const lastRealIndex = computed(() => {
 
 // Nothing replied to the trailing message yet — same "offer to try again"
 // condition place chat's UserMessage.vue and GroupThread.vue both use.
+// Only THIS conversation's own streaming state should hide Retry — a
+// different conversation streaming at the same time must not.
 const showRetry = computed(() => {
   const idx = lastRealIndex.value;
-  return idx >= 0 && log.value[idx].type === 'user' && !phone.streamingState;
+  const streamingHere = phone.streamingState && phone.streamingState.characterId === props.characterId;
+  return idx >= 0 && log.value[idx].type === 'user' && !streamingHere;
 });
 
 function html(t) {
@@ -54,7 +62,7 @@ function html(t) {
 function scrollToBottom() {
   if (box.value) box.value.scrollTop = box.value.scrollHeight;
 }
-watch(() => [log.value.length, phone.loading], () => nextTick(scrollToBottom), { flush: 'post' });
+watch(() => [log.value.length, isLoadingHere.value], () => nextTick(scrollToBottom), { flush: 'post' });
 
 async function openThread() {
   await phone.openConversation(props.characterId);
@@ -71,7 +79,7 @@ function autoGrow() {
 
 async function send() {
   const value = text.value.trim();
-  if (!value || phone.loading) return;
+  if (!value || isLoadingHere.value) return;
   text.value = '';
   if (textareaEl.value) textareaEl.value.style.height = 'auto';
   await phone.sendText(props.characterId, value);
@@ -124,17 +132,17 @@ function dismissError(entryId) {
         </div>
       </template>
       <div class="msg char" v-if="showTyping"><div class="bubble typing-bubble">…</div></div>
-      <div class="typing" v-else-if="phone.loading">typing…</div>
+      <div class="typing" v-else-if="isLoadingHere">typing…</div>
     </div>
 
     <div class="input-row">
       <textarea
         ref="textareaEl" v-model="text" rows="1" autocomplete="off"
         placeholder="Text something... (Shift+Enter for a new line)"
-        :disabled="phone.loading"
+        :disabled="isLoadingHere"
         @input="autoGrow" @keydown="onKeydown"
       ></textarea>
-      <button :disabled="phone.loading" @click="send">Send</button>
+      <button :disabled="isLoadingHere" @click="send">Send</button>
     </div>
   </div>
 </template>

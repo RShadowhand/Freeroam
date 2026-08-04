@@ -37,6 +37,11 @@ const typingName = computed(() => (
   groups.streamingState && groups.streamingState.groupId === props.groupId ? groups.streamingState.name : ''
 ));
 
+// Whether THIS group's conversation (not some other one) has a send/retry
+// in flight — groups.js tracks loadingIds per-groupId precisely so a
+// different open thread's request can't make this one look busy.
+const isLoadingHere = computed(() => groups.loadingIds.has(props.groupId));
+
 // A trailing generation-failure error (type 'error', client-only, never
 // persisted — see stores/groups.js) shouldn't hide Retry on the user
 // message it followed; scan back past any of those to find the last *real*
@@ -49,9 +54,12 @@ const lastRealIndex = computed(() => {
 
 // Nothing replied to the trailing message yet — same "offer to try again"
 // condition place chat's UserMessage.vue uses for its own retry button.
+// Only THIS group's own streaming state should hide Retry — a different
+// group streaming at the same time must not.
 const showRetry = computed(() => {
   const idx = lastRealIndex.value;
-  return idx >= 0 && log.value[idx].type === 'user' && !groups.streamingState;
+  const streamingHere = groups.streamingState && groups.streamingState.groupId === props.groupId;
+  return idx >= 0 && log.value[idx].type === 'user' && !streamingHere;
 });
 
 function charName(charId) {
@@ -63,7 +71,7 @@ function html(t) {
 function scrollToBottom() {
   if (box.value) box.value.scrollTop = box.value.scrollHeight;
 }
-watch(() => [log.value.length, groups.loading], () => nextTick(scrollToBottom), { flush: 'post' });
+watch(() => [log.value.length, isLoadingHere.value], () => nextTick(scrollToBottom), { flush: 'post' });
 
 async function openThread() {
   await groups.openConversation(props.groupId);
@@ -80,7 +88,7 @@ function autoGrow() {
 
 async function send() {
   const value = text.value.trim();
-  if (!value || groups.loading) return;
+  if (!value || isLoadingHere.value) return;
   text.value = '';
   if (textareaEl.value) textareaEl.value.style.height = 'auto';
   await groups.sendText(props.groupId, value);
@@ -150,7 +158,7 @@ function dismissError(entryId) {
           <div class="bubble typing-bubble">…</div>
         </div>
       </div>
-      <div class="typing" v-else-if="groups.loading">
+      <div class="typing" v-else-if="isLoadingHere">
         <template v-if="typingName">{{ typingName }} is typing…</template>
         <template v-else>typing…</template>
       </div>
@@ -160,10 +168,10 @@ function dismissError(entryId) {
       <textarea
         ref="textareaEl" v-model="text" rows="1" autocomplete="off"
         placeholder="Text the group... (Shift+Enter for a new line)"
-        :disabled="groups.loading"
+        :disabled="isLoadingHere"
         @input="autoGrow" @keydown="onKeydown"
       ></textarea>
-      <button :disabled="groups.loading" @click="send">Send</button>
+      <button :disabled="isLoadingHere" @click="send">Send</button>
     </div>
   </div>
 </template>

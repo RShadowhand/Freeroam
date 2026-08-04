@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { useUiStore } from './ui';
 import { getSettings } from '../api/settings';
+import { handleUnknownWorld } from '../api/http';
 import {
   getTextLog, sendTextApi, sendTextStreamRequest, retryTextApi, retryTextStreamRequest, deleteTextMessageApi,
   triggerTextApi, getUnreadTextCount,
@@ -13,24 +14,39 @@ import {
 // (characterId, name), never the accumulating live text — the typing
 // indicator (see PhoneThread.vue) is a generic "..." state, not a
 // character-by-character reveal, so there's nothing else to accumulate.
+// `loadingIds` (not a single flag) since more than one conversation can be
+// in flight at once — the user can send to A, then navigate to B's thread
+// before A's reply lands, and B must not show A's loading/typing state.
 export const usePhoneStore = defineStore('phone', {
   state: () => ({
     logs: {}, // characterId -> entries[]
-    loading: false,
+    loadingIds: new Set(), // characterIds with a send/retry currently in flight
     streamingState: null, // { characterId, name } | null
     loadedIds: new Set(), // characters whose log has been fetched at least once this session
+    openingIds: new Set(), // characterIds whose log GET is currently in flight (re-entrancy guard)
     unreadCount: 0, // proactive texts (Phase 5) not yet seen — badge count
   }),
   actions: {
     async openConversation(characterId) {
-      if (this.loadedIds.has(characterId)) return;
-      const { ok, data } = await getTextLog(characterId);
-      if (ok) {
-        this.logs[characterId] = data.log;
-        this.loadedIds.add(characterId);
-        // The GET just marked any proactive texts in this conversation as
-        // read server-side — refresh the badge to match.
-        this.refreshUnreadCount();
+      // loadedIds alone isn't a re-entrancy guard — it's only set *after* the
+      // GET below resolves, so two calls before that (e.g. rapid navigation)
+      // would both pass and fire duplicate requests without also checking
+      // openingIds, which is set synchronously before the first await.
+      if (this.loadedIds.has(characterId) || this.openingIds.has(characterId)) return;
+      this.openingIds.add(characterId);
+      try {
+        const { ok, data } = await getTextLog(characterId);
+        if (ok) {
+          this.logs[characterId] = data.log;
+          this.loadedIds.add(characterId);
+          // The GET just marked any proactive texts in this conversation as
+          // read server-side — refresh the badge to match.
+          this.refreshUnreadCount();
+        } else {
+          useUiStore().showError(data.error || 'Could not load that conversation.');
+        }
+      } finally {
+        this.openingIds.delete(characterId);
       }
     },
 
@@ -75,6 +91,11 @@ export const usePhoneStore = defineStore('phone', {
     async _consumeSse(characterId, res) {
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
+        // Streaming requests bypass http.js's request(), so this is the
+        // equivalent stale-world recovery for them — without it, a world
+        // deleted from another tab just throws a generic error forever
+        // instead of self-recovering the way non-streaming requests do.
+        if (handleUnknownWorld(res, data)) throw new Error('The active world no longer exists — reloading.');
         throw new Error(data.error || `request failed (${res.status})`);
       }
 
@@ -112,9 +133,9 @@ export const usePhoneStore = defineStore('phone', {
     },
 
     async sendText(characterId, text) {
-      if (!text || this.loading) return;
+      if (!text || this.loadingIds.has(characterId)) return;
       this.logs[characterId] = [...(this.logs[characterId] || []), { type: 'user', text }];
-      this.loading = true;
+      this.loadingIds.add(characterId);
 
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
@@ -137,7 +158,7 @@ export const usePhoneStore = defineStore('phone', {
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
-        this.loading = false;
+        this.loadingIds.delete(characterId);
       }
     },
 
@@ -145,8 +166,8 @@ export const usePhoneStore = defineStore('phone', {
     // replied — same idea as chat.js's retryMessage and groups.js's
     // retryText.
     async retryText(characterId) {
-      if (this.loading) return;
-      this.loading = true;
+      if (this.loadingIds.has(characterId)) return;
+      this.loadingIds.add(characterId);
 
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
@@ -169,7 +190,7 @@ export const usePhoneStore = defineStore('phone', {
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
-        this.loading = false;
+        this.loadingIds.delete(characterId);
       }
     },
 

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { useUiStore } from './ui';
 import { getSettings } from '../api/settings';
+import { handleUnknownWorld } from '../api/http';
 import {
   getGroups, createGroupApi, getGroupLog, updateGroupApi, sendGroupTextApi, sendGroupTextStreamRequest,
   retryGroupApi, retryGroupStreamRequest, deleteGroupApi, deleteGroupMessageApi,
@@ -15,9 +16,13 @@ export const useGroupsStore = defineStore('groups', {
   state: () => ({
     groups: [], // [{id, name, participantIds, createdAt}]
     logs: {}, // groupId -> entries[]
-    loading: false,
+    // `loadingIds` (not a single flag) since more than one group conversation
+    // can be in flight at once — sending to one group must not show as
+    // loading/typing in a different group's thread.
+    loadingIds: new Set(), // groupIds with a send/retry currently in flight
     streamingState: null, // { groupId, charId, name } | null
     loadedIds: new Set(),
+    openingIds: new Set(), // groupIds whose log GET is currently in flight (re-entrancy guard)
   }),
   actions: {
     async loadGroups() {
@@ -58,11 +63,22 @@ export const useGroupsStore = defineStore('groups', {
     },
 
     async openConversation(groupId) {
-      if (this.loadedIds.has(groupId)) return;
-      const { ok, data } = await getGroupLog(groupId);
-      if (ok) {
-        this.logs[groupId] = data.log;
-        this.loadedIds.add(groupId);
+      // loadedIds alone isn't a re-entrancy guard — it's only set *after* the
+      // GET below resolves, so two calls before that (e.g. rapid navigation)
+      // would both pass and fire duplicate requests without also checking
+      // openingIds, which is set synchronously before the first await.
+      if (this.loadedIds.has(groupId) || this.openingIds.has(groupId)) return;
+      this.openingIds.add(groupId);
+      try {
+        const { ok, data } = await getGroupLog(groupId);
+        if (ok) {
+          this.logs[groupId] = data.log;
+          this.loadedIds.add(groupId);
+        } else {
+          useUiStore().showError(data.error || 'Could not load that conversation.');
+        }
+      } finally {
+        this.openingIds.delete(groupId);
       }
     },
 
@@ -83,6 +99,11 @@ export const useGroupsStore = defineStore('groups', {
     async _consumeSse(groupId, res) {
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
+        // Streaming requests bypass http.js's request(), so this is the
+        // equivalent stale-world recovery for them — without it, a world
+        // deleted from another tab just throws a generic error forever
+        // instead of self-recovering the way non-streaming requests do.
+        if (handleUnknownWorld(res, data)) throw new Error('The active world no longer exists — reloading.');
         throw new Error(data.error || `request failed (${res.status})`);
       }
 
@@ -120,9 +141,9 @@ export const useGroupsStore = defineStore('groups', {
     },
 
     async sendText(groupId, text) {
-      if (!text || this.loading) return;
+      if (!text || this.loadingIds.has(groupId)) return;
       this.logs[groupId] = [...(this.logs[groupId] || []), { type: 'user', text }];
-      this.loading = true;
+      this.loadingIds.add(groupId);
 
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
@@ -145,7 +166,7 @@ export const useGroupsStore = defineStore('groups', {
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
-        this.loading = false;
+        this.loadingIds.delete(groupId);
       }
     },
 
@@ -153,8 +174,8 @@ export const useGroupsStore = defineStore('groups', {
     // replied — same "nothing new sent, just try generation again" idea as
     // chat.js's retryMessage.
     async retryText(groupId) {
-      if (this.loading) return;
-      this.loading = true;
+      if (this.loadingIds.has(groupId)) return;
+      this.loadingIds.add(groupId);
 
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
@@ -177,7 +198,7 @@ export const useGroupsStore = defineStore('groups', {
         useUiStore().showError(err.message);
       } finally {
         this.streamingState = null;
-        this.loading = false;
+        this.loadingIds.delete(groupId);
       }
     },
 

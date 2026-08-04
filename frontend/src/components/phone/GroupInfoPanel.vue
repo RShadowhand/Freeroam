@@ -19,6 +19,7 @@ watch(() => group.value?.name, (v) => { if (v !== undefined) name.value = v; });
 const error = ref('');
 const status = ref('');
 const addingId = ref('');
+const saving = ref(false);
 
 const members = computed(() => (group.value?.participantIds || []).map((id) => world.charactersById[id]).filter(Boolean));
 // Same "known" pool NewGroupForm.vue uses, minus whoever's already in the group.
@@ -26,11 +27,21 @@ const candidates = computed(() => world.charactersList
   .filter((c) => world.knowsUser(c.id) && !(group.value?.participantIds || []).includes(c.id)));
 
 async function saveName() {
-  if (!group.value || name.value.trim() === group.value.name) return;
+  // The name-unchanged check alone isn't a re-entrancy guard: it compares
+  // against group.value.name, which doesn't update until this same request
+  // resolves — so pressing Enter (starts a save) then tabbing away (fires
+  // @blur) before the response lands would otherwise pass this check twice
+  // and fire a duplicate identical rename request.
+  if (!group.value || name.value.trim() === group.value.name || saving.value) return;
+  saving.value = true;
   error.value = '';
-  const { ok, data } = await groups.updateGroup(props.groupId, { name: name.value });
-  if (!ok) { error.value = data.error || 'Could not rename the group.'; return; }
-  status.value = 'Saved.';
+  try {
+    const { ok, data } = await groups.updateGroup(props.groupId, { name: name.value });
+    if (!ok) { error.value = data.error || 'Could not rename the group.'; return; }
+    status.value = 'Saved.';
+  } finally {
+    saving.value = false;
+  }
 }
 
 async function addMember() {
