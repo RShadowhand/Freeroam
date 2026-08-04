@@ -56,6 +56,15 @@ watch(
   { flush: 'post' },
 );
 watch(() => chat.currentPlace, () => nextTick(scrollToBottom));
+// The watchers above only fire on a *subsequent* change to the log/place —
+// neither fires on this component's own first mount (e.g. navigating back
+// to Freeroam from another tab remounts this component fresh, with the
+// same already-loaded log/place it had before, so nothing actually
+// "changes" reactively). Watching the ref itself catches that: it flips
+// from null to the element exactly once, the moment this container is
+// first attached to the DOM, regardless of whether the underlying data
+// changed — the one case those two watchers can't see.
+watch(box, (el) => { if (el) nextTick(scrollToBottom); });
 </script>
 
 <template>

@@ -80,6 +80,12 @@ function scrollToBottom() {
   if (box.value) box.value.scrollTop = box.value.scrollHeight;
 }
 watch(() => [log.value.length, isLoadingHere.value], () => nextTick(scrollToBottom), { flush: 'post' });
+// openThread()'s own scrollToBottom call below can run before .messages
+// actually exists in the DOM (its container is gated by v-else-if="group",
+// and also toggles away entirely behind showInfo's v-if) — watching the ref
+// itself catches the exact moment it's (re-)attached, the same fix applied
+// to MessageList.vue/PhoneThread.vue.
+watch(box, (el) => { if (el) nextTick(scrollToBottom); });
 
 async function openThread() {
   await groups.openConversation(props.groupId);

@@ -74,6 +74,12 @@ function scrollToBottom() {
   if (box.value) box.value.scrollTop = box.value.scrollHeight;
 }
 watch(() => [log.value.length, isLoadingHere.value], () => nextTick(scrollToBottom), { flush: 'post' });
+// openThread()'s own scrollToBottom call below can run before .messages
+// actually exists in the DOM (its container is gated by v-if="character",
+// which may not have flipped true yet at mount time) — watching the ref
+// itself catches the exact moment it's first attached, regardless of that
+// timing, the same fix applied to MessageList.vue.
+watch(box, (el) => { if (el) nextTick(scrollToBottom); });
 
 async function openThread() {
   await phone.openConversation(props.characterId);
