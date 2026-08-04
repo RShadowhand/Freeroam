@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { writeJsonAtomic, warnIfCorrupt } from './jsonStore.js';
 
 // Weather is a small map keyed by area name — areas already exist
 // implicitly as free-text strings on places (see relationshipKnowledge's
@@ -53,13 +54,14 @@ export function nextCondition(current) {
 export function loadWeather(w) {
   try {
     return JSON.parse(fs.readFileSync(w.paths.weather, 'utf-8'));
-  } catch {
+  } catch (err) {
+    warnIfCorrupt(w.paths.weather, err);
     return {};
   }
 }
 
 export function saveWeather(w, weatherByArea) {
-  fs.writeFileSync(w.paths.weather, JSON.stringify(weatherByArea, null, 2));
+  writeJsonAtomic(w.paths.weather, weatherByArea);
 }
 
 // Re-rolls every area currently in 'auto' mode for `day` — areas in

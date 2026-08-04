@@ -88,6 +88,7 @@ import {
 } from './lib/textCascade.js';
 import { rollsProactiveText } from './lib/proactiveTexts.js';
 import { logger } from './lib/log.js';
+import { writeJsonAtomic, warnIfCorrupt } from './lib/jsonStore.js';
 import { relocateDataRoot, consolidatePerWorldExtras } from './lib/externalDataRoot.js';
 logger.setLevel("debug")
 
@@ -175,7 +176,8 @@ function loadConfig() {
   let cfg;
   try {
     cfg = { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8')) };
-  } catch {
+  } catch (err) {
+    warnIfCorrupt(CONFIG_PATH, err);
     cfg = { ...DEFAULT_CONFIG };
   }
   // Migrate the old single `provider` string (pre-multi-provider) into the
@@ -184,7 +186,7 @@ function loadConfig() {
   return cfg;
 }
 function saveConfig(cfg) {
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+  writeJsonAtomic(CONFIG_PATH, cfg);
 }
 if (!fs.existsSync(CONFIG_PATH)) saveConfig(DEFAULT_CONFIG);
 
@@ -233,14 +235,15 @@ function loadPlaces(w) {
   let raw;
   try {
     raw = JSON.parse(fs.readFileSync(w.paths.places, 'utf-8'));
-  } catch {
+  } catch (err) {
+    warnIfCorrupt(w.paths.places, err);
     raw = SEED_PLACES;
     savePlaces(w, raw);
   }
   return raw.map(normalizePlace);
 }
 function savePlaces(w, list) {
-  fs.writeFileSync(w.paths.places, JSON.stringify(list, null, 2));
+  writeJsonAtomic(w.paths.places, list);
 }
 
 function slugify(name) {
@@ -304,14 +307,15 @@ function loadCharacters(w) {
   let raw;
   try {
     raw = JSON.parse(fs.readFileSync(w.paths.characters, 'utf-8'));
-  } catch {
+  } catch (err) {
+    warnIfCorrupt(w.paths.characters, err);
     raw = BUILTIN_CHARACTERS;
     saveCharacters(w, raw);
   }
   return raw.map(normalizeCharacter);
 }
 function saveCharacters(w, list) {
-  fs.writeFileSync(w.paths.characters, JSON.stringify(list, null, 2));
+  writeJsonAtomic(w.paths.characters, list);
 }
 
 // World state: placements + the in-world clock + the global setting text.
@@ -327,14 +331,15 @@ function normalizeWorld(world) {
 function loadWorld(w) {
   try {
     return normalizeWorld(JSON.parse(fs.readFileSync(w.paths.world, 'utf-8')));
-  } catch {
+  } catch (err) {
+    warnIfCorrupt(w.paths.world, err);
     const world = normalizeWorld({ placements: DEFAULT_PLACEMENTS });
     saveWorld(w, world);
     return world;
   }
 }
 function saveWorld(w, world) {
-  fs.writeFileSync(w.paths.world, JSON.stringify(world, null, 2));
+  writeJsonAtomic(w.paths.world, world);
 }
 
 // --- Personas ---------------------------------------------------------
@@ -348,13 +353,14 @@ const DEFAULT_PERSONAS = { personas: [], activePersonaId: null };
 function loadPersonas(w) {
   try {
     return { ...DEFAULT_PERSONAS, ...JSON.parse(fs.readFileSync(w.paths.personas, 'utf-8')) };
-  } catch {
+  } catch (err) {
+    warnIfCorrupt(w.paths.personas, err);
     savePersonas(w, DEFAULT_PERSONAS);
     return { ...DEFAULT_PERSONAS };
   }
 }
 function savePersonas(w, data) {
-  fs.writeFileSync(w.paths.personas, JSON.stringify(data, null, 2));
+  writeJsonAtomic(w.paths.personas, data);
 }
 
 const EXT_FOR_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
@@ -376,13 +382,14 @@ const DEFAULT_PRESETS = { presets: [], activePresetId: null };
 function loadPresets() {
   try {
     return { ...DEFAULT_PRESETS, ...JSON.parse(fs.readFileSync(PRESETS_PATH, 'utf-8')) };
-  } catch {
+  } catch (err) {
+    warnIfCorrupt(PRESETS_PATH, err);
     savePresets(DEFAULT_PRESETS);
     return { ...DEFAULT_PRESETS };
   }
 }
 function savePresets(data) {
-  fs.writeFileSync(PRESETS_PATH, JSON.stringify(data, null, 2));
+  writeJsonAtomic(PRESETS_PATH, data);
 }
 
 // --- App ----------------------------------------------------------------

@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { writeJsonAtomic, warnIfCorrupt } from './jsonStore.js';
 
 // In-progress phone calls, keyed by the placeId the user was physically in
 // when the call started (that's whose chat log the call gets appended
@@ -23,11 +24,12 @@ import fs from 'fs';
 export function loadCalls(w) {
   try {
     return JSON.parse(fs.readFileSync(w.paths.calls, 'utf-8'));
-  } catch {
+  } catch (err) {
+    warnIfCorrupt(w.paths.calls, err);
     return {};
   }
 }
 
 export function saveCalls(w, calls) {
-  fs.writeFileSync(w.paths.calls, JSON.stringify(calls, null, 2));
+  writeJsonAtomic(w.paths.calls, calls);
 }

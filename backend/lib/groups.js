@@ -1,5 +1,6 @@
 import fs from 'fs';
 import crypto from 'crypto';
+import { writeJsonAtomic, warnIfCorrupt } from './jsonStore.js';
 
 // Group text conversations: { id, name, participantIds, createdAt }. Curated
 // authoring data (who's in the group, its name) — copied on world clone like
@@ -11,13 +12,14 @@ import crypto from 'crypto';
 export function loadGroups(w) {
   try {
     return JSON.parse(fs.readFileSync(w.paths.groups, 'utf-8'));
-  } catch {
+  } catch (err) {
+    warnIfCorrupt(w.paths.groups, err);
     return [];
   }
 }
 
 export function saveGroups(w, groups) {
-  fs.writeFileSync(w.paths.groups, JSON.stringify(groups, null, 2));
+  writeJsonAtomic(w.paths.groups, groups);
 }
 
 export function createGroup(groups, { name, participantIds }) {

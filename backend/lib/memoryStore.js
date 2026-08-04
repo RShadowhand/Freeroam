@@ -378,14 +378,29 @@ export async function updateCharacterMemory({ db, embedFn, characterId, entryId,
 // correctly-shaped table.
 export async function rebuildAllMemoryEmbeddings({ db, embedFn }) {
   const rows = db.prepare('SELECT id, text FROM memories').all();
-  const update = db.prepare('UPDATE memories SET embedding = ? WHERE id = ?');
-  const getParticipants = db.prepare('SELECT character_id FROM memory_participants WHERE memory_id = ?');
+
+  // All the async embedding-model work happens first, outside any
+  // transaction (db.transaction() requires a synchronous callback) — only
+  // once every row's new vectors are computed do the actual DB writes run,
+  // wrapped in one transaction so a crash partway through can't leave some
+  // rows re-embedded and others stale.
+  const computed = [];
   for (const row of rows) {
     const { wholeTextBuffer, chunkBuffers } = await computeMemoryEmbeddings(embedFn, row.text);
-    update.run(wholeTextBuffer, row.id);
-    const participantIds = getParticipants.all(row.id).map((p) => p.character_id);
-    upsertMemoryVectors(db, row.id, participantIds, chunkBuffers);
+    computed.push({ id: row.id, wholeTextBuffer, chunkBuffers });
   }
+
+  const update = db.prepare('UPDATE memories SET embedding = ? WHERE id = ?');
+  const getParticipants = db.prepare('SELECT character_id FROM memory_participants WHERE memory_id = ?');
+  const applyAll = db.transaction(() => {
+    for (const { id, wholeTextBuffer, chunkBuffers } of computed) {
+      update.run(wholeTextBuffer, id);
+      const participantIds = getParticipants.all(id).map((p) => p.character_id);
+      upsertMemoryVectors(db, id, participantIds, chunkBuffers);
+    }
+  });
+  applyAll();
+
   return rows.length;
 }
 
@@ -438,17 +453,19 @@ export function deleteAllCharacterMemories(db, characterId) {
 // day/time prefix. A row left with no surviving entries is deleted outright
 // (its participants and entry links go with it).
 async function rebuildMemories({ db, embedFn, memoryIds, log, userLabel, formatEntry }) {
-  let rebuilt = 0;
+  // Same split as rebuildAllMemoryEmbeddings above: figure out what needs to
+  // happen to each row (delete, or recompute text + embeddings) first, doing
+  // all the async embedding-model work up front, then apply every resulting
+  // delete/update as one synchronous db.transaction() — a crash partway
+  // through updating several memories at once (e.g. everything one round
+  // witnessed) can no longer leave some rebuilt and others stale/orphaned.
+  const actions = [];
   for (const mid of memoryIds) {
     const linkedIds = db.prepare('SELECT entry_id FROM memory_entries WHERE memory_id = ?').all(mid).map((r) => r.entry_id);
     const entries = log.filter((e) => linkedIds.includes(e.id) && (e.type === 'system' || e.type === 'user' || e.type === 'char' || e.type === 'narrator'));
 
     if (!entries.length) {
-      db.prepare('DELETE FROM memories WHERE id = ?').run(mid);
-      db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(mid);
-      db.prepare('DELETE FROM memory_participants WHERE memory_id = ?').run(mid);
-      deleteMemoryVectors(db, mid);
-      logger.info('memory', `sync: memory ${mid} emptied by chat edits — deleted`);
+      actions.push({ type: 'delete', mid });
       continue;
     }
 
@@ -457,11 +474,27 @@ async function rebuildMemories({ db, embedFn, memoryIds, log, userLabel, formatE
     const text = timePrefix(row.day, row.time_of_day) + entries.map((e) => formatEntry(e, userLabel)).join('\n');
     const { wholeTextBuffer, chunkBuffers } = await computeMemoryEmbeddings(embedFn, text);
     const participantIds = db.prepare('SELECT character_id FROM memory_participants WHERE memory_id = ?').all(mid).map((r) => r.character_id);
-    db.prepare('UPDATE memories SET text = ?, embedding = ? WHERE id = ?')
-      .run(text, wholeTextBuffer, mid);
-    upsertMemoryVectors(db, mid, participantIds, chunkBuffers);
-    rebuilt += 1;
+    actions.push({ type: 'update', mid, text, wholeTextBuffer, chunkBuffers, participantIds });
   }
+
+  let rebuilt = 0;
+  const applyAll = db.transaction(() => {
+    for (const action of actions) {
+      if (action.type === 'delete') {
+        db.prepare('DELETE FROM memories WHERE id = ?').run(action.mid);
+        db.prepare('DELETE FROM memory_entries WHERE memory_id = ?').run(action.mid);
+        db.prepare('DELETE FROM memory_participants WHERE memory_id = ?').run(action.mid);
+        deleteMemoryVectors(db, action.mid);
+        logger.info('memory', `sync: memory ${action.mid} emptied by chat edits — deleted`);
+      } else {
+        db.prepare('UPDATE memories SET text = ?, embedding = ? WHERE id = ?').run(action.text, action.wholeTextBuffer, action.mid);
+        upsertMemoryVectors(db, action.mid, action.participantIds, action.chunkBuffers);
+        rebuilt += 1;
+      }
+    }
+  });
+  applyAll();
+
   return rebuilt;
 }
 
