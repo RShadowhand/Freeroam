@@ -3664,6 +3664,11 @@ async function narrateEmptyPlaceOrEcho({ w, placeId, place, signal }) {
       note = await attemptNarratorTurn({ w, cfg, place, presentIds: [], backgroundIds: [], charactersById: {}, log, signal });
     }
   }
+  // A cancel means Stop everywhere else in the app — persisting a fallback
+  // note despite it (attemptNarratorTurn treats a genuine cancel the same
+  // as "declined to speak," so this can't be told apart from that case any
+  // other way) would be the one place that didn't honor it.
+  if (signal?.aborted) return;
   if (!note) note = { type: 'system', text: 'Your words echo. No one is here to answer.' };
   appendPlaceChatEntries(w, placeId, [note]);
 }
@@ -3684,6 +3689,9 @@ async function recordSilentRound({ w, placeId, place, presentIds, charactersById
       note = await attemptNarratorTurn({ w, cfg, place, presentIds, backgroundIds: presentIds, charactersById, log, signal });
     }
   }
+  // Same cancel guard as narrateEmptyPlaceOrEcho — see its comment. Skips
+  // both the fallback note AND the memory recording below.
+  if (signal?.aborted) return;
   if (!note) note = { type: 'system', text: 'No one reacts.' };
 
   const time = loadWorld(w).time; // loaded once, reused below — recordRound wants it too
@@ -3859,6 +3867,36 @@ app.post('/api/places/:placeId/enter', (req, res) => {
 // the present characters' response — as SSE when streaming is enabled in
 // Settings, as one JSON response otherwise. The user's line persists even
 // when generation fails.
+// /say and /retry both can hit a "nobody to react" branch (an empty place,
+// or everyone present is inactive) that has nothing to stream turn-by-turn
+// — just one atomic narrator-or-fallback note. These branches used to
+// always answer with a plain JSON body regardless of cfg.streaming — but
+// the frontend decides whether to fetch via the streaming or non-streaming
+// path *before* it knows the room's character state (see chat.js's
+// sendMessage/retryMessage), so a streaming client parsing a plain JSON
+// body through its SSE reader/parser gets zero events back. That left
+// `this.logs[placeId]` stuck on the id-less optimistic placeholder chat.js
+// pushed for the user's own line — un-deletable/un-editable (both require
+// a real id) until the user left and re-entered the place. Mirrors the
+// main round's own ack/done SSE shape either way, so both response modes
+// behave identically here too.
+async function respondAfterSilentBranch({ res, w, placeId, signal, cfg, runBranch }) {
+  if (cfg.streaming && cfg.apiKey) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    send({ type: 'ack', log: loadChatLog(w.chatDir, placeId) });
+    await runBranch();
+    if (!signal.aborted) send({ type: 'done', log: loadChatLog(w.chatDir, placeId) });
+    res.end();
+    return;
+  }
+  await runBranch();
+  if (!signal.aborted) res.json({ log: loadChatLog(w.chatDir, placeId) });
+}
+
 app.post('/api/places/:placeId/say', async (req, res) => {
   const w = req.world;
   const { placeId } = req.params;
@@ -3886,18 +3924,23 @@ app.post('/api/places/:placeId/say', async (req, res) => {
   maybeSendProactiveTexts(w, charIds);
 
   const signal = requestCancelSignal(req, res);
+  const cfg = loadConfig();
 
   if (!charIds.length) {
-    await narrateEmptyPlaceOrEcho({ w, placeId, place, signal });
-    return res.json({ log: loadChatLog(w.chatDir, placeId) });
+    await respondAfterSilentBranch({
+      res, w, placeId, signal, cfg, runBranch: () => narrateEmptyPlaceOrEcho({ w, placeId, place, signal }),
+    });
+    return;
   }
 
   if (!activeIds.length) {
-    await recordSilentRound({ w, placeId, place, presentIds: charIds, charactersById, turnEntries, signal });
-    return res.json({ log: loadChatLog(w.chatDir, placeId) });
+    await respondAfterSilentBranch({
+      res, w, placeId, signal, cfg,
+      runBranch: () => recordSilentRound({ w, placeId, place, presentIds: charIds, charactersById, turnEntries, signal }),
+    });
+    return;
   }
 
-  const cfg = loadConfig();
   if (cfg.streaming && cfg.apiKey) {
     // SSE: speaker/delta/turn events per character, then a final done event
     // with the authoritative log (and the error, if a turn failed midway).
@@ -3968,20 +4011,24 @@ app.post('/api/places/:placeId/retry', async (req, res) => {
   }
 
   const signal = requestCancelSignal(req, res);
-
-  if (!charIds.length) {
-    await narrateEmptyPlaceOrEcho({ w, placeId, place, signal });
-    return res.json({ log: loadChatLog(w.chatDir, placeId) });
-  }
-
+  const cfg = loadConfig();
   const turnEntriesSoFar = [log[lastUserIdx]];
 
-  if (!activeIds.length) {
-    await recordSilentRound({ w, placeId, place, presentIds: charIds, charactersById, turnEntries: turnEntriesSoFar, signal });
-    return res.json({ log: loadChatLog(w.chatDir, placeId) });
+  if (!charIds.length) {
+    await respondAfterSilentBranch({
+      res, w, placeId, signal, cfg, runBranch: () => narrateEmptyPlaceOrEcho({ w, placeId, place, signal }),
+    });
+    return;
   }
 
-  const cfg = loadConfig();
+  if (!activeIds.length) {
+    await respondAfterSilentBranch({
+      res, w, placeId, signal, cfg,
+      runBranch: () => recordSilentRound({ w, placeId, place, presentIds: charIds, charactersById, turnEntries: turnEntriesSoFar, signal }),
+    });
+    return;
+  }
+
   if (cfg.streaming && cfg.apiKey) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');

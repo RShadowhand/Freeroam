@@ -1182,6 +1182,61 @@ describe('Persisted chat: /api/places/:placeId/enter, /say, GET /chat', () => {
     const { log } = await (await postJson(`/api/places/${place.id}/enter`, {})).json();
     assert.ok(log[0].id);
   });
+
+  // "Nobody to react" branches (empty place / all-inactive) used to always
+  // answer with plain JSON regardless of cfg.streaming — but the frontend
+  // picks its fetch path *before* knowing the room's character state, so a
+  // streaming client parsing a plain-JSON body through its SSE reader got
+  // zero events, leaving the user's own line stuck on the id-less
+  // optimistic placeholder (un-deletable/un-editable until leaving and
+  // re-entering the place). See respondAfterSilentBranch in server.js.
+  function parseSseFrames(body) {
+    return body.split('\n\n').filter(Boolean).map((f) => JSON.parse(f.replace(/^data: /, '')));
+  }
+
+  test('an empty-place say with streaming enabled responds as valid SSE carrying a real-id user line', async () => {
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real', streaming: true, narratorEnabled: false });
+    const place = await makePlace('Streaming Empty Hall');
+
+    const res = await fetch(`${baseUrl}/api/places/${place.id}/say`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Hello?' }),
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') || '', /text\/event-stream/);
+
+    const frames = parseSseFrames(await res.text());
+    const doneFrame = frames.find((f) => f.type === 'done');
+    assert.ok(doneFrame, 'expected a done event in the SSE stream');
+    const userEntry = doneFrame.log.find((e) => e.type === 'user');
+    assert.ok(userEntry?.id, 'the user line must carry a real id, not the id-less optimistic placeholder shape');
+
+    await postJson('/api/settings', { streaming: false, narratorEnabled: true });
+    await postJson('/api/settings/clear-key', {});
+  });
+
+  test('an all-inactive-present say with streaming enabled also responds as valid SSE carrying a real-id user line', async () => {
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real', streaming: true, narratorEnabled: false });
+    const place = await makePlace('Streaming Inactive Hall');
+    const character = await placeCharacter('Streaming Inactive Occupant', place.id);
+    await fetch(`${baseUrl}/api/characters/${character.id}/place`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: false }),
+    });
+
+    const res = await fetch(`${baseUrl}/api/places/${place.id}/say`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Anyone?' }),
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') || '', /text\/event-stream/);
+
+    const frames = parseSseFrames(await res.text());
+    const doneFrame = frames.find((f) => f.type === 'done');
+    assert.ok(doneFrame, 'expected a done event in the SSE stream');
+    const userEntry = doneFrame.log.find((e) => e.type === 'user');
+    assert.ok(userEntry?.id, 'the user line must carry a real id, not the id-less optimistic placeholder shape');
+
+    await postJson('/api/settings', { streaming: false, narratorEnabled: true });
+    await postJson('/api/settings/clear-key', {});
+  });
 });
 
 describe('Persona-scoped "last place" (recordLastPlaceForActivePersona)', () => {
@@ -1639,6 +1694,40 @@ describe("Narrator uses the active preset's maxReplyTokens, not a fixed cap", ()
     assert.ok(capturedBody, 'expected the narrator to actually call the (mocked) endpoint');
     assert.equal(capturedBody.max_tokens, 777);
     assert.ok(log.some((e) => e.type === 'narrator' && e.text === 'A narrator line.'));
+
+    await postJson('/api/settings/clear-key', {});
+  });
+
+  test('cancelling mid-narrator-call in a silent round persists no fallback note and records no memory', async (t) => {
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+    const place = await makePlace('Cancelled Silent Round Hall');
+    const char = await placeCharacter('Cancelled Occupant', place.id);
+    await setActive(char.id, false); // background-only -> hits recordSilentRound unconditionally
+
+    // Hangs until the request's own AbortSignal fires, then rejects the
+    // same way a real aborted fetch would — exercises the real
+    // res.on('close') -> signal -> callOpenRouter cancellation path.
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch((url, opts) => new Promise((resolve, reject) => {
+      opts.signal?.addEventListener('abort', () => {
+        reject(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }));
+      });
+    })));
+
+    const controller = new AbortController();
+    const sayPromise = fetch(`${baseUrl}/api/places/${place.id}/say`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Anyone?' }), signal: controller.signal,
+    });
+    await new Promise((r) => setTimeout(r, 30)); // let the request land and start the (hung) narrator call
+    controller.abort();
+    await assert.rejects(sayPromise);
+
+    // Give the server a moment to process the abort.
+    await new Promise((r) => setTimeout(r, 50));
+    const { log } = await (await fetch(`${baseUrl}/api/places/${place.id}/chat`)).json();
+    assert.ok(!log.some((e) => e.text === 'No one reacts.'), 'a cancelled silent round should not persist the fallback note');
+
+    const { memories } = await (await fetch(`${baseUrl}/api/memory/${char.id}`)).json();
+    assert.ok(!memories.some((m) => m.text.includes('Anyone?')), 'a cancelled silent round should not record a memory either');
 
     await postJson('/api/settings/clear-key', {});
   });
