@@ -1,12 +1,12 @@
 ---
 created: 2026-08-04T21:08:21.000Z
-updated: 2026-08-04T21:34:37.000Z
-completed: 2026-08-04T21:34:37.000Z
+updated: 2026-08-05T10:04:12.777Z
 assigned: ""
-progress: 0
+progress: 1
 tags:
   - 'priority:medium'
   - 'workload:Normal'
+completed: 2026-08-05T00:00:00.000Z
 ---
 
 # Feature: Prevent changing world/area during response generation (found + fixed the silent-failure report)
@@ -36,3 +36,7 @@ bugs in the boot-time picker specifically) and fixed; see steps above.
   date: 2026-08-04T21:34:37.000Z
   fromColumn: Needs Human Testing
   toColumn: Done
+- type: progress
+  date: 2026-08-05T10:03:49.923Z
+  fromProgress: 0
+  toProgress: 1
