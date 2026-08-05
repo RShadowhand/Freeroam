@@ -168,6 +168,80 @@ describe('Groups: cancelling a send', () => {
   });
 });
 
+describe('Groups: triggering a proactive text', () => {
+  let group;
+
+  before(async () => {
+    // Same reasoning as the cascade describe block below: keep
+    // maybeSendProactiveTexts from consuming extra Math.random() calls
+    // that would shift the sequences below, which are meant entirely for
+    // the trigger's own random-participant pick plus the cascade's rolls.
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real', textingChancePerChar: 0 });
+    ({ group } = await (await postJson('/api/groups', { name: 'Trigger Test', participantIds: ['ezra', 'mireille'] })).json());
+  });
+  after(async () => {
+    await postJson('/api/settings/clear-key', {});
+  });
+
+  test('404s for an unknown group', async () => {
+    const res = await postJson('/api/groups/not-a-real-id/trigger', {});
+    assert.equal(res.status, 404);
+  });
+
+  test('rejects a characterId that is not a member of the group', async () => {
+    const res = await postJson(`/api/groups/${group.id}/trigger`, { characterId: 'soot' });
+    assert.equal(res.status, 400);
+  });
+
+  test("a specific characterId generates that character's message as the trigger, with no forced continuation", async (t) => {
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () => new Response(
+      JSON.stringify({ choices: [{ message: { content: 'Hey, thought of something.' } }] }), { status: 200 },
+    )));
+    // No random() is spent picking who triggers (characterId is given) —
+    // the only roll here is the cascade's own "continue?" check: stop (0.99).
+    t.mock.method(Math, 'random', mockRandomSequence([0.99]));
+
+    const res = await postJson(`/api/groups/${group.id}/trigger`, { characterId: 'ezra' });
+    assert.equal(res.status, 200);
+    const { log } = await res.json();
+    const charEntries = log.filter((e) => e.type === 'char');
+    assert.equal(charEntries.length, 1);
+    assert.equal(charEntries[0].charId, 'ezra');
+    assert.equal(charEntries[0].text, 'Hey, thought of something.');
+  });
+
+  test('an omitted characterId picks a random participant, and the message can still kick off a cascade', async (t) => {
+    let call = 0;
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () => {
+      call += 1;
+      const text = call === 1 ? 'Random trigger line.' : 'A reply to it.';
+      return new Response(JSON.stringify({ choices: [{ message: { content: text } }] }), { status: 200 });
+    }));
+    // pick 1 (mireille, index 1 of 2) as who triggers; then the cascade:
+    // continue (0), pick ezra (0 -> index 0), stop (0.99)
+    t.mock.method(Math, 'random', mockRandomSequence([0.6, 0, 0, 0.99]));
+
+    const res = await postJson(`/api/groups/${group.id}/trigger`, {});
+    assert.equal(res.status, 200);
+    const { log } = await res.json();
+    const charEntries = log.filter((e) => e.type === 'char').slice(-2);
+    assert.equal(charEntries[0].charId, 'mireille');
+    assert.equal(charEntries[0].text, 'Random trigger line.');
+    assert.equal(charEntries[1].charId, 'ezra');
+    assert.equal(charEntries[1].text, 'A reply to it.');
+  });
+});
+
+describe('Groups: triggering without an API key', () => {
+  test('rejects with a clear error rather than a generic 500', async () => {
+    const { group } = await (await postJson('/api/groups', { name: 'No Key Trigger Group', participantIds: ['ezra', 'mireille'] })).json();
+    const res = await postJson(`/api/groups/${group.id}/trigger`, {});
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.match(data.error, /API key/i);
+  });
+});
+
 describe('Groups: the cascade (OpenRouter + Math.random mocked)', () => {
   let group;
 

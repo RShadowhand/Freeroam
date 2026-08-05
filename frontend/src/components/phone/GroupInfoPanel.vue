@@ -20,6 +20,11 @@ const error = ref('');
 const status = ref('');
 const addingId = ref('');
 const saving = ref(false);
+// A real generation call (see groups.js's triggerText), not the instant
+// roster/name edits `saving` above guards — its own loadingIds check, not
+// reused here, so nudging a member doesn't get blocked by (or block) an
+// unrelated in-flight rename/add/remove.
+const triggering = computed(() => groups.loadingIds.has(props.groupId));
 
 const members = computed(() => (group.value?.participantIds || []).map((id) => world.charactersById[id]).filter(Boolean));
 // Same "known" pool NewGroupForm.vue uses, minus whoever's already in the group.
@@ -78,6 +83,17 @@ async function removeMember(id) {
     saving.value = false;
   }
 }
+
+// Random-member nudge lives here too (not just per-member) since this
+// panel is the one place the full roster is visible at a glance.
+function nudgeRandom() {
+  if (!group.value || triggering.value) return;
+  groups.triggerText(props.groupId);
+}
+function nudgeMember(id) {
+  if (triggering.value) return;
+  groups.triggerText(props.groupId, id);
+}
 </script>
 
 <template>
@@ -96,6 +112,10 @@ async function removeMember(id) {
       <div class="new-group-option" v-for="m in members" :key="m.id" style="cursor:default;">
         <CardAvatar :name="m.name" :avatar-url="m.avatarUrl" :color="m.color" />
         <span style="flex:1;">{{ m.name }}</span>
+        <span
+          class="phone-nudge-btn" role="button" tabindex="0"
+          :aria-disabled="triggering" title="Nudge them to text the group now" @click="nudgeMember(m.id)"
+        >📨</span>
         <button class="chip-remove" type="button" title="Remove from group" :disabled="saving" @click="removeMember(m.id)">✕</button>
       </div>
     </div>
@@ -107,6 +127,10 @@ async function removeMember(id) {
       </select>
       <button class="btn secondary small" :disabled="saving" @click="addMember">Add</button>
     </div>
+
+    <button class="btn secondary small" type="button" :disabled="triggering" @click="nudgeRandom">
+      {{ triggering ? 'Texting…' : '📨 Nudge a random member' }}
+    </button>
 
     <span class="new-group-error" v-if="error">{{ error }}</span>
     <span class="form-status" v-if="status">{{ status }}</span>

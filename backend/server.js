@@ -2144,6 +2144,51 @@ async function generateGroupReply({ w, cfg, group, replierId, character, charact
   return entry;
 }
 
+// A character spontaneously texting first into a GROUP conversation,
+// unprompted — the group-text counterpart to generateProactiveText's 1-on-1
+// version, scoped to the group's own shared history (groupHistoryFromLog)
+// via buildTextingMessages' groupMembers + proactive flags together (they're
+// independent scene dimensions, already composable — see texting.js). The
+// resulting entry becomes the cascade's own trigger message (see
+// runGroupCascade's triggerSpeakerId — its own comment already anticipated
+// this exact feature), so it doesn't record memory on its own; the /trigger
+// route below records the whole round afterward, same as /send does for a
+// user-triggered one.
+async function generateProactiveGroupText({ w, cfg, group, replierId, character, charactersById, turnContext }) {
+  const { world, placesById, activePersona } = turnContext;
+  const personaLabel = activePersona ? activePersona.name : 'Visitor';
+  const log = loadChatLog(w.textsDir, group.id);
+
+  const memoryQuery = `${character.name} decides to text the group out of the blue.`;
+  let memories = [];
+  try {
+    memories = await retrieveMemories({ db: w.db, embedFn: embed, characterIds: [replierId], query: memoryQuery, minScore: cfg.memoryMinScore });
+  } catch (err) {
+    logger.warn('memory', `proactive group text retrieval failed, continuing without memories: ${err.message}`);
+  }
+
+  const relationships = await relationshipKnowledge(w, replierId, charactersById, placesById, world, activePersona ? activePersona.name : null, memoryQuery);
+  const groupMembers = group.participantIds.filter((id) => id !== replierId).map((id) => charactersById[id]?.name).filter(Boolean);
+
+  const messages = buildTextingMessages({
+    char: character,
+    persona: activePersona ? { name: activePersona.name, description: activePersona.description } : null,
+    memories, relationships, time: world.time, groupMembers, proactive: true,
+    textingPromptTemplate: publicConfig(cfg).textingPromptTemplate,
+  }, groupHistoryFromLog(log, replierId, personaLabel));
+
+  const { text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (proactive group text)`);
+
+  const entry = {
+    type: 'char', charId: replierId, name: character.name, text: (text || '').trim(),
+    day: world.time.day, timeOfDay: world.time.timeOfDay,
+  };
+  const stats = buildGenerationStats(usage, timing);
+  if (stats) entry.stats = stats;
+  appendTextsEntries(w, group.id, [entry]);
+  return entry;
+}
+
 // Runs the reply cascade after any message lands in a group text — the
 // user's own message today, or (once Phase 5 exists) a character's
 // proactive one, which is why triggerSpeakerId isn't hardcoded to 'user'.
@@ -2340,6 +2385,61 @@ app.post('/api/groups/:groupId/retry', async (req, res) => {
   if (!signal.aborted) {
     res.json({ log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
   }
+});
+
+// Manual "make someone text first" — the group-chat counterpart to 1-on-1
+// texting's /api/texts/:characterId/trigger (same deliberate simplicity: no
+// streaming, no cancel signal, matching that route's own precedent for a
+// "nudge" action). characterId is optional — with none given, one is picked
+// randomly from the group's own participants. The resulting message becomes
+// the cascade's own trigger (runGroupCascade's triggerSpeakerId), so the
+// rest of the group can naturally react to it same as they would a user
+// message.
+app.post('/api/groups/:groupId/trigger', async (req, res) => {
+  const w = req.world;
+  const { groupId } = req.params;
+  const { characterId } = req.body || {};
+
+  const group = loadGroups(w).find((g) => g.id === groupId);
+  if (!group) return res.status(404).json({ error: 'Group not found.' });
+
+  const charactersById = {};
+  loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+
+  let replierId = characterId;
+  if (replierId) {
+    if (!group.participantIds.includes(replierId)) {
+      return res.status(400).json({ error: 'That character is not a member of this group.' });
+    }
+  } else {
+    replierId = group.participantIds[Math.floor(Math.random() * group.participantIds.length)];
+  }
+  const character = charactersById[replierId];
+  if (!character) return res.status(404).json({ error: 'Character not found.' });
+
+  const cfg = loadConfig();
+  if (!cfg.apiKey) return res.status(400).json({ error: 'No API key configured. Add one in Settings.' });
+
+  const turnContext = loadGroupTurnContext(w);
+  const { activePersona, activePersonaId, world } = turnContext;
+  const userLabel = activePersona ? activePersona.name : 'Visitor';
+
+  let triggerEntry;
+  try {
+    triggerEntry = await generateProactiveGroupText({ w, cfg, group, replierId, character, charactersById, turnContext });
+  } catch (err) {
+    return res.status(502).json({ error: err.message });
+  }
+  logger.info('chat', `group proactive trigger: ${character.name} -> ${group.name}`);
+  // Same "give everyone else a chance too" call /send makes — a group's own
+  // participants are excluded since the cascade below already covers them.
+  maybeSendProactiveTexts(w, group.participantIds);
+
+  const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: replierId });
+  if (!result.cancelled) {
+    recordGroupRound(w, { group, triggerEntry, cascadeEntries: result.entries, userLabel, activePersonaId, time: world.time });
+  }
+  res.json({ log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
 });
 
 // Deletes one message from a group's log — mirrors

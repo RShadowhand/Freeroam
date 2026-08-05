@@ -16,6 +16,7 @@ completedColumns:
 ## Done
 
 - [feature-add-import-character-from-chub-ai-botbooru-option](tasks/feature-add-import-character-from-chub-ai-botbooru-option.md)
+- [feature-trigger-proactive-text-to-group-chats](tasks/feature-trigger-proactive-text-to-group-chats.md)
 - [feature-prevent-changing-world-area-during-response-generation-found-fixed-the-silent-failure-report](tasks/feature-prevent-changing-world-area-during-response-generation-found-fixed-the-silent-failure-report.md)
 - [fix-issues-md-1-—-long-character-names-break-reply-multiplex-detection](tasks/fix-issues-md-1-—-long-character-names-break-reply-multiplex-detection.md)
 - [fix-issues-md-2-—-typo-in-chat-js-error-messages-goes-wrong](tasks/fix-issues-md-2-—-typo-in-chat-js-error-messages-goes-wrong.md)

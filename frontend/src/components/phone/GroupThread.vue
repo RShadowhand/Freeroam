@@ -129,6 +129,13 @@ function stop() {
 function dismissError(entryId) {
   groups.removeError(props.groupId, entryId);
 }
+// Random-member nudge, right from the thread header — see GroupInfoPanel.vue
+// for the per-specific-member version. Guarded by isLoadingHere (same field
+// groups.js's triggerText itself guards on), same as Send/Retry below.
+function nudgeRandom() {
+  if (isLoadingHere.value) return;
+  groups.triggerText(props.groupId);
+}
 </script>
 
 <template>
@@ -138,6 +145,10 @@ function dismissError(entryId) {
       <button class="phone-back" type="button" @click="emit('back')">‹ Contacts</button>
       <span class="group-icon">👥</span>
       <span class="phone-thread-name">{{ group.name }}</span>
+      <button
+        class="phone-info-btn" type="button" title="Nudge a random member to text the group now"
+        :disabled="isLoadingHere" @click="nudgeRandom"
+      >📨</button>
       <button class="phone-info-btn" type="button" title="Group info" @click="showInfo = true">ⓘ</button>
     </div>
 

@@ -7,6 +7,9 @@ export const getGroupLog = (groupId) => apiGet(`/api/groups/${encodeURIComponent
 export const updateGroupApi = (groupId, body) => apiJson(`/api/groups/${encodeURIComponent(groupId)}`, 'PUT', body);
 export const sendGroupTextApi = (groupId, body, signal) => apiJson(`/api/groups/${encodeURIComponent(groupId)}/send`, 'POST', body, { signal });
 export const retryGroupApi = (groupId, signal) => apiJson(`/api/groups/${encodeURIComponent(groupId)}/retry`, 'POST', {}, { signal });
+// characterId omitted -> backend picks a random participant.
+export const triggerGroupApi = (groupId, characterId = null) =>
+  apiJson(`/api/groups/${encodeURIComponent(groupId)}/trigger`, 'POST', characterId ? { characterId } : {});
 export const deleteGroupApi = (groupId) => apiDelete(`/api/groups/${encodeURIComponent(groupId)}`);
 export const deleteGroupMessageApi = (groupId, entryId) =>
   apiDelete(`/api/groups/${encodeURIComponent(groupId)}/messages/${encodeURIComponent(entryId)}`);

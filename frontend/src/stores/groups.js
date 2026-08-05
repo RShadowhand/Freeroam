@@ -5,7 +5,7 @@ import { handleUnknownWorld } from '../api/http';
 import { parseSseEvents } from '../utils/sse';
 import {
   getGroups, createGroupApi, getGroupLog, updateGroupApi, sendGroupTextApi, sendGroupTextStreamRequest,
-  retryGroupApi, retryGroupStreamRequest, deleteGroupApi, deleteGroupMessageApi,
+  retryGroupApi, retryGroupStreamRequest, deleteGroupApi, deleteGroupMessageApi, triggerGroupApi,
 } from '../api/groups';
 
 // Group text conversations — same stored-log shape as stores/phone.js's
@@ -214,6 +214,28 @@ export const useGroupsStore = defineStore('groups', {
       } finally {
         this.clearStreamingStateFor(groupId);
         this.abortControllers.delete(groupId);
+        this.loadingIds.delete(groupId);
+      }
+    },
+
+    // Manual "make someone text first" — characterId omitted asks the
+    // backend to pick a random participant. Deliberately non-streaming, no
+    // AbortController — same simplicity as 1-on-1 texting's own triggerText
+    // (phone.js), just guarded by loadingIds like every other group action
+    // here since it's a real generation call, not an instant local one.
+    async triggerText(groupId, characterId = null) {
+      if (this.loadingIds.has(groupId)) return { ok: false, data: {} };
+      this.loadingIds.add(groupId);
+      try {
+        const { ok, data } = await triggerGroupApi(groupId, characterId);
+        if (ok) {
+          this.logs[groupId] = data.log;
+          if (data.error) useUiStore().showError(data.error);
+        } else {
+          useUiStore().showError(data.error || 'Could not trigger a text.');
+        }
+        return { ok, data };
+      } finally {
         this.loadingIds.delete(groupId);
       }
     },
