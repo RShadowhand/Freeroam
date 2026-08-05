@@ -35,6 +35,7 @@ export const useSettingsStore = defineStore('settings', {
     cascadeBaseChance: 0.85,
     cascadeDecayRate: 0.98,
     cascadePerCharacterCap: 2,
+    groupCascadeManualApproval: false,
     textingChancePerChar: 0.002,
   }),
   getters: {
@@ -65,6 +66,7 @@ export const useSettingsStore = defineStore('settings', {
       this.cascadeBaseChance = Number.isFinite(data.cascadeBaseChance) ? data.cascadeBaseChance : 0.85;
       this.cascadeDecayRate = Number.isFinite(data.cascadeDecayRate) ? data.cascadeDecayRate : 0.98;
       this.cascadePerCharacterCap = Number.isInteger(data.cascadePerCharacterCap) ? data.cascadePerCharacterCap : 2;
+      this.groupCascadeManualApproval = !!data.groupCascadeManualApproval;
       this.textingChancePerChar = Number.isFinite(data.textingChancePerChar) ? data.textingChancePerChar : 0.002;
       await this.loadAvailableProviders();
     },
@@ -158,6 +160,10 @@ export const useSettingsStore = defineStore('settings', {
       this.cascadeBaseChance = data.cascadeBaseChance;
       this.cascadeDecayRate = data.cascadeDecayRate;
       this.cascadePerCharacterCap = data.cascadePerCharacterCap;
+    },
+    async setGroupCascadeManualApproval(enabled) {
+      this.groupCascadeManualApproval = enabled;
+      await saveSettings({ groupCascadeManualApproval: enabled });
     },
     async setTextingChancePerChar(value) {
       const { data } = await saveSettings({ textingChancePerChar: value });

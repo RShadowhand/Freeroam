@@ -107,6 +107,18 @@ async function saveProactiveChance() {
       <span class="form-status">{{ cascadeStatus }}</span>
     </div>
 
+    <div class="checkbox-field" style="margin-top:12px;">
+      <input
+        type="checkbox" id="groupCascadeManualApproval" v-model="settings.groupCascadeManualApproval"
+        @change="settings.setGroupCascadeManualApproval(settings.groupCascadeManualApproval)"
+      >
+      <label for="groupCascadeManualApproval">Ask before every cascade reply ("X wants to respond, allow?")</label>
+    </div>
+    <p class="hint">
+      Off by default. When on, nobody replies automatically — you'll get a prompt for each character the cascade
+      picks, with an option to allow just that one reply or auto-allow the rest of that cascade.
+    </p>
+
     <h3 style="margin-top:18px;">Proactive texts</h3>
     <p class="hint">
       Each time you say something (in a place, or in a text thread), every character not already part of that

@@ -84,8 +84,7 @@ import { colorForId } from './lib/textUtils.js';
 import { loadCalls, saveCalls } from './lib/calls.js';
 import { loadGroups, saveGroups, createGroup } from './lib/groups.js';
 import {
-  DEFAULT_CASCADE_BASE_CHANCE, DEFAULT_CASCADE_DECAY_RATE, DEFAULT_CASCADE_PER_CHARACTER_CAP, MAX_CASCADE_REPLIES,
-  nextCascadeChance, rollContinues, eligibleReplierIds, pickReplier,
+  DEFAULT_CASCADE_BASE_CHANCE, DEFAULT_CASCADE_DECAY_RATE, DEFAULT_CASCADE_PER_CHARACTER_CAP, nextCascadeStep,
 } from './lib/textCascade.js';
 import { rollsProactiveText } from './lib/proactiveTexts.js';
 import { logger } from './lib/log.js';
@@ -161,6 +160,7 @@ const DEFAULT_CONFIG = {
   cascadeBaseChance: DEFAULT_CASCADE_BASE_CHANCE,       // Phase 4 — see lib/textCascade.js
   cascadeDecayRate: DEFAULT_CASCADE_DECAY_RATE,
   cascadePerCharacterCap: DEFAULT_CASCADE_PER_CHARACTER_CAP,
+  groupCascadeManualApproval: false,    // opt-in — pause before every cascade reply for "X wants to respond, allow?"
   textingChancePerChar: 0.002,           // Phase 5 — per-character odds of a spontaneous text on each user input
   onboarded: false,                     // whether the first-run tour has been seen/skipped — global, not per-browser
 };
@@ -534,6 +534,7 @@ function publicConfig(cfg) {
     cascadeBaseChance: Number.isFinite(cfg.cascadeBaseChance) ? cfg.cascadeBaseChance : DEFAULT_CASCADE_BASE_CHANCE,
     cascadeDecayRate: Number.isFinite(cfg.cascadeDecayRate) ? cfg.cascadeDecayRate : DEFAULT_CASCADE_DECAY_RATE,
     cascadePerCharacterCap: Number.isInteger(cfg.cascadePerCharacterCap) ? cfg.cascadePerCharacterCap : DEFAULT_CASCADE_PER_CHARACTER_CAP,
+    groupCascadeManualApproval: !!cfg.groupCascadeManualApproval,
     textingChancePerChar: Number.isFinite(cfg.textingChancePerChar) ? cfg.textingChancePerChar : DEFAULT_CONFIG.textingChancePerChar,
     onboarded: !!cfg.onboarded,
   };
@@ -548,7 +549,7 @@ app.post('/api/settings', (req, res) => {
   const {
     apiKey, model, apiBase, streaming, reasoning, providers, memoryMinScore, suggestedActionsMode,
     draftPersonaPrompt, narratorEnabled, textingPromptTemplate, textingTypingIndicator,
-    cascadeBaseChance, cascadeDecayRate, cascadePerCharacterCap, textingChancePerChar, onboarded,
+    cascadeBaseChance, cascadeDecayRate, cascadePerCharacterCap, groupCascadeManualApproval, textingChancePerChar, onboarded,
   } = req.body || {};
   if (typeof apiKey === 'string' && apiKey.trim()) cfg.apiKey = apiKey.trim();
   if (typeof model === 'string' && model.trim()) cfg.model = model.trim();
@@ -577,6 +578,7 @@ app.post('/api/settings', (req, res) => {
   if (typeof cascadePerCharacterCap === 'number' && Number.isInteger(cascadePerCharacterCap)) {
     cfg.cascadePerCharacterCap = Math.max(1, cascadePerCharacterCap);
   }
+  if (typeof groupCascadeManualApproval === 'boolean') cfg.groupCascadeManualApproval = groupCascadeManualApproval;
   if (typeof textingChancePerChar === 'number' && Number.isFinite(textingChancePerChar)) {
     cfg.textingChancePerChar = Math.max(0, Math.min(1, textingChancePerChar));
   }
@@ -2064,7 +2066,12 @@ app.get('/api/groups/:groupId', (req, res) => {
   const w = req.world;
   const group = loadGroups(w).find((g) => g.id === req.params.groupId);
   if (!group) return res.status(404).json({ error: 'Group not found.' });
-  res.json({ group, log: loadChatLog(w.textsDir, group.id) });
+  // Surfaces a reply that was still awaiting allow/deny the last time this
+  // conversation was open (see pendingCascadeSteps) — reopening the thread
+  // re-shows the same prompt instead of it silently vanishing.
+  const pending = pendingCascadeSteps.get(group.id);
+  const pendingReply = pending ? { charId: pending.replierId, name: loadCharacters(w).find((c) => c.id === pending.replierId)?.name || null } : null;
+  res.json({ group, log: loadChatLog(w.textsDir, group.id), ...(pendingReply ? { pendingReply } : {}) });
 });
 
 app.delete('/api/groups/:groupId', (req, res) => {
@@ -2072,6 +2079,7 @@ app.delete('/api/groups/:groupId', (req, res) => {
   const groups = loadGroups(w);
   const group = groups.find((g) => g.id === req.params.groupId);
   if (!group) return res.status(404).json({ error: 'Group not found.' });
+  pendingCascadeSteps.delete(group.id);
   saveGroups(w, groups.filter((g) => g.id !== group.id));
   deleteTextsLog(w, group.id);
   res.json({ ok: true });
@@ -2154,7 +2162,7 @@ async function generateGroupReply({ w, cfg, group, replierId, character, charact
 // this exact feature), so it doesn't record memory on its own; the /trigger
 // route below records the whole round afterward, same as /send does for a
 // user-triggered one.
-async function generateProactiveGroupText({ w, cfg, group, replierId, character, charactersById, turnContext }) {
+async function generateProactiveGroupText({ w, cfg, group, replierId, character, charactersById, turnContext, signal }) {
   const { world, placesById, activePersona } = turnContext;
   const personaLabel = activePersona ? activePersona.name : 'Visitor';
   const log = loadChatLog(w.textsDir, group.id);
@@ -2177,7 +2185,7 @@ async function generateProactiveGroupText({ w, cfg, group, replierId, character,
     textingPromptTemplate: publicConfig(cfg).textingPromptTemplate,
   }, groupHistoryFromLog(log, replierId, personaLabel));
 
-  const { text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (proactive group text)`);
+  const { text, usage, timing } = await callOpenRouter(cfg, messages, undefined, `${character.name} (proactive group text)`, signal);
 
   const entry = {
     type: 'char', charId: replierId, name: character.name, text: (text || '').trim(),
@@ -2189,32 +2197,42 @@ async function generateProactiveGroupText({ w, cfg, group, replierId, character,
   return entry;
 }
 
+// Where a fresh cascade starts counting from — triggerSpeakerId is 'user'
+// for a user-sent message, or a real character id for a character-initiated
+// one (the proactive-group-text feature); either way, an id nextCascadeStep
+// doesn't recognize as an actual group member (like the 'user' sentinel)
+// means there's no consecutive-reply streak to protect yet.
+function normalizeTriggerSpeaker(charactersById, triggerSpeakerId) {
+  const lastSpeakerId = charactersById[triggerSpeakerId] ? triggerSpeakerId : null;
+  return { lastSpeakerId, lastSpeakerStreak: lastSpeakerId ? 1 : 0 };
+}
+
 // Runs the reply cascade after any message lands in a group text — the
-// user's own message today, or (once Phase 5 exists) a character's
-// proactive one, which is why triggerSpeakerId isn't hardcoded to 'user'.
-// Each additional reply is an independent roll whose odds decay with every
-// reply already landed this cascade (nextCascadeChance); who replies is
-// picked at random from group members not currently at the consecutive-
-// reply cap (eligibleReplierIds). Stops on the first failed roll, on
-// running out of eligible repliers, or at MAX_CASCADE_REPLIES regardless
-// of how the dice keep landing.
+// user's own message today, or a character's proactive one (see
+// generateProactiveGroupText), which is why triggerSpeakerId isn't
+// hardcoded to 'user'. Each step's decision (continue? who?) comes from
+// nextCascadeStep (textCascade.js) — factored out so the manual-approval
+// flow (beginGroupCascade's paused path, and the /cascade/allow route) can
+// ask the same question one step at a time instead of running straight
+// through. Stops on the first failed roll, on running out of eligible
+// repliers, or at MAX_CASCADE_REPLIES regardless of how the dice keep
+// landing.
 async function runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId, onEvent = null, signal }) {
   if (!cfg.apiKey) return { entries: [], error: 'No API key configured. Add one in Settings.' };
 
   const cascadeEntries = [];
-  let lastSpeakerId = charactersById[triggerSpeakerId] ? triggerSpeakerId : null;
-  let lastSpeakerStreak = lastSpeakerId ? 1 : 0;
+  let { lastSpeakerId, lastSpeakerStreak } = normalizeTriggerSpeaker(charactersById, triggerSpeakerId);
   let repliesSoFar = 0;
   let error, cancelled = false;
   const turnContext = loadGroupTurnContext(w);
 
-  while (repliesSoFar < MAX_CASCADE_REPLIES) {
-    const chance = nextCascadeChance(cfg.cascadeBaseChance, cfg.cascadeDecayRate, repliesSoFar);
-    if (!rollContinues(chance)) break;
-
-    const eligible = eligibleReplierIds(group.participantIds, lastSpeakerId, lastSpeakerStreak, cfg.cascadePerCharacterCap);
-    if (!eligible.length) break;
-    const replierId = pickReplier(eligible);
+  for (;;) {
+    const step = nextCascadeStep({
+      participantIds: group.participantIds, lastSpeakerId, lastSpeakerStreak, repliesSoFar,
+      cascadeBaseChance: cfg.cascadeBaseChance, cascadeDecayRate: cfg.cascadeDecayRate, cascadePerCharacterCap: cfg.cascadePerCharacterCap,
+    });
+    if (!step) break;
+    const { replierId } = step;
     const character = charactersById[replierId];
     if (!character) break; // shouldn't happen — participantIds are validated at creation
 
@@ -2260,6 +2278,113 @@ function recordGroupRound(w, { group, triggerEntry, cascadeEntries, userLabel, a
   }).catch((err) => logger.error('memory', `group round recording failed: ${err.message}`));
 }
 
+// A cascade reply awaiting the user's explicit allow/deny (the manual-
+// response-flow feature, gated by cfg.groupCascadeManualApproval) — keyed
+// by groupId, one entry per group with a paused cascade. Cleared the
+// instant that decision is made (allow or deny) or the round otherwise
+// concludes, so a stale entry can never resurface and silently resume a
+// round the user already walked away from. Stores plain resumable facts,
+// not `w`/db handles or other live objects — characters/group/config are
+// all reloaded fresh at allow/deny time, same as any other route already
+// does, so an edit made while a reply sits pending (e.g. the character
+// being deleted) is naturally picked up rather than working from a stale
+// snapshot.
+const pendingCascadeSteps = new Map(); // groupId -> { replierId, lastSpeakerId, lastSpeakerStreak, repliesSoFar, triggerEntry, cascadeEntries, userLabel, activePersonaId, time }
+
+// Starts (or restarts) a group's cascade right after a trigger message has
+// landed — shared by /send, /retry, and /trigger, which differ only in how
+// they each produce that trigger entry. Two modes, gated by
+// cfg.groupCascadeManualApproval:
+//   off (default) — today's fully-automatic cascade: runs straight through
+//     to completion (streamed via SSE when cfg.streaming is also on AND
+//     allowStreaming permits it — see below), records the round, and
+//     responds. Unchanged from before this feature.
+//   on — pauses before EVERY cascade reply, including the first, for the
+//     user's explicit allow/deny ("X wants to respond, allow?"). Never
+//     streamed, since each step is already separated by a real user
+//     interaction; parks a resumable snapshot in pendingCascadeSteps and
+//     responds with { log, pendingReply } instead of generating anything.
+// allowStreaming=false forces the plain-JSON path regardless of
+// cfg.streaming — /trigger passes this: it's a deliberately simple "nudge"
+// action (matching 1-on-1 texting's own /api/texts/:characterId/trigger
+// precedent) whose frontend caller (triggerGroupApi) is a plain JSON POST,
+// not an SSE-aware fetch, so a streamed response here would just silently
+// fail to parse rather than degrade gracefully.
+async function beginGroupCascade({ req, res, w, cfg, group, charactersById, triggerEntry, triggerSpeakerId, userLabel, activePersonaId, time, allowStreaming = true }) {
+  if (cfg.groupCascadeManualApproval) {
+    // A new trigger supersedes any pending step the user never answered —
+    // but whatever cascade replies THAT round already had approved (its
+    // cascadeEntries) already landed in the visible log via generateGroupReply
+    // and deserve their memory row same as any other round, rather than
+    // silently vanishing from memory just because the prompt was abandoned.
+    const abandoned = pendingCascadeSteps.get(group.id);
+    if (abandoned) {
+      pendingCascadeSteps.delete(group.id);
+      recordGroupRound(w, {
+        group, triggerEntry: abandoned.triggerEntry, cascadeEntries: abandoned.cascadeEntries,
+        userLabel: abandoned.userLabel, activePersonaId: abandoned.activePersonaId, time: abandoned.time,
+      });
+    }
+    if (!cfg.apiKey) {
+      recordGroupRound(w, { group, triggerEntry, cascadeEntries: [], userLabel, activePersonaId, time });
+      return res.json({ log: loadChatLog(w.textsDir, group.id), error: 'No API key configured. Add one in Settings.' });
+    }
+
+    const { lastSpeakerId, lastSpeakerStreak } = normalizeTriggerSpeaker(charactersById, triggerSpeakerId);
+    const step = nextCascadeStep({
+      participantIds: group.participantIds, lastSpeakerId, lastSpeakerStreak, repliesSoFar: 0,
+      cascadeBaseChance: cfg.cascadeBaseChance, cascadeDecayRate: cfg.cascadeDecayRate, cascadePerCharacterCap: cfg.cascadePerCharacterCap,
+    });
+    if (!step) {
+      recordGroupRound(w, { group, triggerEntry, cascadeEntries: [], userLabel, activePersonaId, time });
+      return res.json({ log: loadChatLog(w.textsDir, group.id) });
+    }
+
+    pendingCascadeSteps.set(group.id, {
+      replierId: step.replierId, lastSpeakerId, lastSpeakerStreak, repliesSoFar: 0,
+      triggerEntry, cascadeEntries: [], userLabel, activePersonaId, time,
+    });
+    return res.json({
+      log: loadChatLog(w.textsDir, group.id),
+      pendingReply: { charId: step.replierId, name: charactersById[step.replierId]?.name || null },
+    });
+  }
+
+  // A cancelled cascade shouldn't leave any memory trace, same as a
+  // cancelled reaction round (runReactionRound) or 1-on-1 text
+  // (runTextingReply) — a dice-rolled zero-reply cascade is still
+  // genuinely recorded (the room "heard" the trigger message even if
+  // nobody answered, same philosophy as recordSilentRound), only a real
+  // user-initiated Stop skips it.
+  const finish = (result) => {
+    if (result.cancelled) return;
+    recordGroupRound(w, { group, triggerEntry, cascadeEntries: result.entries, userLabel, activePersonaId, time });
+  };
+  const signal = requestCancelSignal(req, res);
+
+  if (cfg.streaming && cfg.apiKey && allowStreaming) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    send({ type: 'ack', log: loadChatLog(w.textsDir, group.id) });
+
+    const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId, onEvent: send, signal });
+    finish(result);
+    if (!signal.aborted) {
+      send({ type: 'done', log: loadChatLog(w.textsDir, group.id), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+    }
+    return res.end();
+  }
+
+  const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId, signal });
+  finish(result);
+  if (!signal.aborted) {
+    res.json({ log: loadChatLog(w.textsDir, group.id), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+  }
+}
+
 app.post('/api/groups/:groupId/send', async (req, res) => {
   const w = req.world;
   const { groupId } = req.params;
@@ -2286,40 +2411,9 @@ app.post('/api/groups/:groupId/send', async (req, res) => {
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
   const userLabel = activePersona ? activePersona.name : 'Visitor';
 
-  // A cancelled cascade shouldn't leave any memory trace, same as a
-  // cancelled reaction round (runReactionRound) or 1-on-1 text
-  // (runTextingReply) — a dice-rolled zero-reply cascade is still
-  // genuinely recorded (the room "heard" the trigger message even if
-  // nobody answered, same philosophy as recordSilentRound), only a real
-  // user-initiated Stop skips it.
-  const finish = (result) => {
-    if (result.cancelled) return;
-    recordGroupRound(w, { group, triggerEntry: userEntry, cascadeEntries: result.entries, userLabel, activePersonaId, time });
-  };
-
-  const signal = requestCancelSignal(req, res);
-
-  if (cfg.streaming && cfg.apiKey) {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders?.();
-    const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
-    send({ type: 'ack', log: loadChatLog(w.textsDir, groupId) });
-
-    const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user', onEvent: send, signal });
-    finish(result);
-    if (!signal.aborted) {
-      send({ type: 'done', log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
-    }
-    return res.end();
-  }
-
-  const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user', signal });
-  finish(result);
-  if (!signal.aborted) {
-    res.json({ log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
-  }
+  await beginGroupCascade({
+    req, res, w, cfg, group, charactersById, triggerEntry: userEntry, triggerSpeakerId: 'user', userLabel, activePersonaId, time,
+  });
 });
 
 // Re-runs the cascade for the trailing user message when nothing replied —
@@ -2356,35 +2450,9 @@ app.post('/api/groups/:groupId/retry', async (req, res) => {
   const userLabel = activePersona ? activePersona.name : 'Visitor';
   const time = loadWorld(w).time;
 
-  // Same cancel guard as /send's finish — see its comment.
-  const finish = (result) => {
-    if (result.cancelled) return;
-    recordGroupRound(w, { group, triggerEntry, cascadeEntries: result.entries, userLabel, activePersonaId, time });
-  };
-
-  const signal = requestCancelSignal(req, res);
-
-  if (cfg.streaming && cfg.apiKey) {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders?.();
-    const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
-    send({ type: 'ack', log });
-
-    const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user', onEvent: send, signal });
-    finish(result);
-    if (!signal.aborted) {
-      send({ type: 'done', log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
-    }
-    return res.end();
-  }
-
-  const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: 'user', signal });
-  finish(result);
-  if (!signal.aborted) {
-    res.json({ log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
-  }
+  await beginGroupCascade({
+    req, res, w, cfg, group, charactersById, triggerEntry, triggerSpeakerId: 'user', userLabel, activePersonaId, time,
+  });
 });
 
 // Manual "make someone text first" — the group-chat counterpart to 1-on-1
@@ -2435,11 +2503,108 @@ app.post('/api/groups/:groupId/trigger', async (req, res) => {
   // participants are excluded since the cascade below already covers them.
   maybeSendProactiveTexts(w, group.participantIds);
 
-  const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId: replierId });
-  if (!result.cancelled) {
-    recordGroupRound(w, { group, triggerEntry, cascadeEntries: result.entries, userLabel, activePersonaId, time: world.time });
+  await beginGroupCascade({
+    req, res, w, cfg, group, charactersById, triggerEntry, triggerSpeakerId: replierId, userLabel, activePersonaId, time: world.time,
+    allowStreaming: false,
+  });
+});
+
+// The user approves whichever reply is currently paused (see
+// pendingCascadeSteps/beginGroupCascade) — 400s if nothing is actually
+// pending, which also naturally covers a stale/expired approval the user
+// clicked after the group already moved on some other way. autoAllow=true
+// answers "yes, and don't ask again for the rest of this cascade": the
+// loop below just keeps generating+re-rolling by itself instead of parking
+// a new pending step after each reply.
+app.post('/api/groups/:groupId/cascade/allow', async (req, res) => {
+  const w = req.world;
+  const { groupId } = req.params;
+  const { autoAllow } = req.body || {};
+
+  const pending = pendingCascadeSteps.get(groupId);
+  if (!pending) return res.status(400).json({ error: 'No reply is currently awaiting approval.' });
+
+  const group = loadGroups(w).find((g) => g.id === groupId);
+  if (!group) { pendingCascadeSteps.delete(groupId); return res.status(404).json({ error: 'Group not found.' }); }
+
+  const cfg = loadConfig();
+  if (!cfg.apiKey) return res.status(400).json({ error: 'No API key configured. Add one in Settings.' });
+
+  const charactersById = {};
+  loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+  const turnContext = loadGroupTurnContext(w);
+
+  let { replierId, lastSpeakerId, lastSpeakerStreak, repliesSoFar, cascadeEntries } = pending;
+
+  for (;;) {
+    const character = charactersById[replierId];
+    if (!character) {
+      // The character was deleted while this reply sat pending — nothing
+      // sane left to generate; end the round with whatever already landed.
+      pendingCascadeSteps.delete(groupId);
+      recordGroupRound(w, { group, triggerEntry: pending.triggerEntry, cascadeEntries, userLabel: pending.userLabel, activePersonaId: pending.activePersonaId, time: pending.time });
+      return res.status(404).json({ error: 'That character no longer exists.', log: loadChatLog(w.textsDir, groupId) });
+    }
+
+    const selfContinuation = replierId === lastSpeakerId;
+    let entry;
+    try {
+      entry = await generateGroupReply({ w, cfg, group, replierId, character, charactersById, turnContext, selfContinuation });
+    } catch (err) {
+      pendingCascadeSteps.delete(groupId);
+      recordGroupRound(w, { group, triggerEntry: pending.triggerEntry, cascadeEntries, userLabel: pending.userLabel, activePersonaId: pending.activePersonaId, time: pending.time });
+      return res.status(502).json({ error: err.message, log: loadChatLog(w.textsDir, groupId) });
+    }
+    cascadeEntries = [...cascadeEntries, entry];
+    lastSpeakerStreak = replierId === lastSpeakerId ? lastSpeakerStreak + 1 : 1;
+    lastSpeakerId = replierId;
+    repliesSoFar += 1;
+
+    const step = nextCascadeStep({
+      participantIds: group.participantIds, lastSpeakerId, lastSpeakerStreak, repliesSoFar,
+      cascadeBaseChance: cfg.cascadeBaseChance, cascadeDecayRate: cfg.cascadeDecayRate, cascadePerCharacterCap: cfg.cascadePerCharacterCap,
+    });
+
+    if (!step) {
+      pendingCascadeSteps.delete(groupId);
+      recordGroupRound(w, { group, triggerEntry: pending.triggerEntry, cascadeEntries, userLabel: pending.userLabel, activePersonaId: pending.activePersonaId, time: pending.time });
+      return res.json({ log: loadChatLog(w.textsDir, groupId) });
+    }
+
+    if (!autoAllow) {
+      pendingCascadeSteps.set(groupId, {
+        replierId: step.replierId, lastSpeakerId, lastSpeakerStreak, repliesSoFar,
+        triggerEntry: pending.triggerEntry, cascadeEntries, userLabel: pending.userLabel, activePersonaId: pending.activePersonaId, time: pending.time,
+      });
+      return res.json({
+        log: loadChatLog(w.textsDir, groupId),
+        pendingReply: { charId: step.replierId, name: charactersById[step.replierId]?.name || null },
+      });
+    }
+    replierId = step.replierId; // autoAllow: keep going without parking a new pending step
   }
-  res.json({ log: loadChatLog(w.textsDir, groupId), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
+});
+
+// The user declines the currently-paused reply — the cascade round simply
+// ends here (no reroll to a different member): a definitive "no", not a
+// retry. Whatever already landed earlier in this same round (before this
+// particular reply was ever proposed) is still recorded normally.
+app.post('/api/groups/:groupId/cascade/deny', (req, res) => {
+  const w = req.world;
+  const { groupId } = req.params;
+
+  const pending = pendingCascadeSteps.get(groupId);
+  if (!pending) return res.status(400).json({ error: 'No reply is currently awaiting approval.' });
+  pendingCascadeSteps.delete(groupId);
+
+  const group = loadGroups(w).find((g) => g.id === groupId);
+  if (group) {
+    recordGroupRound(w, {
+      group, triggerEntry: pending.triggerEntry, cascadeEntries: pending.cascadeEntries,
+      userLabel: pending.userLabel, activePersonaId: pending.activePersonaId, time: pending.time,
+    });
+  }
+  res.json({ log: loadChatLog(w.textsDir, groupId) });
 });
 
 // Deletes one message from a group's log — mirrors

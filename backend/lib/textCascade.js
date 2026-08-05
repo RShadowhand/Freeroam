@@ -63,3 +63,25 @@ export function eligibleReplierIds(candidateIds, lastSpeakerId, lastSpeakerStrea
 export function pickReplier(candidateIds, rng = Math.random) {
   return candidateIds[Math.floor(rng() * candidateIds.length)];
 }
+
+// One step of cascade decision-making — who (if anyone) replies next,
+// given how far the cascade has already gotten — factored out of the full
+// auto-run loop (server.js's runGroupCascade) so the manual-approval flow
+// (the "X wants to respond, allow?" feature) can ask "who would go next?"
+// without generating anyone's reply yet: the whole point of pausing is
+// asking BEFORE any generation happens, not after. Returns null when the
+// cascade would stop here — a failed roll, no eligible repliers, or
+// MAX_CASCADE_REPLIES reached — leaving it to the caller to decide what
+// "stopping" means (end the round outright for the auto path; report
+// "nobody wants to reply" for the manual one).
+export function nextCascadeStep(
+  { participantIds, lastSpeakerId, lastSpeakerStreak, repliesSoFar, cascadeBaseChance, cascadeDecayRate, cascadePerCharacterCap },
+  rng = Math.random,
+) {
+  if (repliesSoFar >= MAX_CASCADE_REPLIES) return null;
+  const chance = nextCascadeChance(cascadeBaseChance, cascadeDecayRate, repliesSoFar);
+  if (!rollContinues(chance, rng)) return null;
+  const eligible = eligibleReplierIds(participantIds, lastSpeakerId, lastSpeakerStreak, cascadePerCharacterCap);
+  if (!eligible.length) return null;
+  return { replierId: pickReplier(eligible, rng) };
+}

@@ -43,6 +43,18 @@ const typingName = computed(() => (
 // different open thread's request can't make this one look busy.
 const isLoadingHere = computed(() => groups.loadingIds.has(props.groupId));
 
+// A cascade reply awaiting the user's explicit allow/deny — only ever
+// populated when Settings' "ask before every cascade reply" toggle is on
+// (see groups.js's pendingReplies). isLoadingHere doubles as this prompt's
+// own busy state (allow/deny go through the same loadingIds guard).
+const pendingReply = computed(() => groups.pendingReplies[props.groupId]);
+function allowReply(autoAllow) {
+  groups.allowPendingReply(props.groupId, { autoAllow });
+}
+function denyReply() {
+  groups.denyPendingReply(props.groupId);
+}
+
 // Every message shows its own in-world day/time — see PhoneThread.vue's
 // identical use of formatDayTime and its comment for why this replaced an
 // earlier sparse-divider-only approach.
@@ -196,21 +208,38 @@ function nudgeRandom() {
       </div>
     </div>
 
+    <div class="cascade-pending-row" v-if="pendingReply">
+      <span class="cascade-pending-text">
+        <strong>{{ pendingReply.name || 'Someone' }}</strong> wants to respond.
+      </span>
+      <div class="cascade-pending-actions">
+        <button class="btn small" :disabled="isLoadingHere" @click="allowReply(false)">Allow</button>
+        <button class="btn secondary small" :disabled="isLoadingHere" @click="allowReply(true)">Allow &amp; auto-continue</button>
+        <button class="btn secondary small" :disabled="isLoadingHere" @click="denyReply">Not now</button>
+      </div>
+    </div>
+
     <div class="input-row">
       <textarea
         ref="textareaEl" v-model="text" rows="1" autocomplete="off"
         placeholder="Text the group... (Shift+Enter for a new line)"
-        :disabled="isLoadingHere"
+        :disabled="isLoadingHere || !!pendingReply"
         @input="autoGrow" @keydown="onKeydown"
       ></textarea>
       <button v-if="isLoadingHere" class="stop-btn" @click="stop">Stop</button>
-      <button v-else @click="send">Send</button>
+      <button v-else :disabled="!!pendingReply" @click="send">Send</button>
     </div>
   </div>
 </template>
 
 <style scoped>
 .stop-btn{ background:var(--rose); color:var(--parchment); }
+.cascade-pending-row{
+  display:flex; flex-direction:column; gap:6px; padding:8px 10px; margin-top:8px;
+  background:var(--panel-raised); border:1px solid var(--border); border-radius:var(--radius-md);
+}
+.cascade-pending-text{ font-size:0.85rem; }
+.cascade-pending-actions{ display:flex; gap:8px; flex-wrap:wrap; }
 /* .msg.char is display:flex (see main.css) for the scene-chat avatar+body
    layout — a plain-column wrapper here keeps the user bubble and its
    timestamp stacked regardless of what the shared .msg/.msg.user rules do.

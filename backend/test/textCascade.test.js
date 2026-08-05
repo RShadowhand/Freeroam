@@ -1,8 +1,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DEFAULT_CASCADE_BASE_CHANCE, DEFAULT_CASCADE_DECAY_RATE, DEFAULT_CASCADE_PER_CHARACTER_CAP,
-  nextCascadeChance, rollContinues, eligibleReplierIds, pickReplier,
+  DEFAULT_CASCADE_BASE_CHANCE, DEFAULT_CASCADE_DECAY_RATE, DEFAULT_CASCADE_PER_CHARACTER_CAP, MAX_CASCADE_REPLIES,
+  nextCascadeChance, rollContinues, eligibleReplierIds, pickReplier, nextCascadeStep,
 } from '../lib/textCascade.js';
 
 describe('nextCascadeChance', () => {
@@ -67,6 +67,56 @@ describe('pickReplier', () => {
     assert.equal(pickReplier(['a', 'b', 'c'], () => 0), 'a');
     assert.equal(pickReplier(['a', 'b', 'c'], () => 0.99), 'c');
     assert.equal(pickReplier(['a', 'b', 'c'], () => 0.5), 'b');
+  });
+});
+
+// nextCascadeStep is the primitive the manual-response-approval feature
+// pauses between (server.js's beginGroupCascade/pendingCascadeSteps) — it
+// has to answer "who's next?" without the caller needing to inline the
+// roll+eligibility+pick sequence itself, so these tests pin its contract
+// directly rather than only through the full-auto simulation below.
+describe('nextCascadeStep', () => {
+  const base = { participantIds: ['a', 'b', 'c'], cascadeBaseChance: 0.85, cascadeDecayRate: 0.98, cascadePerCharacterCap: 2 };
+
+  test('returns null once repliesSoFar has hit MAX_CASCADE_REPLIES, without even rolling', () => {
+    let rolled = false;
+    const rng = () => { rolled = true; return 0; };
+    const result = nextCascadeStep({ ...base, lastSpeakerId: null, lastSpeakerStreak: 0, repliesSoFar: MAX_CASCADE_REPLIES }, rng);
+    assert.equal(result, null);
+    assert.equal(rolled, false);
+  });
+
+  test('returns null when the continue-roll fails', () => {
+    // rollContinues(chance) is chance > rng() would be true only for rng < chance;
+    // 0.999999 fails against any chance <= 1.
+    const result = nextCascadeStep({ ...base, lastSpeakerId: null, lastSpeakerStreak: 0, repliesSoFar: 0 }, () => 0.999999);
+    assert.equal(result, null);
+  });
+
+  test('returns null when there are no participants to pick from at all', () => {
+    // eligibleReplierIds falls back to the full candidate pool whenever
+    // excluding the streak-holder would leave it empty (see its own
+    // comment) — a single-member group is never actually "nobody eligible"
+    // for that reason. The only genuinely empty case is an empty pool.
+    const result = nextCascadeStep({
+      participantIds: [], cascadeBaseChance: 1, cascadeDecayRate: 1, cascadePerCharacterCap: 1,
+      lastSpeakerId: null, lastSpeakerStreak: 0, repliesSoFar: 0,
+    }, () => 0); // roll always continues at chance=1
+    assert.equal(result, null);
+  });
+
+  test('returns the picked replier when the roll succeeds and someone is eligible', () => {
+    // First rng() call feeds rollContinues (0 < 0.85 -> continues), second feeds pickReplier (index 0 of 3 -> 'a').
+    const rng = (() => { let i = 0; const seq = [0, 0]; return () => seq[i++]; })();
+    const result = nextCascadeStep({ ...base, lastSpeakerId: null, lastSpeakerStreak: 0, repliesSoFar: 0 }, rng);
+    assert.deepEqual(result, { replierId: 'a' });
+  });
+
+  test('excludes the current streak-holder from the pick once they are at the cap', () => {
+    const rng = (() => { let i = 0; const seq = [0, 0]; return () => seq[i++]; })(); // continue, then pick index 0 of the *remaining* pool
+    const result = nextCascadeStep({ ...base, lastSpeakerId: 'a', lastSpeakerStreak: 2, repliesSoFar: 1 }, rng);
+    assert.notEqual(result.replierId, 'a');
+    assert.equal(result.replierId, 'b'); // eligibleReplierIds(['a','b','c'], 'a', 2, 2) -> ['b','c'], index 0
   });
 });
 

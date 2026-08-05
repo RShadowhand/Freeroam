@@ -242,6 +242,146 @@ describe('Groups: triggering without an API key', () => {
   });
 });
 
+describe('Groups: manual cascade approval (groupCascadeManualApproval)', () => {
+  let group;
+
+  before(async () => {
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real', textingChancePerChar: 0, groupCascadeManualApproval: true });
+    ({ group } = await (await postJson('/api/groups', { name: 'Manual Approval Test', participantIds: ['ezra', 'mireille'] })).json());
+  });
+  after(async () => {
+    await postJson('/api/settings', { groupCascadeManualApproval: false });
+    await postJson('/api/settings/clear-key', {});
+  });
+
+  test('with no API key, the trigger persists with no pendingReply and an explanatory error', async () => {
+    await postJson('/api/settings/clear-key', {});
+    const res = await postJson(`/api/groups/${group.id}/send`, { text: 'anyone there?' });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.match(data.error, /API key/i);
+    assert.equal(data.pendingReply, undefined);
+    assert.equal(data.log.filter((e) => e.type === 'char').length, 0);
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+  });
+
+  test('a failed continue-roll ends the round immediately with no pendingReply', async (t) => {
+    t.mock.method(Math, 'random', mockRandomSequence([0.99])); // roll: stop
+    const res = await postJson(`/api/groups/${group.id}/send`, { text: 'quiet round' });
+    const data = await res.json();
+    assert.equal(data.pendingReply, undefined);
+    assert.equal(data.log.filter((e) => e.type === 'char').length, 0);
+  });
+
+  test('a successful roll parks a pendingReply WITHOUT generating anything yet', async (t) => {
+    let fetchCalled = false;
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () => { fetchCalled = true; return new Response(JSON.stringify({ choices: [{ message: { content: 'should not be reached' } }] }), { status: 200 }); }));
+    t.mock.method(Math, 'random', mockRandomSequence([0, 0])); // continue, pick index 0 (ezra)
+
+    const res = await postJson(`/api/groups/${group.id}/send`, { text: 'hello group' });
+    const data = await res.json();
+    assert.deepEqual(data.pendingReply, { charId: 'ezra', name: 'Ezra Vane' });
+    assert.equal(data.log.filter((e) => e.type === 'char').length, 0, 'nothing should be generated before approval');
+    assert.equal(fetchCalled, false, 'the LLM must not be called before the user approves');
+
+    // GET the group back — the same pending reply should still be there.
+    const { pendingReply } = await getJson(`/api/groups/${group.id}`);
+    assert.deepEqual(pendingReply, { charId: 'ezra', name: 'Ezra Vane' });
+  });
+
+  test('allow (autoAllow=false) generates exactly the pending reply, then re-parks if the cascade continues', async (t) => {
+    let call = 0;
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () => {
+      call += 1;
+      return new Response(JSON.stringify({ choices: [{ message: { content: call === 1 ? 'Ezra speaks.' : 'unused' } }] }), { status: 200 });
+    }));
+    // Continuation roll after the approved reply: succeed, pick mireille (index 1 of 2)
+    t.mock.method(Math, 'random', mockRandomSequence([0, 0.6]));
+
+    const res = await postJson(`/api/groups/${group.id}/cascade/allow`, { autoAllow: false });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    const charEntries = data.log.filter((e) => e.type === 'char');
+    assert.equal(charEntries.length, 1);
+    assert.equal(charEntries[0].charId, 'ezra');
+    assert.equal(charEntries[0].text, 'Ezra speaks.');
+    assert.deepEqual(data.pendingReply, { charId: 'mireille', name: 'Mireille' });
+  });
+
+  test('allow with nothing pending 400s', async () => {
+    // The previous test left a pendingReply (mireille) — deny it first so this one starts clean.
+    await postJson(`/api/groups/${group.id}/cascade/deny`, {});
+    const res = await postJson(`/api/groups/${group.id}/cascade/allow`, {});
+    assert.equal(res.status, 400);
+  });
+
+  test('deny with nothing pending 400s', async () => {
+    const res = await postJson(`/api/groups/${group.id}/cascade/deny`, {});
+    assert.equal(res.status, 400);
+  });
+
+  test('autoAllow=true runs the rest of the cascade in one call with no further pendingReply', async (t) => {
+    let call = 0;
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () => {
+      call += 1;
+      return new Response(JSON.stringify({ choices: [{ message: { content: `Reply ${call}` } }] }), { status: 200 });
+    }));
+    // pick ezra; continue+pick mireille; stop.
+    t.mock.method(Math, 'random', mockRandomSequence([0, 0, 0, 0.6, 0.99]));
+
+    const started = await postJson(`/api/groups/${group.id}/send`, { text: 'auto-allow round' });
+    const startData = await started.json();
+    assert.ok(startData.pendingReply, 'expected the first reply to still park a pending approval');
+
+    const res = await postJson(`/api/groups/${group.id}/cascade/allow`, { autoAllow: true });
+    const data = await res.json();
+    assert.equal(data.pendingReply, undefined);
+    // At least the one approved via autoAllow landed (the earlier pending one plus any continuation).
+    assert.ok(data.log.filter((e) => e.type === 'char').length >= 1);
+  });
+
+  test('deny ends the round without generating the pending reply, and clears the pending state', async (t) => {
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () => new Response(
+      JSON.stringify({ choices: [{ message: { content: 'should never be generated' } }] }), { status: 200 },
+    )));
+    t.mock.method(Math, 'random', mockRandomSequence([0, 0])); // continue, pick someone
+
+    const before = await (await postJson(`/api/groups/${group.id}/send`, { text: 'about to be denied' })).json();
+    assert.ok(before.pendingReply);
+    const beforeCharCount = before.log.filter((e) => e.type === 'char').length;
+
+    const res = await postJson(`/api/groups/${group.id}/cascade/deny`, {});
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.log.filter((e) => e.type === 'char').length, beforeCharCount, 'denying must not generate the pending reply');
+
+    // Confirmed cleared: a second deny (nothing left pending) 400s.
+    const secondDeny = await postJson(`/api/groups/${group.id}/cascade/deny`, {});
+    assert.equal(secondDeny.status, 400);
+  });
+
+  test('sending a new message abandons and records any un-answered pending reply, then starts fresh', async (t) => {
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () => new Response(
+      JSON.stringify({ choices: [{ message: { content: 'abandoned, never generated' } }] }), { status: 200 },
+    )));
+    t.mock.method(Math, 'random', mockRandomSequence([0, 0])); // first /send: continue, pick someone -> pendingReply
+
+    const first = await (await postJson(`/api/groups/${group.id}/send`, { text: 'first message' })).json();
+    assert.ok(first.pendingReply);
+
+    // A second /send without resolving the first pending reply — should not throw,
+    // should not generate the abandoned character's reply, and should start its own fresh round.
+    t.mock.method(Math, 'random', mockRandomSequence([0.99])); // second /send's own roll: stop
+    const second = await postJson(`/api/groups/${group.id}/send`, { text: 'second message, abandoning the first prompt' });
+    assert.equal(second.status, 200);
+    const secondData = await second.json();
+    assert.equal(secondData.pendingReply, undefined);
+
+    // The old pending reply's character was never generated.
+    assert.ok(!secondData.log.some((e) => e.type === 'char' && e.text === 'abandoned, never generated'));
+  });
+});
+
 describe('Groups: the cascade (OpenRouter + Math.random mocked)', () => {
   let group;
 

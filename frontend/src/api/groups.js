@@ -10,6 +10,10 @@ export const retryGroupApi = (groupId, signal) => apiJson(`/api/groups/${encodeU
 // characterId omitted -> backend picks a random participant.
 export const triggerGroupApi = (groupId, characterId = null) =>
   apiJson(`/api/groups/${encodeURIComponent(groupId)}/trigger`, 'POST', characterId ? { characterId } : {});
+export const allowGroupCascadeApi = (groupId, autoAllow = false) =>
+  apiJson(`/api/groups/${encodeURIComponent(groupId)}/cascade/allow`, 'POST', { autoAllow });
+export const denyGroupCascadeApi = (groupId) =>
+  apiJson(`/api/groups/${encodeURIComponent(groupId)}/cascade/deny`, 'POST', {});
 export const deleteGroupApi = (groupId) => apiDelete(`/api/groups/${encodeURIComponent(groupId)}`);
 export const deleteGroupMessageApi = (groupId, entryId) =>
   apiDelete(`/api/groups/${encodeURIComponent(groupId)}/messages/${encodeURIComponent(entryId)}`);

@@ -13,11 +13,14 @@ completedColumns:
 
 ## Needs Human Testing
 
+- [research-structured-output-from-the-ai-backend-custom-or-openrouter](tasks/research-structured-output-from-the-ai-backend-custom-or-openrouter.md)
+- [check-local-classifier-for-intent-new-characters-is-inaccurate](tasks/check-local-classifier-for-intent-new-characters-is-inaccurate.md)
+
 ## Done
 
-- [feature-add-import-character-from-chub-ai-botbooru-option](tasks/feature-add-import-character-from-chub-ai-botbooru-option.md)
 - [feature-trigger-proactive-text-to-group-chats](tasks/feature-trigger-proactive-text-to-group-chats.md)
-- [feature-prevent-changing-world-area-during-response-generation-found-fixed-the-silent-failure-report](tasks/feature-prevent-changing-world-area-during-response-generation-found-fixed-the-silent-failure-report.md)
+- [feature-add-import-character-from-chub-ai-botbooru-option](tasks/feature-add-import-character-from-chub-ai-botbooru-option.md)
+- [feature-manual-message-steps-in-group-chat-message-cascades](tasks/feature-manual-message-steps-in-group-chat-message-cascades.md)
 - [fix-issues-md-1-—-long-character-names-break-reply-multiplex-detection](tasks/fix-issues-md-1-—-long-character-names-break-reply-multiplex-detection.md)
 - [fix-issues-md-2-—-typo-in-chat-js-error-messages-goes-wrong](tasks/fix-issues-md-2-—-typo-in-chat-js-error-messages-goes-wrong.md)
 - [fix-issues-md-3-—-open-conversation-has-no-in-flight-guard](tasks/fix-issues-md-3-—-open-conversation-has-no-in-flight-guard.md)
@@ -66,6 +69,7 @@ completedColumns:
 - [fix-chat-logs-should-start-scrolled-to-the-bottom](tasks/fix-chat-logs-should-start-scrolled-to-the-bottom.md)
 - [feature-day-time-stamps-on-1-on-1-and-group-texts-reworked-per-message-not-a-divider](tasks/feature-day-time-stamps-on-1-on-1-and-group-texts-reworked-per-message-not-a-divider.md)
 - [fix-cancel-doesn-t-suppress-the-narrator-s-fallback-note-memory-write-in-nobody-to-react-paths-found-root-cause-of-the-message-lock-bug](tasks/fix-cancel-doesn-t-suppress-the-narrator-s-fallback-note-memory-write-in-nobody-to-react-paths-found-root-cause-of-the-message-lock-bug.md)
+- [feature-prevent-changing-world-area-during-response-generation-found-fixed-the-silent-failure-report](tasks/feature-prevent-changing-world-area-during-response-generation-found-fixed-the-silent-failure-report.md)
 
 ## Stale
 

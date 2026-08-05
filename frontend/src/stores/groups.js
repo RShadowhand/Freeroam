@@ -6,6 +6,7 @@ import { parseSseEvents } from '../utils/sse';
 import {
   getGroups, createGroupApi, getGroupLog, updateGroupApi, sendGroupTextApi, sendGroupTextStreamRequest,
   retryGroupApi, retryGroupStreamRequest, deleteGroupApi, deleteGroupMessageApi, triggerGroupApi,
+  allowGroupCascadeApi, denyGroupCascadeApi,
 } from '../api/groups';
 
 // Group text conversations — same stored-log shape as stores/phone.js's
@@ -27,6 +28,11 @@ export const useGroupsStore = defineStore('groups', {
     // Map, not a single field, same keying as loadingIds, since more than
     // one group conversation can be generating at once.
     abortControllers: new Map(),
+    // groupId -> { charId, name } | undefined — a cascade reply awaiting the
+    // user's explicit allow/deny (manual-response-flow feature, only ever
+    // populated when settings.groupCascadeManualApproval is on). Backend is
+    // the source of truth for whether one exists; this just mirrors it.
+    pendingReplies: {},
   }),
   actions: {
     // Aborts groupId's in-flight send/retry, if any — the backend's own
@@ -82,6 +88,15 @@ export const useGroupsStore = defineStore('groups', {
       return { ok, data };
     },
 
+    // Mirrors pendingReplies[groupId] to whatever the backend just reported
+    // (see pendingCascadeSteps in server.js) — present on the GET-group
+    // response (reopening a thread re-shows a reply that was still awaiting
+    // a decision) and on send/retry/trigger/allow's own responses.
+    setPendingReply(groupId, pendingReply) {
+      if (pendingReply) this.pendingReplies[groupId] = pendingReply;
+      else delete this.pendingReplies[groupId];
+    },
+
     async openConversation(groupId) {
       // loadedIds alone isn't a re-entrancy guard — it's only set *after* the
       // GET below resolves, so two calls before that (e.g. rapid navigation)
@@ -94,6 +109,7 @@ export const useGroupsStore = defineStore('groups', {
         if (ok) {
           this.logs[groupId] = data.log;
           this.loadedIds.add(groupId);
+          this.setPendingReply(groupId, data.pendingReply);
         } else {
           useUiStore().showError(data.error || 'Could not load that conversation.');
         }
@@ -156,12 +172,18 @@ export const useGroupsStore = defineStore('groups', {
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
         let result;
-        if (cfg.streaming) {
+        // Manual cascade approval never streams server-side (see
+        // beginGroupCascade in server.js) regardless of cfg.streaming — each
+        // step is already separated by a real user decision, so there's
+        // nothing to stream. Using the SSE path here would just try to parse
+        // a plain JSON body as an SSE frame and silently produce nothing.
+        if (cfg.streaming && !cfg.groupCascadeManualApproval) {
           result = await this._consumeSse(groupId, await sendGroupTextStreamRequest(groupId, { text }, controller.signal));
         } else {
           const { ok, data } = await sendGroupTextApi(groupId, { text }, controller.signal);
           if (!ok) throw new Error(data.error || 'request failed');
           this.logs[groupId] = data.log;
+          this.setPendingReply(groupId, data.pendingReply);
           result = { error: data.error };
         }
 
@@ -193,12 +215,14 @@ export const useGroupsStore = defineStore('groups', {
       try {
         const cfg = await getSettings().then((r) => r.data).catch(() => ({}));
         let result;
-        if (cfg.streaming) {
+        // Same manual-approval-never-streams reasoning as sendText — see its comment.
+        if (cfg.streaming && !cfg.groupCascadeManualApproval) {
           result = await this._consumeSse(groupId, await retryGroupStreamRequest(groupId, controller.signal));
         } else {
           const { ok, data } = await retryGroupApi(groupId, controller.signal);
           if (!ok) throw new Error(data.error || 'request failed');
           this.logs[groupId] = data.log;
+          this.setPendingReply(groupId, data.pendingReply);
           result = { error: data.error };
         }
 
@@ -230,11 +254,52 @@ export const useGroupsStore = defineStore('groups', {
         const { ok, data } = await triggerGroupApi(groupId, characterId);
         if (ok) {
           this.logs[groupId] = data.log;
+          this.setPendingReply(groupId, data.pendingReply);
           if (data.error) useUiStore().showError(data.error);
         } else {
           useUiStore().showError(data.error || 'Could not trigger a text.');
         }
         return { ok, data };
+      } finally {
+        this.loadingIds.delete(groupId);
+      }
+    },
+
+    // The user approves the reply currently parked in pendingReplies[groupId]
+    // (see setPendingReply) — autoAllow=true means "yes, and don't ask again
+    // for the rest of this cascade." Guarded by loadingIds like every other
+    // generation call here, both to block a double-click and so the thread's
+    // existing typing/busy UI applies to this too.
+    async allowPendingReply(groupId, { autoAllow = false } = {}) {
+      if (this.loadingIds.has(groupId)) return;
+      this.loadingIds.add(groupId);
+      try {
+        const { ok, data } = await allowGroupCascadeApi(groupId, autoAllow);
+        if (ok) {
+          this.logs[groupId] = data.log;
+          this.setPendingReply(groupId, data.pendingReply);
+          if (data.error) useUiStore().showError(data.error);
+        } else {
+          useUiStore().showError(data.error || 'Could not generate that reply.');
+          if (data.log) this.logs[groupId] = data.log;
+          this.setPendingReply(groupId, null);
+        }
+      } finally {
+        this.loadingIds.delete(groupId);
+      }
+    },
+
+    // The user declines — the cascade round ends here (see the backend's
+    // own comment on /cascade/deny for why this doesn't reroll to someone
+    // else).
+    async denyPendingReply(groupId) {
+      if (this.loadingIds.has(groupId)) return;
+      this.loadingIds.add(groupId);
+      try {
+        const { ok, data } = await denyGroupCascadeApi(groupId);
+        if (ok) this.logs[groupId] = data.log;
+        else useUiStore().showError(data.error || 'Could not dismiss that.');
+        this.setPendingReply(groupId, null);
       } finally {
         this.loadingIds.delete(groupId);
       }
