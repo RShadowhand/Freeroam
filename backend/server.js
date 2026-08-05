@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { extractCharacterCard, extractPersonaCard, extractPlaceCard } from './lib/tavernCard.js';
 import { buildCharacterCardPng, buildPersonaCardPng, buildPlaceCardPng } from './lib/pngCard.js';
+import { importCardFromUrl } from './lib/cardImport.js';
 import {
   normalizePromptList,
   normalizeContextNumber,
@@ -838,6 +839,51 @@ app.post('/api/characters', upload.single('card'), (req, res) => {
     source: 'npc',
     avatarUrl: null,
     color: colorForId(id),
+  };
+
+  const characters = loadCharacters(w);
+  characters.push(character);
+  saveCharacters(w, characters);
+  res.status(201).json({ character });
+});
+
+// Same character shape the multipart TavernCard upload above produces —
+// see importCardFromUrl in lib/cardImport.js for how the URL gets resolved
+// down to actual card bytes (a chub.ai character page resolves to its
+// underlying CDN PNG directly; other sites via the page's own og:image tag
+// or a linked .png, since this app has no way to execute a source site's
+// own client-side JS to reach any private API it might have).
+app.post('/api/characters/import-url', async (req, res) => {
+  const w = req.world;
+  const { url } = req.body || {};
+  if (typeof url !== 'string' || !url.trim()) {
+    return res.status(400).json({ error: 'A URL is required.' });
+  }
+
+  let card, avatarBuffer;
+  try {
+    ({ card, avatarBuffer } = await importCardFromUrl(url.trim()));
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  const id = crypto.randomUUID();
+  fs.writeFileSync(path.join(w.avatarDir, `${id}.png`), avatarBuffer);
+
+  const character = {
+    id,
+    name: card.name,
+    description: card.description,
+    personality: card.personality,
+    scenario: card.scenario,
+    exampleDialogue: card.exampleDialogue,
+    greetings: card.greetings,
+    source: 'upload',
+    avatarUrl: `${w.avatarUrlBase}/${id}.png`,
+    color: colorForId(id),
+    tags: card.tags,
+    creator: card.creator,
+    spec: card.spec,
   };
 
   const characters = loadCharacters(w);

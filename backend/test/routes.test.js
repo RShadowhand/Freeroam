@@ -638,6 +638,65 @@ describe('Export/import: characters, personas, places', () => {
     assert.equal((await postJson('/api/characters/import', { characters: [] })).status, 400);
   });
 
+  // Card-bytes resolution itself is unit-tested in cardImport.test.js — this
+  // just checks the route wires a resolved card into a real, persisted
+  // character (fresh id, avatarUrl set to a written file, same shape the
+  // multipart upload route produces).
+  describe('POST /api/characters/import-url', () => {
+    const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    function pngChunk(type, data) {
+      const length = Buffer.alloc(4);
+      length.writeUInt32BE(data.length, 0);
+      return Buffer.concat([length, Buffer.from(type, 'ascii'), data, Buffer.alloc(4)]);
+    }
+    function buildCardPng(name) {
+      const ihdr = pngChunk('IHDR', Buffer.alloc(13));
+      const base64 = Buffer.from(JSON.stringify({ spec: 'chara_card_v2', data: { name, description: 'Imported from a URL.' } })).toString('base64');
+      const charaData = Buffer.concat([Buffer.from('chara', 'latin1'), Buffer.from([0]), Buffer.from(base64, 'latin1')]);
+      return Buffer.concat([PNG_SIGNATURE, ihdr, pngChunk('tEXt', charaData), pngChunk('IEND', Buffer.alloc(0))]);
+    }
+
+    test('imports a character from a direct card PNG URL', async (t) => {
+      // Mocking globalThis.fetch also intercepts postJson's own request to
+      // this test's local server (both go through the same global fetch),
+      // so — same pattern as mockOpenRouterFetch — anything bound for
+      // baseUrl falls through to the real fetch; only the outbound
+      // card-download call gets faked.
+      const realFetch = globalThis.fetch;
+      t.mock.method(globalThis, 'fetch', async (url, opts) => {
+        if (typeof url === 'string' && url.startsWith(baseUrl)) return realFetch(url, opts);
+        return new Response(buildCardPng('URL Import Test'), { status: 200, headers: { 'content-type': 'image/png' } });
+      });
+
+      const res = await postJson('/api/characters/import-url', { url: 'https://example.com/card.png' });
+      assert.equal(res.status, 201);
+      const { character } = await res.json();
+      assert.equal(character.name, 'URL Import Test');
+      assert.ok(character.id);
+      assert.ok(character.avatarUrl?.includes(character.id));
+
+      const { characters } = await (await fetch(`${baseUrl}/api/characters`)).json();
+      assert.ok(characters.some((c) => c.id === character.id));
+    });
+
+    test('rejects a missing url', async () => {
+      const res = await postJson('/api/characters/import-url', {});
+      assert.equal(res.status, 400);
+    });
+
+    test('surfaces a card-resolution failure as a 400, not a 500', async (t) => {
+      const realFetch = globalThis.fetch;
+      t.mock.method(globalThis, 'fetch', async (url, opts) => {
+        if (typeof url === 'string' && url.startsWith(baseUrl)) return realFetch(url, opts);
+        return new Response('not a card', { status: 404 });
+      });
+      const res = await postJson('/api/characters/import-url', { url: 'https://example.com/missing.png' });
+      assert.equal(res.status, 400);
+      const data = await res.json();
+      assert.match(data.error, /Fetch failed \(404\)/);
+    });
+  });
+
   test('GET /api/personas/:id/export and /export round-trip; import clears avatarUrl', async () => {
     const { persona } = await (await postJson('/api/personas', { name: 'Export Persona ' + Math.random(), description: 'A test persona.' })).json();
 

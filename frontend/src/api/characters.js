@@ -7,6 +7,7 @@ export const uploadCharacterCard = (file) => {
   form.append('card', file);
   return apiForm('/api/characters', form);
 };
+export const importCharacterFromUrl = (url) => apiJson('/api/characters/import-url', 'POST', { url });
 export const updateCharacter = (id, { avatarFile, ...fields } = {}) => {
   if (avatarFile) {
     const form = new FormData();
