@@ -10,6 +10,7 @@ import DraftPersonaPromptCard from '../components/settings/DraftPersonaPromptCar
 import TextingCard from '../components/settings/TextingCard.vue';
 import MessageFormattingCard from '../components/settings/MessageFormattingCard.vue';
 import ThemeCard from '../components/settings/ThemeCard.vue';
+import ChangelogCard from '../components/settings/ChangelogCard.vue';
 
 const settings = useSettingsStore();
 
@@ -26,6 +27,7 @@ const sections = [
   { id: 'texting', label: 'Texting' },
   { id: 'message-formatting', label: 'Message formatting' },
   { id: 'theme', label: 'Theme' },
+  { id: 'changelog', label: 'Changelog' },
 ];
 const { activeId, scrollToSection } = useSectionNav(sections);
 
@@ -52,6 +54,7 @@ onMounted(async () => {
         <div id="texting" class="anchor-section"><TextingCard /></div>
         <div id="message-formatting" class="anchor-section"><MessageFormattingCard /></div>
         <div id="theme" class="anchor-section"><ThemeCard /></div>
+        <div id="changelog" class="anchor-section"><ChangelogCard /></div>
       </div>
     </div>
   </section>

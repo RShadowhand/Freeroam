@@ -598,6 +598,19 @@ describe('Places: multi-owner (ownerIds)', () => {
   });
 });
 
+describe('GET /api/changelog', () => {
+  test('returns real git history entries with the expected shape', async () => {
+    const res = await fetch(`${baseUrl}/api/changelog`);
+    assert.equal(res.status, 200);
+    const { entries } = await res.json();
+    assert.ok(Array.isArray(entries));
+    assert.ok(entries.length > 0);
+    assert.match(entries[0].hash, /^[0-9a-f]{40}$/);
+    assert.match(entries[0].date, /^\d{4}-\d{2}-\d{2}$/);
+    assert.ok(entries[0].subject.length > 0);
+  });
+});
+
 describe('Export/import: characters, personas, places', () => {
   test('GET /api/characters/:id/export and /export return the plural wire shape', async () => {
     const { character } = await (await postJson('/api/characters', { name: 'Export Me ' + Math.random(), description: 'Test.' })).json();

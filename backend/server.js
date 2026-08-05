@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { extractCharacterCard, extractPersonaCard, extractPlaceCard } from './lib/tavernCard.js';
 import { buildCharacterCardPng, buildPersonaCardPng, buildPlaceCardPng } from './lib/pngCard.js';
 import { importCardFromUrl } from './lib/cardImport.js';
+import { readChangelog } from './lib/changelog.js';
 import {
   normalizePromptList,
   normalizeContextNumber,
@@ -433,9 +434,12 @@ app.use('/avatars/:worldId', (req, res, next) => {
 // silent fallback, since that could write into the wrong save. /api/worlds*
 // manages the registry itself and is exempted: it must keep working even
 // when the caller's stored world id no longer exists, since GET /api/worlds
-// is exactly how the frontend recovers from that.
+// is exactly how the frontend recovers from that. /api/changelog is exempted
+// too — it's git history for the whole install, not tied to any save slot,
+// so it shouldn't 400 (or bump the registry's per-world touch timestamp)
+// over an unrelated stale world id.
 app.use('/api', (req, res, next) => {
-  if (req.path === '/worlds' || req.path.startsWith('/worlds/')) return next();
+  if (req.path === '/worlds' || req.path.startsWith('/worlds/') || req.path === '/changelog') return next();
   const headerId = req.get('X-World-Id');
   const world = headerId ? registry.get(headerId) : registry.getDefault();
   if (!world) return res.status(400).json({ error: 'Unknown world id.', code: 'UNKNOWN_WORLD' });
@@ -777,6 +781,13 @@ app.post('/api/worlds/import', uploadWorldBundle.single('bundle'), async (req, r
     }
     res.status(err.status || 500).json({ error: err.message });
   }
+});
+
+// --- Changelog ---------------------------------------------------------
+// Read straight from the repo's own git history — see lib/changelog.js.
+// Global, not world-scoped, same as the world-management routes above.
+app.get('/api/changelog', (req, res) => {
+  res.json({ entries: readChangelog() });
 });
 
 // --- Character routes -------------------------------------------------
