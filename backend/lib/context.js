@@ -4,7 +4,7 @@
 // text, with no say in what goes into the request. Kept pure/DOM-free (no
 // fetch/express here) so it stays directly unit-testable.
 import { DEFAULT_CONTEXT_LENGTH, DEFAULT_MAX_REPLY_TOKENS } from './presets.js';
-import { joinNames } from './textUtils.js';
+import { joinNames, characterAliases } from './textUtils.js';
 
 export { DEFAULT_CONTEXT_LENGTH, DEFAULT_MAX_REPLY_TOKENS };
 
@@ -539,8 +539,7 @@ const NAME_LINE = /^([A-Za-z][A-Za-z' -]{1,100}):\s*(.+)$/;
 export function parseReplyLines(text, presentChars) {
   const presentByName = {};
   presentChars.forEach((c) => {
-    presentByName[c.name.toLowerCase()] = c;
-    presentByName[c.name.split(' ')[0].toLowerCase()] = c;
+    characterAliases(c).forEach((alias) => { presentByName[alias.toLowerCase()] = c; });
   });
 
   const lines = (text || '').split('\n').map((l) => l.trim()).filter(Boolean);

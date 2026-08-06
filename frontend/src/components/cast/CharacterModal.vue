@@ -18,6 +18,7 @@ const description = ref('');
 const personality = ref('');
 const scenario = ref('');
 const exampleDialogue = ref('');
+const nicknames = ref(''); // comma-separated in the UI; array on the wire
 const avatarInput = ref(null);
 const status = ref('');
 const saving = ref(false);
@@ -45,6 +46,7 @@ watch(characterModal.isOpen, (open) => {
   personality.value = c ? (c.personality || '') : '';
   scenario.value = c ? (c.scenario || '') : '';
   exampleDialogue.value = c ? (c.exampleDialogue || '') : '';
+  nicknames.value = c ? (c.nicknames || []).join(', ') : '';
   status.value = '';
   activeTab.value = 'details';
   memoryCount.value = null;
@@ -61,6 +63,7 @@ async function save() {
       personality: personality.value.trim(),
       scenario: scenario.value.trim(),
       exampleDialogue: exampleDialogue.value.trim(),
+      nicknames: nicknames.value.split(',').map((n) => n.trim()).filter(Boolean),
     };
     if (characterModal.mode.value === 'create') {
       const { ok, data } = await createCharacter(body);
@@ -186,6 +189,11 @@ async function remove() {
             <ExpandableTextarea v-model="exampleDialogue" rows="4" placeholder="A sample of how they talk." />
           </div>
           <p class="hint">Only Description (and Personality, if a preset asks for it) are sent by default. Scenario and Example dialogue are opt-in — they're only included if the active prompt preset has a block for them.</p>
+          <div class="field-row">
+            <label>Nicknames <span class="hint-inline">(optional, comma-separated)</span></label>
+            <input type="text" v-model="nicknames" placeholder="e.g. Vane, Ez">
+          </div>
+          <p class="hint">Recognized anywhere a message needs to match this character by name — being addressed by a nickname, response order, and similar.</p>
         </div>
 
         <!-- Mounted together (not per-tab) once the character exists, so

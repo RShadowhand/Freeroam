@@ -300,10 +300,28 @@ const DEFAULT_PLACEMENTS = {
 // character with no entry for a given slot just isn't scheduled there;
 // normal placement/movement is unaffected until a slot is actually set.
 function normalizeCharacter(c) {
-  const base = { description: '', personality: '', scenario: '', exampleDialogue: '', schedule: {}, ...c };
+  const base = { description: '', personality: '', scenario: '', exampleDialogue: '', schedule: {}, nicknames: [], ...c };
   if (typeof c.persona === 'string' && !c.description) base.description = c.persona;
   delete base.persona;
   return base;
+}
+
+// Trims/drops blanks and dedupes case-insensitively — mirrors how the rest
+// of this app already treats character names, so "Vane" and "vane" aren't
+// silently kept as two separate aliases pointing at the same person.
+function sanitizeNicknames(nicknames) {
+  if (!Array.isArray(nicknames)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const n of nicknames) {
+    if (typeof n !== 'string') continue;
+    const trimmed = n.trim();
+    const key = trimmed.toLowerCase();
+    if (!trimmed || seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
 }
 
 function loadCharacters(w) {
@@ -835,7 +853,7 @@ app.post('/api/characters', upload.single('card'), (req, res) => {
     return res.status(201).json({ character });
   }
 
-  const { name, description, personality, scenario, exampleDialogue } = req.body || {};
+  const { name, description, personality, scenario, exampleDialogue, nicknames } = req.body || {};
   if (typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'A character name is required (or upload a card PNG).' });
   }
@@ -848,6 +866,7 @@ app.post('/api/characters', upload.single('card'), (req, res) => {
     personality: (personality || '').trim(),
     scenario: (scenario || '').trim(),
     exampleDialogue: (exampleDialogue || '').trim(),
+    nicknames: sanitizeNicknames(nicknames),
     greetings: [],
     source: 'npc',
     avatarUrl: null,
@@ -1094,7 +1113,7 @@ app.put('/api/characters/:id', uploadCharacterAvatar.single('avatar'), async (re
   const character = characters.find((c) => c.id === id);
   if (!character) return res.status(404).json({ error: 'Character not found.' });
 
-  const { name, description, personality, scenario, exampleDialogue } = req.body || {};
+  const { name, description, personality, scenario, exampleDialogue, nicknames } = req.body || {};
   const identityChanged =
     (typeof name === 'string' && name.trim() && name.trim() !== character.name) ||
     (typeof description === 'string' && description.trim() !== character.description) ||
@@ -1104,6 +1123,12 @@ app.put('/api/characters/:id', uploadCharacterAvatar.single('avatar'), async (re
   if (typeof personality === 'string') character.personality = personality.trim();
   if (typeof scenario === 'string') character.scenario = scenario.trim();
   if (typeof exampleDialogue === 'string') character.exampleDialogue = exampleDialogue.trim();
+  // Real JSON body (the common case) sends a real array; the multipart-
+  // with-avatar path can only send plain form-field strings, so a
+  // comma-separated string is accepted there too.
+  if (nicknames !== undefined) {
+    character.nicknames = sanitizeNicknames(Array.isArray(nicknames) ? nicknames : String(nicknames).split(','));
+  }
 
   if (req.file) {
     const ext = EXT_FOR_MIME[req.file.mimetype];

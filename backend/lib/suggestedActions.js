@@ -12,6 +12,7 @@
 // heuristics can't parse is not an error, it's just a reply with nothing
 // to suggest.
 import { extractEntities as defaultExtractEntities, classifyIntent as defaultClassifyIntent } from './nlp.js';
+import { characterMentionedIn } from './textUtils.js';
 import { logger } from './log.js';
 
 // Trigger words use explicit [Xx] case classes rather than a blanket /i
@@ -65,21 +66,9 @@ function isExcludedCharacterName(name, { knownNames, personaName }) {
   return false;
 }
 
-// Whole-word match on a character's first name — same "first name is
-// enough" convention used for present-character name resolution in
-// lib/context.js's parseReplyLines. Good enough for confirming an already-
-// known background character is who a beckon phrase is about; this isn't
-// entity discovery, so it doesn't need NER's full-name aggregation.
-function nameAppearsIn(text, name) {
-  const first = (name || '').trim().split(/\s+/)[0];
-  if (!first) return false;
-  const re = new RegExp(`\\b${first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-  return re.test(text);
-}
-
 function regexPromoteSuggestion(text, { backgroundCharacters }) {
   if (!backgroundCharacters.length || !BECKON_RE.test(text)) return null;
-  const match = backgroundCharacters.find((c) => nameAppearsIn(text, c.name));
+  const match = backgroundCharacters.find((c) => characterMentionedIn(text, c));
   return match ? { type: 'promote', charId: match.id, name: match.name } : null;
 }
 
@@ -97,7 +86,7 @@ async function mlPromoteSuggestion(text, { backgroundCharacters, classifyIntentF
     return null; // model unavailable/failed — no ML suggestion, not an error
   }
   if (!(intent[0] && intent[0].label === INTENT_BECKON && intent[0].score >= INTENT_THRESHOLD)) return null;
-  const match = backgroundCharacters.find((c) => nameAppearsIn(text, c.name));
+  const match = backgroundCharacters.find((c) => characterMentionedIn(text, c));
   return match ? { type: 'promote', charId: match.id, name: match.name } : null;
 }
 

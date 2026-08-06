@@ -144,6 +144,48 @@ describe('POST /api/characters (manual/NPC creation)', () => {
     assert.ok(ezra.description.includes('archivist'));
     assert.equal('persona' in ezra, false);
   });
+
+  test('a character created with no nicknames defaults to an empty array', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'No Nicknames Yet', description: 'Plain.' })).json();
+    assert.deepEqual(character.nicknames, []);
+  });
+
+  test('creates a character with sanitized, deduped nicknames', async () => {
+    const res = await postJson('/api/characters', {
+      name: 'Ezra Vane', description: 'An archivist.', nicknames: ['Vane', '  Ez  ', '', 'vane', 'Ez'],
+    });
+    const { character } = await res.json();
+    // 'vane' and 'Ez' are case-insensitive dupes of 'Vane'/'  Ez  '; blanks dropped.
+    assert.deepEqual(character.nicknames, ['Vane', 'Ez']);
+  });
+
+  test('PUT /api/characters/:id updates nicknames via a real JSON array', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Nickname Editable', description: 'X.' })).json();
+    const res = await fetch(`${baseUrl}/api/characters/${character.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nicknames: ['Nicky', 'The Editable One'] }),
+    });
+    const { character: updated } = await res.json();
+    assert.deepEqual(updated.nicknames, ['Nicky', 'The Editable One']);
+  });
+
+  test('PUT /api/characters/:id also accepts a comma-separated string (the multipart-with-avatar wire shape)', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Form Field Nicknames', description: 'X.' })).json();
+    const form = new FormData();
+    form.append('nicknames', 'Formy, The Form One, ,Formy');
+    const res = await fetch(`${baseUrl}/api/characters/${character.id}`, { method: 'PUT', body: form });
+    const { character: updated } = await res.json();
+    assert.deepEqual(updated.nicknames, ['Formy', 'The Form One']);
+  });
+
+  test('omitting nicknames on PUT leaves the existing list untouched', async () => {
+    const { character } = await (await postJson('/api/characters', { name: 'Nickname Preserved', description: 'X.', nicknames: ['Preserved'] })).json();
+    const res = await fetch(`${baseUrl}/api/characters/${character.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ description: 'New description only.' }),
+    });
+    const { character: updated } = await res.json();
+    assert.deepEqual(updated.nicknames, ['Preserved']);
+  });
 });
 
 describe('GET /api/prompts/standard-blocks', () => {
