@@ -70,3 +70,37 @@ describe('activeCharIds', () => {
     assert.deepEqual(presentCharIds(placements, charactersById, 'square'), ['ezra']);
   });
 });
+
+describe('manual response order (placement.order)', () => {
+  test('presentCharIds sorts by order ascending, regardless of insertion order', () => {
+    const placements = {
+      ezra: { placeId: 'square', order: 2 },
+      wren: { placeId: 'square', order: 0 },
+      dara: { placeId: 'square', order: 1 },
+    };
+    assert.deepEqual(presentCharIds(placements, charactersById, 'square'), ['wren', 'dara', 'ezra']);
+  });
+
+  test('activeCharIds respects the same order, after filtering out inactive members', () => {
+    const placements = {
+      ezra: { placeId: 'square', order: 2 },
+      wren: { placeId: 'square', order: 0, active: false },
+      dara: { placeId: 'square', order: 1 },
+    };
+    assert.deepEqual(activeCharIds(placements, charactersById, 'square'), ['dara', 'ezra']);
+  });
+
+  test('characters with no order set sort after everyone who has one, keeping their own relative (insertion) order', () => {
+    const placements = {
+      ezra: { placeId: 'square' }, // no order
+      wren: { placeId: 'square', order: 0 },
+      dara: { placeId: 'square' }, // no order
+    };
+    assert.deepEqual(presentCharIds(placements, charactersById, 'square'), ['wren', 'ezra', 'dara']);
+  });
+
+  test('with nobody ordered at all, falls back to plain insertion order (unchanged from before this feature)', () => {
+    const placements = { ezra: { placeId: 'square' }, wren: { placeId: 'square' }, dara: { placeId: 'square' } };
+    assert.deepEqual(presentCharIds(placements, charactersById, 'square'), ['ezra', 'wren', 'dara']);
+  });
+});

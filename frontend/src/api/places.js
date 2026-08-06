@@ -2,6 +2,7 @@ import { apiGet, apiJson, apiDelete, apiForm } from './http';
 
 export const addPlace = (body) => apiJson('/api/places', 'POST', body);
 export const updatePlace = (id, body) => apiJson(`/api/places/${id}`, 'PUT', body);
+export const setPlaceOrder = (id, order) => apiJson(`/api/places/${id}/order`, 'PUT', { order });
 export const deletePlace = (id) => apiDelete(`/api/places/${id}`);
 export const exportPlace = (id) => apiGet(`/api/places/${id}/export`);
 export const exportPlacesByArea = (area) => apiGet(`/api/places/export?area=${encodeURIComponent(area)}`);

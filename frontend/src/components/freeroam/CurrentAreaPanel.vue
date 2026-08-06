@@ -16,6 +16,19 @@ const npcModal = useNpcModal();
 
 const place = computed(() => world.placeById(chat.currentPlace));
 const presentIds = computed(() => (place.value ? world.charsInPlace(place.value.id) : []));
+
+// Swaps two adjacent present characters and persists the resulting order —
+// see stores/world.js's setPlaceOrder / PUT /api/places/:placeId/order.
+// This is the manual half of response ordering; a message that explicitly
+// names/nicknames someone still overrides it for that one round (see
+// server.js's reactOrderForMessage), same as the backend does.
+function moveInOrder(index, delta) {
+  const ids = presentIds.value.slice();
+  const j = index + delta;
+  if (j < 0 || j >= ids.length) return;
+  [ids[index], ids[j]] = [ids[j], ids[index]];
+  world.setPlaceOrder(place.value.id, ids);
+}
 const typeLabel = computed(() => {
   if (!place.value) return '';
   if (place.value.type !== 'private') return 'Communal space';
@@ -42,7 +55,11 @@ function onBring(e) {
     <div class="area-context">{{ typeLabel }}<template v-if="place.area"> · {{ place.area }}</template></div>
     <div class="pdesc">{{ place.desc }}</div>
     <div class="present">
-      <PresentChip v-for="cid in presentIds" :key="cid" :char-id="cid" :place-id="place.id" />
+      <PresentChip
+        v-for="(cid, i) in presentIds" :key="cid" :char-id="cid" :place-id="place.id"
+        :can-move-up="i > 0" :can-move-down="i < presentIds.length - 1"
+        @move-up="moveInOrder(i, -1)" @move-down="moveInOrder(i, 1)"
+      />
       <span class="chip empty" v-if="!presentIds.length">no one else is here</span>
     </div>
     <div class="header-actions">

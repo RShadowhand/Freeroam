@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { getWorld, saveWorldSetting as apiSaveWorldSetting, postWorldTime, randomizePlacements } from '../api/world';
+import { setPlaceOrder as apiSetPlaceOrder } from '../api/places';
 import { getCharacters } from '../api/characters';
 import { getPersonas } from '../api/personas';
 import { getPresets } from '../api/presets';
@@ -39,10 +40,14 @@ export const useWorldStore = defineStore('world', {
     activePersona: (state) => state.personasList.find((p) => p.id === state.activePersonaId) || null,
     placeById: (state) => (id) => state.places.find((p) => p.id === id),
     charName: (state) => (id) => state.charactersById[id]?.name || null,
+    // Sorted by each placement's manual `order` (see setPlaceOrder below) —
+    // mirrors backend/lib/presence.js's presentCharIds exactly, so the
+    // on-screen list always matches what a reaction round will actually do.
     charsInPlace: (state) => (placeId) => Object.entries(state.placements)
       .filter(([, p]) => p && p.placeId === placeId)
-      .map(([cid]) => cid)
-      .filter((cid) => state.charactersById[cid]),
+      .filter(([cid]) => state.charactersById[cid])
+      .sort((a, b) => (a[1].order ?? Infinity) - (b[1].order ?? Infinity))
+      .map(([cid]) => cid),
     // Active is the default — a placement with no `active` field (every
     // placement made before this feature existed, or a freshly-placed
     // character) counts as active. Mirrors backend/server.js's
@@ -95,6 +100,18 @@ export const useWorldStore = defineStore('world', {
     },
     async randomize() {
       const { ok, data } = await randomizePlacements();
+      if (ok) this.placements = data.placements;
+      return { ok, data };
+    },
+    // `order` is a full ordered list of character ids present at `placeId`
+    // — see PUT /api/places/:placeId/order. Applied optimistically so a
+    // reorder click feels instant; the real placements object comes back
+    // in the response either way.
+    async setPlaceOrder(placeId, order) {
+      order.forEach((charId, index) => {
+        if (this.placements[charId]?.placeId === placeId) this.placements[charId].order = index;
+      });
+      const { ok, data } = await apiSetPlaceOrder(placeId, order);
       if (ok) this.placements = data.placements;
       return { ok, data };
     },

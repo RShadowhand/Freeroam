@@ -6,7 +6,13 @@ import { groupedByArea } from '../../utils/format';
 import { nextTimeSlot, scheduledSlotFor } from '../../utils/time';
 import Avatar from '../shared/Avatar.vue';
 
-const props = defineProps({ charId: { type: String, required: true }, placeId: { type: String, required: true } });
+const props = defineProps({
+  charId: { type: String, required: true },
+  placeId: { type: String, required: true },
+  canMoveUp: { type: Boolean, default: false },
+  canMoveDown: { type: Boolean, default: false },
+});
+const emit = defineEmits(['move-up', 'move-down']);
 const world = useWorldStore();
 const chat = useChatStore();
 
@@ -44,6 +50,10 @@ function toggleActive() {
 
 <template>
   <span class="chip" :class="{ inactive: !active }" v-if="character">
+    <span class="chip-order-buttons">
+      <button class="chip-order-btn" title="Move earlier in response order" :disabled="!canMoveUp" @click="emit('move-up')">▲</button>
+      <button class="chip-order-btn" title="Move later in response order" :disabled="!canMoveDown" @click="emit('move-down')">▼</button>
+    </span>
     <Avatar :char-id="charId" :size="18" />
     {{ character.name }}
     <button

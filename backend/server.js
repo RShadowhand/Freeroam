@@ -81,7 +81,7 @@ import { createWorldRegistry } from './lib/worldRegistry.js';
 import { buildWorldExportBundle, importWorldBundle, peekManifest } from './lib/worldExport.js';
 import { CONDITIONS as WEATHER_CONDITIONS, loadWeather, saveWeather, rollAutoWeather, setManualWeather, setAutoWeather } from './lib/weather.js';
 import { buildTextingMessages, historyFromLog, groupHistoryFromLog } from './lib/texting.js';
-import { colorForId } from './lib/textUtils.js';
+import { colorForId, orderByMentionIn, firstMentionedCharacter } from './lib/textUtils.js';
 import { loadCalls, saveCalls } from './lib/calls.js';
 import { loadGroups, saveGroups, createGroup } from './lib/groups.js';
 import {
@@ -2253,7 +2253,7 @@ function normalizeTriggerSpeaker(charactersById, triggerSpeakerId) {
 // through. Stops on the first failed roll, on running out of eligible
 // repliers, or at MAX_CASCADE_REPLIES regardless of how the dice keep
 // landing.
-async function runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId, onEvent = null, signal }) {
+async function runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId, onEvent = null, signal, preferredFirstReplierId = null }) {
   if (!cfg.apiKey) return { entries: [], error: 'No API key configured. Add one in Settings.' };
 
   const cascadeEntries = [];
@@ -2263,12 +2263,23 @@ async function runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId
   const turnContext = loadGroupTurnContext(w);
 
   for (;;) {
-    const step = nextCascadeStep({
-      participantIds: group.participantIds, lastSpeakerId, lastSpeakerStreak, repliesSoFar,
-      cascadeBaseChance: cfg.cascadeBaseChance, cascadeDecayRate: cfg.cascadeDecayRate, cascadePerCharacterCap: cfg.cascadePerCharacterCap,
-    });
-    if (!step) break;
-    const { replierId } = step;
+    // A trigger message that explicitly names/nicknames a member (e.g. "hey
+    // Soot, you around?") skips the normal continue-roll for just this
+    // first reply — same "addressed by name -> they answer" behavior the
+    // scene-chat reordering gives /say. Only the first pick is ever forced;
+    // every reply after that goes back through the usual probabilistic
+    // nextCascadeStep untouched.
+    let replierId;
+    if (repliesSoFar === 0 && preferredFirstReplierId && group.participantIds.includes(preferredFirstReplierId)) {
+      replierId = preferredFirstReplierId;
+    } else {
+      const step = nextCascadeStep({
+        participantIds: group.participantIds, lastSpeakerId, lastSpeakerStreak, repliesSoFar,
+        cascadeBaseChance: cfg.cascadeBaseChance, cascadeDecayRate: cfg.cascadeDecayRate, cascadePerCharacterCap: cfg.cascadePerCharacterCap,
+      });
+      if (!step) break;
+      replierId = step.replierId;
+    }
     const character = charactersById[replierId];
     if (!character) break; // shouldn't happen — participantIds are validated at creation
 
@@ -2346,7 +2357,10 @@ const pendingCascadeSteps = new Map(); // groupId -> { replierId, lastSpeakerId,
 // precedent) whose frontend caller (triggerGroupApi) is a plain JSON POST,
 // not an SSE-aware fetch, so a streamed response here would just silently
 // fail to parse rather than degrade gracefully.
-async function beginGroupCascade({ req, res, w, cfg, group, charactersById, triggerEntry, triggerSpeakerId, userLabel, activePersonaId, time, allowStreaming = true }) {
+async function beginGroupCascade({
+  req, res, w, cfg, group, charactersById, triggerEntry, triggerSpeakerId, userLabel, activePersonaId, time,
+  allowStreaming = true, preferredFirstReplierId = null,
+}) {
   if (cfg.groupCascadeManualApproval) {
     // A new trigger supersedes any pending step the user never answered —
     // but whatever cascade replies THAT round already had approved (its
@@ -2367,22 +2381,30 @@ async function beginGroupCascade({ req, res, w, cfg, group, charactersById, trig
     }
 
     const { lastSpeakerId, lastSpeakerStreak } = normalizeTriggerSpeaker(charactersById, triggerSpeakerId);
-    const step = nextCascadeStep({
-      participantIds: group.participantIds, lastSpeakerId, lastSpeakerStreak, repliesSoFar: 0,
-      cascadeBaseChance: cfg.cascadeBaseChance, cascadeDecayRate: cfg.cascadeDecayRate, cascadePerCharacterCap: cfg.cascadePerCharacterCap,
-    });
-    if (!step) {
-      recordGroupRound(w, { group, triggerEntry, cascadeEntries: [], userLabel, activePersonaId, time });
-      return res.json({ log: loadChatLog(w.textsDir, group.id) });
+    // Same addressed-by-name override runGroupCascade's auto path gets —
+    // see its own comment.
+    let firstReplierId = preferredFirstReplierId && group.participantIds.includes(preferredFirstReplierId)
+      ? preferredFirstReplierId
+      : null;
+    if (!firstReplierId) {
+      const step = nextCascadeStep({
+        participantIds: group.participantIds, lastSpeakerId, lastSpeakerStreak, repliesSoFar: 0,
+        cascadeBaseChance: cfg.cascadeBaseChance, cascadeDecayRate: cfg.cascadeDecayRate, cascadePerCharacterCap: cfg.cascadePerCharacterCap,
+      });
+      if (!step) {
+        recordGroupRound(w, { group, triggerEntry, cascadeEntries: [], userLabel, activePersonaId, time });
+        return res.json({ log: loadChatLog(w.textsDir, group.id) });
+      }
+      firstReplierId = step.replierId;
     }
 
     pendingCascadeSteps.set(group.id, {
-      replierId: step.replierId, lastSpeakerId, lastSpeakerStreak, repliesSoFar: 0,
+      replierId: firstReplierId, lastSpeakerId, lastSpeakerStreak, repliesSoFar: 0,
       triggerEntry, cascadeEntries: [], userLabel, activePersonaId, time,
     });
     return res.json({
       log: loadChatLog(w.textsDir, group.id),
-      pendingReply: { charId: step.replierId, name: charactersById[step.replierId]?.name || null },
+      pendingReply: { charId: firstReplierId, name: charactersById[firstReplierId]?.name || null },
     });
   }
 
@@ -2406,7 +2428,7 @@ async function beginGroupCascade({ req, res, w, cfg, group, charactersById, trig
     const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
     send({ type: 'ack', log: loadChatLog(w.textsDir, group.id) });
 
-    const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId, onEvent: send, signal });
+    const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId, onEvent: send, signal, preferredFirstReplierId });
     finish(result);
     if (!signal.aborted) {
       send({ type: 'done', log: loadChatLog(w.textsDir, group.id), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
@@ -2414,7 +2436,7 @@ async function beginGroupCascade({ req, res, w, cfg, group, charactersById, trig
     return res.end();
   }
 
-  const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId, signal });
+  const result = await runGroupCascade({ w, cfg, group, charactersById, triggerSpeakerId, signal, preferredFirstReplierId });
   finish(result);
   if (!signal.aborted) {
     res.json({ log: loadChatLog(w.textsDir, group.id), ...(result.error ? { error: result.error, cancelled: result.cancelled } : {}) });
@@ -2446,9 +2468,14 @@ app.post('/api/groups/:groupId/send', async (req, res) => {
   const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
   const userLabel = activePersona ? activePersona.name : 'Visitor';
+  // Addressed by name/nickname ("hey Soot, ...") -> they answer first,
+  // same override runReactionRound's scene-chat callers get from
+  // reactOrderForMessage. No mention -> today's plain random pick, untouched.
+  const mentioned = firstMentionedCharacter(text, group.participantIds.map((id) => charactersById[id]).filter(Boolean));
 
   await beginGroupCascade({
     req, res, w, cfg, group, charactersById, triggerEntry: userEntry, triggerSpeakerId: 'user', userLabel, activePersonaId, time,
+    preferredFirstReplierId: mentioned?.id || null,
   });
 });
 
@@ -2485,9 +2512,12 @@ app.post('/api/groups/:groupId/retry', async (req, res) => {
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
   const userLabel = activePersona ? activePersona.name : 'Visitor';
   const time = loadWorld(w).time;
+  // Same addressed-by-name override /send's own call gets — see its comment.
+  const mentioned = firstMentionedCharacter(triggerEntry.text, group.participantIds.map((id) => charactersById[id]).filter(Boolean));
 
   await beginGroupCascade({
     req, res, w, cfg, group, charactersById, triggerEntry, triggerSpeakerId: 'user', userLabel, activePersonaId, time,
+    preferredFirstReplierId: mentioned?.id || null,
   });
 });
 
@@ -3073,6 +3103,27 @@ app.post('/api/characters/:id/place', (req, res) => {
   }
 
   world.placements[id] = existing;
+  saveWorld(w, world);
+  res.json({ placements: world.placements });
+});
+
+// Sets the manual response order for characters present at a place — a
+// plain list of character ids, index becomes each one's stored `order`
+// (see lib/presence.js, which presentCharIds/activeCharIds now sort by).
+// Only touches ids actually placed at this place; anything else in the
+// array is silently ignored rather than erroring, so the frontend can
+// always PUT its current on-screen list without pre-filtering it first.
+app.put('/api/places/:placeId/order', (req, res) => {
+  const w = req.world;
+  const { placeId } = req.params;
+  const { order } = req.body || {};
+  if (!Array.isArray(order)) return res.status(400).json({ error: 'An order array is required.' });
+
+  const world = loadWorld(w);
+  order.forEach((charId, index) => {
+    const placement = world.placements[charId];
+    if (placement && placement.placeId === placeId) placement.order = index;
+  });
   saveWorld(w, world);
   res.json({ placements: world.placements });
 });
@@ -3701,6 +3752,17 @@ function activeCharIds(w, placeId, charactersById) {
   return activeCharIdsFor(loadWorld(w).placements, charactersById, placeId);
 }
 
+// Dynamically reorders this round's reactIds by who the user's own message
+// actually addresses/mentions (by name or nickname), layered on top of the
+// persisted manual order (PUT /api/places/:placeId/order) rather than
+// replacing it — a message that doesn't name anyone leaves today's order
+// untouched; "*pets Soot* ... *turns to Erza*" puts Soot first even if
+// Erza's manual/default order would otherwise come first.
+function reactOrderForMessage(text, activeIds, charactersById) {
+  const chars = activeIds.map((id) => charactersById[id]).filter(Boolean);
+  return orderByMentionIn(text, chars).map((c) => c.id);
+}
+
 // What the speaking character knows about the people relevant to `query`
 // right now: who they are to them, and — with a randomized roll per
 // generation — whether they currently know where that person is. Same-area
@@ -4259,7 +4321,7 @@ app.post('/api/places/:placeId/say', async (req, res) => {
   const charactersById = {};
   loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
   const charIds = presentCharIds(w, placeId, charactersById);
-  const activeIds = activeCharIds(w, placeId, charactersById);
+  const activeIds = reactOrderForMessage(text, activeCharIds(w, placeId, charactersById), charactersById);
 
   const turnEntries = [];
   if (announceArrival && loadChatLog(w.chatDir, placeId).length > 0) {
@@ -4344,7 +4406,7 @@ app.post('/api/places/:placeId/retry', async (req, res) => {
   const charactersById = {};
   loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
   const charIds = presentCharIds(w, placeId, charactersById);
-  const activeIds = activeCharIds(w, placeId, charactersById);
+  const activeIds = reactOrderForMessage(log[lastUserIdx].text, activeCharIds(w, placeId, charactersById), charactersById);
   logger.info('chat', `retry @ ${place.name}: ${charIds.length} character(s) present, ${activeIds.length} active`);
 
   // Retry reuses this same trigger message across attempts rather than

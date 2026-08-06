@@ -1632,6 +1632,116 @@ describe('POST /api/places/:placeId/retry (validation paths — no real OpenRout
   });
 });
 
+describe('Response order (manual order + name/nickname mention)', () => {
+  const realFetch = globalThis.fetch;
+  function mockOpenRouterFetch(handler) {
+    return async (url, opts) => {
+      if (typeof url === 'string' && url.includes('/chat/completions')) return handler(url, opts);
+      return realFetch(url, opts);
+    };
+  }
+  async function makePlace(name) {
+    const res = await postJson('/api/places', { name, type: 'communal' });
+    return (await res.json()).place;
+  }
+  async function placeCharacter(name, placeId, nicknames = []) {
+    const { character } = await (await postJson('/api/characters', { name, description: 'Present.', nicknames })).json();
+    await fetch(`${baseUrl}/api/characters/${character.id}/place`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ placeId }),
+    });
+    return character;
+  }
+  function mockPlainReply() {
+    return mockOpenRouterFetch(async () => new Response(JSON.stringify({ choices: [{ message: { content: 'Hi.' } }] }), { status: 200 }));
+  }
+
+  test("PUT /api/places/:placeId/order sets manual order, reflected in that place's reaction rounds", async (t) => {
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+    const place = await makePlace('Order Hall');
+    // Placed Zeta then Alpha — alphabetical/insertion order would put Alpha
+    // first; manual order below should override that.
+    const zeta = await placeCharacter('Zeta', place.id);
+    const alpha = await placeCharacter('Alpha', place.id);
+
+    const orderRes = await fetch(`${baseUrl}/api/places/${place.id}/order`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order: [zeta.id, alpha.id] }),
+    });
+    assert.equal(orderRes.status, 200);
+
+    t.mock.method(globalThis, 'fetch', mockPlainReply());
+    await postJson(`/api/places/${place.id}/enter`, {});
+    const { log } = await (await postJson(`/api/places/${place.id}/say`, { text: 'Hello everyone.' })).json();
+    assert.deepEqual(log.filter((e) => e.type === 'char').map((e) => e.charId), [zeta.id, alpha.id]);
+
+    await postJson('/api/settings/clear-key', {});
+  });
+
+  test('order silently ignores an id that is not actually present at that place', async () => {
+    const place = await makePlace('Order Ignore Hall');
+    const char = await placeCharacter('Solo', place.id);
+    const res = await fetch(`${baseUrl}/api/places/${place.id}/order`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order: ['not-a-real-id', char.id] }),
+    });
+    assert.equal(res.status, 200);
+    const { placements } = await res.json();
+    assert.equal(placements['not-a-real-id'], undefined);
+    assert.equal(placements[char.id].order, 1);
+  });
+
+  test('rejects a non-array order body', async () => {
+    const place = await makePlace('Order Bad Body Hall');
+    const res = await fetch(`${baseUrl}/api/places/${place.id}/order`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order: 'not-an-array' }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test("a message mentioning a character by name reorders that round's replies, overriding manual/default order", async (t) => {
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+    const place = await makePlace('Mention Order Hall');
+    // Default (placement/insertion) order is Soot, then Erza.
+    const soot = await placeCharacter('Soot', place.id);
+    const erza = await placeCharacter('Erza', place.id);
+
+    t.mock.method(globalThis, 'fetch', mockPlainReply());
+    await postJson(`/api/places/${place.id}/enter`, {});
+    const { log } = await (await postJson(`/api/places/${place.id}/say`, {
+      text: '*pets Erza* good kitty *then turns to Soot*',
+    })).json();
+    assert.deepEqual(log.filter((e) => e.type === 'char').map((e) => e.charId), [erza.id, soot.id]);
+
+    await postJson('/api/settings/clear-key', {});
+  });
+
+  test('mention-based reordering also matches on a nickname', async (t) => {
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+    const place = await makePlace('Nickname Order Hall');
+    const vane = await placeCharacter('Ezra Vane', place.id, ['Vane']);
+    const dara = await placeCharacter('Dara', place.id);
+
+    t.mock.method(globalThis, 'fetch', mockPlainReply());
+    await postJson(`/api/places/${place.id}/enter`, {});
+    const { log } = await (await postJson(`/api/places/${place.id}/say`, { text: 'Hey Vane, you around?' })).json();
+    assert.deepEqual(log.filter((e) => e.type === 'char').map((e) => e.charId), [vane.id, dara.id]);
+
+    await postJson('/api/settings/clear-key', {});
+  });
+
+  test('a message mentioning nobody leaves the existing (manual/default) order untouched', async (t) => {
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+    const place = await makePlace('No Mention Order Hall');
+    const soot = await placeCharacter('Soot', place.id);
+    const erza = await placeCharacter('Erza', place.id);
+
+    t.mock.method(globalThis, 'fetch', mockPlainReply());
+    await postJson(`/api/places/${place.id}/enter`, {});
+    const { log } = await (await postJson(`/api/places/${place.id}/say`, { text: 'A quiet moment passes.' })).json();
+    assert.deepEqual(log.filter((e) => e.type === 'char').map((e) => e.charId), [soot.id, erza.id]);
+
+    await postJson('/api/settings/clear-key', {});
+  });
+});
+
 describe('Active participants (promote/demote)', () => {
   async function makePlace(name) {
     const res = await postJson('/api/places', { name, type: 'communal' });

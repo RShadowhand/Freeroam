@@ -389,6 +389,13 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
   font-size:0.66rem; padding:0 2px; line-height:1;
 }
 .chip-remove:hover{ color:var(--rose); }
+.chip-order-buttons{ display:flex; flex-direction:column; gap:1px; }
+.chip-order-btn{
+  background:none; border:none; color:var(--dim); cursor:pointer;
+  font-size:0.5rem; padding:0; line-height:1;
+}
+.chip-order-btn:hover:not(:disabled){ color:var(--accent); }
+.chip-order-btn:disabled{ opacity:0.25; cursor:default; }
 .header-actions{ display:flex; gap:8px; margin-top:10px; align-items:center; flex-wrap:wrap; }
 .bring-select{
   width:auto; background:var(--panel-raised); border:1px solid var(--border);

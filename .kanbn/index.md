@@ -9,15 +9,18 @@ completedColumns:
 
 ## Todo
 
+- [research-tools-for-the-backend-toolcalling-for-character-location-state-information](tasks/research-tools-for-the-backend-toolcalling-for-character-location-state-information.md)
+- [fix-scroll-to-bottom-regression](tasks/fix-scroll-to-bottom-regression.md)
+- [research-llm-based-intent-new-character-detection-mode-replaces-unreliable-local-classifier](tasks/research-llm-based-intent-new-character-detection-mode-replaces-unreliable-local-classifier.md)
+
 ## In Progress
 
 ## Needs Human Testing
 
-- [research-structured-output-from-the-ai-backend-custom-or-openrouter](tasks/research-structured-output-from-the-ai-backend-custom-or-openrouter.md)
-- [check-local-classifier-for-intent-new-characters-is-inaccurate](tasks/check-local-classifier-for-intent-new-characters-is-inaccurate.md)
-
 ## Done
 
+- [feature-character-nickname-system](tasks/feature-character-nickname-system.md)
+- [fix-area-grouptext-chats-character-order-should-be-dynamic-settable-manually](tasks/fix-area-grouptext-chats-character-order-should-be-dynamic-settable-manually.md)
 - [feature-trigger-proactive-text-to-group-chats](tasks/feature-trigger-proactive-text-to-group-chats.md)
 - [feature-add-import-character-from-chub-ai-botbooru-option](tasks/feature-add-import-character-from-chub-ai-botbooru-option.md)
 - [feature-manual-message-steps-in-group-chat-message-cascades](tasks/feature-manual-message-steps-in-group-chat-message-cascades.md)

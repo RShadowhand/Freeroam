@@ -563,6 +563,70 @@ describe('Groups: the cascade (OpenRouter + Math.random mocked)', () => {
   });
 });
 
+describe('Groups: mention-based response order override', () => {
+  let group;
+
+  before(async () => {
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real', textingChancePerChar: 0 });
+    ({ group } = await (await postJson('/api/groups', { name: 'Mention Order Test', participantIds: ['ezra', 'mireille'] })).json());
+  });
+  after(async () => {
+    await postJson('/api/settings/clear-key', {});
+  });
+
+  test('addressing a member by name makes them the guaranteed first replier, bypassing the normal roll', async (t) => {
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () => new Response(
+      JSON.stringify({ choices: [{ message: { content: 'Yes?' } }] }), { status: 200 },
+    )));
+    // Without the mention override, this sequence's first continue-check
+    // (0 < 0.85 base chance -> continues) + pick (floor(0*2)=0) would make
+    // ezra (index 0 of ['ezra','mireille']) the first replier — proving
+    // it's the override, not luck, that puts Mireille first instead.
+    t.mock.method(Math, 'random', mockRandomSequence([0, 0]));
+
+    const res = await postJson(`/api/groups/${group.id}/send`, { text: 'Mireille, are you there?' });
+    assert.equal(res.status, 200);
+    const { log } = await res.json();
+    const charEntries = log.filter((e) => e.type === 'char');
+    assert.ok(charEntries.length >= 1);
+    assert.equal(charEntries[0].charId, 'mireille');
+  });
+
+  test('a message mentioning nobody leaves the normal random pick untouched', async (t) => {
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () => new Response(
+      JSON.stringify({ choices: [{ message: { content: 'Hm.' } }] }), { status: 200 },
+    )));
+    // continue (0), pick ezra (0 -> index 0), stop (0.99)
+    t.mock.method(Math, 'random', mockRandomSequence([0, 0, 0.99]));
+
+    const res = await postJson(`/api/groups/${group.id}/send`, { text: 'Anyone around today?' });
+    const { log } = await res.json();
+    const charEntries = log.filter((e) => e.type === 'char');
+    assert.equal(charEntries[charEntries.length - 1].charId, 'ezra');
+  });
+
+  test('retry also honors a mention from the reused trigger message', async (t) => {
+    // Seed a dangling trigger message that mentions Mireille but was never
+    // replied to (mirrors the existing retry tests' pattern elsewhere).
+    const { group: retryGroup } = await (await postJson('/api/groups', { name: 'Mention Retry Test', participantIds: ['ezra', 'mireille'] })).json();
+    await postJson('/api/settings/clear-key', {}); // no key -> /send just persists the trigger, no cascade
+    await postJson(`/api/groups/${retryGroup.id}/send`, { text: 'Mireille, you around?' });
+    await postJson('/api/settings', { apiKey: 'sk-test-not-real' });
+
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () => new Response(
+      JSON.stringify({ choices: [{ message: { content: 'Yes?' } }] }), { status: 200 },
+    )));
+    t.mock.method(Math, 'random', mockRandomSequence([0, 0])); // would pick ezra first if unforced — see above
+
+    const res = await postJson(`/api/groups/${retryGroup.id}/retry`, {});
+    assert.equal(res.status, 200);
+    const { log } = await res.json();
+    const charEntries = log.filter((e) => e.type === 'char');
+    assert.ok(charEntries.length >= 1);
+    assert.equal(charEntries[0].charId, 'mireille');
+  });
+});
+
 describe('Groups: delete message', () => {
   let group;
   before(async () => {
