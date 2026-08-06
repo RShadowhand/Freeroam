@@ -14,6 +14,7 @@ const settingsTabs = [
   { path: '/settings/prompts', label: 'Prompts' },
   { path: '/settings/connection', label: 'Connection' },
   { path: '/settings/guides', label: 'Guides' },
+  { path: '/settings/changelog', label: 'Changelog' },
 ];
 
 const tabs = computed(() => {

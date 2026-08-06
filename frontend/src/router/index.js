@@ -25,6 +25,7 @@ const routes = [
   { path: '/settings/system', name: 'settings-system', component: () => import('../views/SystemView.vue'), meta: { top: '/settings' } },
   { path: '/settings/prompts', name: 'settings-prompts', component: () => import('../views/PromptsView.vue'), meta: { top: '/settings' } },
   { path: '/settings/guides', name: 'settings-guides', component: () => import('../views/GuidesView.vue'), meta: { top: '/settings' } },
+  { path: '/settings/changelog', name: 'settings-changelog', component: () => import('../views/ChangelogView.vue'), meta: { top: '/settings' } },
   // Variables moved under Guides — redirected rather than dropped outright
   // so an old bookmark/muscle-memory URL still lands somewhere sensible.
   { path: '/settings/variables', redirect: '/settings/guides' },
