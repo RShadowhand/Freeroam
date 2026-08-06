@@ -51,6 +51,7 @@ import {
 import { shouldNarrate, buildNarratorMessages, isNarratorSilent } from './lib/narrator.js';
 import { characterSnippet } from './lib/characterEmbeddings.js';
 import { detectSuggestedActions } from './lib/suggestedActions.js';
+import { detectViaBuiltinLlm, buildIntentPrompt, parseIntents, extractJsonLenient } from './lib/llmSuggestedActions.js';
 import { embed, MODEL_ID as EMBEDDING_MODEL_ID } from './lib/embeddings.js';
 import {
   estimateTokens,
@@ -153,7 +154,11 @@ const DEFAULT_CONFIG = {
   reasoning: 'off',                    // off | low | medium | high (OpenRouter reasoning effort)
   providers: [],                       // pin one or more OpenRouter providers, tried in this order ([] = let it route)
   memoryMinScore: 0.35,                 // cosine-similarity floor for memory recall (see retrieveMemories)
-  suggestedActionsMode: 'regex',        // regex | hybrid | ml — see lib/suggestedActions.js
+  suggestedActionsMode: 'regex',        // regex | hybrid | ml | llm — see lib/suggestedActions.js / lib/llmSuggestedActions.js
+  suggestedActionsLlmSource: 'builtin', // builtin | same | custom — which model answers 'llm' mode's sidecar call
+  suggestedActionsLlmCustomApiBase: '', // only used when suggestedActionsLlmSource === 'custom'
+  suggestedActionsLlmCustomModel: '',
+  suggestedActionsLlmCustomApiKey: '',  // '' = fall back to the main apiKey (same-provider custom endpoints don't need a second key)
   draftPersonaPrompt: '',              // '' = use DEFAULT_DRAFT_PERSONA_PROMPT; see /api/characters/draft
   narratorEnabled: true,                // ambient world-voice for empty/solo/background scenes — see lib/narrator.js
   textingPromptTemplate: '',            // '' = use DEFAULT_TEXTING_PROMPT_TEMPLATE; see lib/texting.js
@@ -545,6 +550,10 @@ function publicConfig(cfg) {
     providers: Array.isArray(cfg.providers) ? cfg.providers : [],
     memoryMinScore: Number.isFinite(cfg.memoryMinScore) ? cfg.memoryMinScore : DEFAULT_CONFIG.memoryMinScore,
     suggestedActionsMode: cfg.suggestedActionsMode || DEFAULT_CONFIG.suggestedActionsMode,
+    suggestedActionsLlmSource: cfg.suggestedActionsLlmSource || DEFAULT_CONFIG.suggestedActionsLlmSource,
+    suggestedActionsLlmCustomApiBase: cfg.suggestedActionsLlmCustomApiBase || '',
+    suggestedActionsLlmCustomModel: cfg.suggestedActionsLlmCustomModel || '',
+    hasCustomLlmKey: !!cfg.suggestedActionsLlmCustomApiKey,
     draftPersonaPrompt: (cfg.draftPersonaPrompt || '').trim() || DEFAULT_DRAFT_PERSONA_PROMPT,
     draftPersonaPromptIsCustom: !!(cfg.draftPersonaPrompt || '').trim(),
     embeddingModel: EMBEDDING_MODEL_ID,
@@ -570,6 +579,7 @@ app.post('/api/settings', (req, res) => {
   const cfg = loadConfig();
   const {
     apiKey, model, apiBase, streaming, reasoning, providers, memoryMinScore, suggestedActionsMode,
+    suggestedActionsLlmSource, suggestedActionsLlmCustomApiBase, suggestedActionsLlmCustomModel, suggestedActionsLlmCustomApiKey,
     draftPersonaPrompt, narratorEnabled, textingPromptTemplate, textingTypingIndicator,
     cascadeBaseChance, cascadeDecayRate, cascadePerCharacterCap, groupCascadeManualApproval, textingChancePerChar, onboarded,
   } = req.body || {};
@@ -585,7 +595,11 @@ app.post('/api/settings', (req, res) => {
   if (typeof memoryMinScore === 'number' && Number.isFinite(memoryMinScore)) {
     cfg.memoryMinScore = Math.max(0, Math.min(1, memoryMinScore));
   }
-  if (['regex', 'hybrid', 'ml'].includes(suggestedActionsMode)) cfg.suggestedActionsMode = suggestedActionsMode;
+  if (['regex', 'hybrid', 'ml', 'llm'].includes(suggestedActionsMode)) cfg.suggestedActionsMode = suggestedActionsMode;
+  if (['builtin', 'same', 'custom'].includes(suggestedActionsLlmSource)) cfg.suggestedActionsLlmSource = suggestedActionsLlmSource;
+  if (typeof suggestedActionsLlmCustomApiBase === 'string') cfg.suggestedActionsLlmCustomApiBase = suggestedActionsLlmCustomApiBase.trim().replace(/\/+$/, '');
+  if (typeof suggestedActionsLlmCustomModel === 'string') cfg.suggestedActionsLlmCustomModel = suggestedActionsLlmCustomModel.trim();
+  if (typeof suggestedActionsLlmCustomApiKey === 'string' && suggestedActionsLlmCustomApiKey.trim()) cfg.suggestedActionsLlmCustomApiKey = suggestedActionsLlmCustomApiKey.trim();
   // '' is a valid, meaningful value here (reset to the built-in default —
   // see publicConfig), so this only guards the type, not truthiness.
   if (typeof draftPersonaPrompt === 'string') cfg.draftPersonaPrompt = draftPersonaPrompt.trim();
@@ -3935,6 +3949,11 @@ async function buildTurnRequest({ w, place, speakerId, presentIds, charactersByI
     userLabel,
     activePersonaId,
     time: world.time,
+    // The persona's own preceding line, if any — 'llm' suggested-actions
+    // mode needs this for context a single reply doesn't carry on its own
+    // (resolving "that spreadsheet"/"me" against what was actually asked).
+    // Already computed above for memory retrieval; just also surfaced here.
+    latestUserText: latestUserEntry ? latestUserEntry.text : null,
   };
 }
 
@@ -3943,7 +3962,49 @@ async function buildTurnRequest({ w, place, speakerId, presentIds, charactersByI
 // callOpenRouter/streamOpenRouter reported — buildGenerationStats (lib/
 // context.js) handles either being partially or fully null when the
 // endpoint doesn't report token counts.
-async function turnEntriesFrom(w, text, reasoning, request, usage, timing, place, charactersById, suggestedActionsMode, backgroundIds = []) {
+// 'llm' mode's remote sources ('same'/'custom') — the built-in local model
+// (lib/llmSuggestedActions.js's detectViaBuiltinLlm) needs no network call
+// and is dispatched to directly below; this is the OpenRouter-style path,
+// reusing callOpenRouter the same way generateProactiveText does. A remote
+// endpoint can't be assumed to support grammar-constrained output the way
+// node-llama-cpp does locally, so this asks nicely (prompt-based JSON) and
+// parses leniently — same "worst case, zero suggestions" contract as every
+// other suggestion-detection path.
+async function detectLlmSuggestedActionsRemote(cfg, text, ctx) {
+  try {
+    const { systemPrompt, userPrompt } = buildIntentPrompt(text, ctx);
+    const { text: raw } = await callOpenRouter(
+      cfg,
+      [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+      400,
+      'suggested-actions (llm sidecar)',
+    );
+    const parsed = extractJsonLenient(raw);
+    return parseIntents(parsed?.intents, ctx);
+  } catch (err) {
+    logger.warn('suggest', `remote LLM suggestion detection failed: ${err.message}`);
+    return [];
+  }
+}
+
+// Dispatches 'llm' mode to whichever model source is configured. 'custom'
+// substitutes just the endpoint/model/key fields into a copy of cfg — every
+// other setting (providers, streaming is irrelevant here, etc.) stays
+// whatever the main generation config already has.
+async function detectLlmSuggestedActions(cfg, text, ctx) {
+  if (cfg.suggestedActionsLlmSource === 'builtin') return detectViaBuiltinLlm(text, ctx);
+  const remoteCfg = cfg.suggestedActionsLlmSource === 'custom'
+    ? {
+      ...cfg,
+      apiBase: cfg.suggestedActionsLlmCustomApiBase || cfg.apiBase,
+      model: cfg.suggestedActionsLlmCustomModel || cfg.model,
+      apiKey: cfg.suggestedActionsLlmCustomApiKey || cfg.apiKey,
+    }
+    : cfg;
+  return detectLlmSuggestedActionsRemote(remoteCfg, text, ctx);
+}
+
+async function turnEntriesFrom(w, text, reasoning, request, usage, timing, place, charactersById, cfg, backgroundIds = []) {
   const entries = parseCharacterTurn((text || '').trim(), request.speaker, request.present);
   if (!entries.length || entries[0].type !== 'char') return entries;
   if (reasoning) entries[0].reasoning = reasoning;
@@ -3953,16 +4014,21 @@ async function turnEntriesFrom(w, text, reasoning, request, usage, timing, place
     .map((cid) => charactersById[cid])
     .filter(Boolean)
     .map((c) => ({ id: c.id, name: c.name }));
-  const suggestions = await detectSuggestedActions(entries[0].text, {
+  const sharedCtx = {
     places: loadPlaces(w),
     characters: Object.values(charactersById || {}),
     currentPlaceId: place?.id ?? null,
-    mode: suggestedActionsMode,
     personaName: request.userLabel,
     backgroundCharacters,
     speakerId: request.speaker.id,
     speakerName: request.speaker.name,
-  });
+    precedingUserText: request.latestUserText,
+    worldDay: request.time?.day,
+    worldTimeOfDay: request.time?.timeOfDay,
+  };
+  const suggestions = cfg.suggestedActionsMode === 'llm'
+    ? await detectLlmSuggestedActions(cfg, entries[0].text, sharedCtx)
+    : await detectSuggestedActions(entries[0].text, { ...sharedCtx, mode: cfg.suggestedActionsMode });
   if (suggestions.length) entries[0].suggestions = suggestions;
   return entries;
 }
@@ -3987,7 +4053,7 @@ async function generateCharacterTurn({ w, cfg, place, speakerId, presentIds, cha
       ({ text, reasoning, usage, timing } = await callOpenRouter(cfg, request.messages, request.maxReplyTokens,
         `${request.speaker.name} @ ${place.name}`, signal));
     }
-    return { entries: await turnEntriesFrom(w, text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode, backgroundIds) };
+    return { entries: await turnEntriesFrom(w, text, reasoning, request, usage, timing, place, charactersById, cfg, backgroundIds) };
   } catch (err) {
     return { error: err.message, cancelled: !!err.cancelled };
   }
@@ -4167,7 +4233,7 @@ async function runReactionRound({ w, placeId, place, reactIds, presentIds, chara
       break;
     }
 
-    const entries = await turnEntriesFrom(w, text, reasoning, request, usage, timing, place, charactersById, cfg.suggestedActionsMode, backgroundIds);
+    const entries = await turnEntriesFrom(w, text, reasoning, request, usage, timing, place, charactersById, cfg, backgroundIds);
     appendPlaceChatEntries(w, placeId, entries, turnContext.world.time);
     roundEntries.push(...entries);
     if (onEvent) onEvent({ type: 'turn', entries });

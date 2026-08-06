@@ -8,9 +8,10 @@ const overflow = useSuggestionOverflow();
 // Fixed display order rather than alphabetical — Conversation (who's
 // talking right now) reads as the most immediately actionable, New
 // (things that don't exist yet) as the least urgent.
-const CATEGORY_ORDER = ['Conversation', 'Movement', 'New'];
+const CATEGORY_ORDER = ['Conversation', 'Messaging', 'Movement', 'New'];
 function categoryFor(s) {
-  if (s.type === 'promote' || s.type === 'demote') return 'Conversation';
+  if (s.type === 'promote' || s.type === 'demote' || s.type === 'call-to-scene') return 'Conversation';
+  if (s.type === 'text-someone' || s.type === 'scheduled-text') return 'Messaging';
   if (s.type === 'destination' && s.known) return 'Movement';
   return 'New'; // unknown destination, new-character
 }

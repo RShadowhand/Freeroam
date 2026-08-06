@@ -4,14 +4,14 @@ import { useChatStore } from '../../stores/chat';
 import { useSuggestionOverflow } from '../../composables/useSuggestionOverflow';
 import SuggestionButton from './SuggestionButton.vue';
 
-// Suggestion chips from the backend's local (regex/ML, no extra LLM call)
-// reading of the reply — a best-effort nudge, not a guarantee, so every
-// chip is just a shortcut to an action the user could already do manually.
-// A single suggestion (destination/new-character/promote/demote) renders
-// inline as before; more than one collapses to a single "N suggestions"
-// button that opens the grouped overflow modal — a message can now carry
-// destination + new-character + promote + demote all at once, and a row
-// of 5+ chips wrapping across lines was worse than one tap-through button.
+// Suggestion chips from the backend's reading of the reply (regex/ML, or
+// 'llm' mode's sidecar call — see settings) — a best-effort nudge, not a
+// guarantee, so every chip is just a shortcut to an action the user could
+// already do manually. A single suggestion renders inline as before; more
+// than one collapses to a single "N suggestions" button that opens the
+// grouped overflow modal — a message can carry several suggestions at
+// once, and a row of 5+ chips wrapping across lines was worse than one
+// tap-through button.
 const props = defineProps({ message: { type: Object, required: true } });
 const chat = useChatStore();
 const overflow = useSuggestionOverflow();

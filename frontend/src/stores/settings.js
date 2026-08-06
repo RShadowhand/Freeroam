@@ -12,6 +12,10 @@ export const useSettingsStore = defineStore('settings', {
     reasoning: 'off',
     memoryMinScore: 0.35,
     suggestedActionsMode: 'regex',
+    suggestedActionsLlmSource: 'builtin', // 'llm' mode only: builtin | same | custom
+    suggestedActionsLlmCustomApiBase: '',
+    suggestedActionsLlmCustomModel: '',
+    hasCustomLlmKey: false,
     selectedProviders: [], // cfg.providers — pinned OpenRouter providers, tried in this order
     allModels: [],
     availableProviders: [], // candidate providers for the current model, fetched from OpenRouter
@@ -54,6 +58,10 @@ export const useSettingsStore = defineStore('settings', {
       this.reasoning = data.reasoning || 'off';
       this.memoryMinScore = Number.isFinite(data.memoryMinScore) ? data.memoryMinScore : 0.35;
       this.suggestedActionsMode = data.suggestedActionsMode || 'regex';
+      this.suggestedActionsLlmSource = data.suggestedActionsLlmSource || 'builtin';
+      this.suggestedActionsLlmCustomApiBase = data.suggestedActionsLlmCustomApiBase || '';
+      this.suggestedActionsLlmCustomModel = data.suggestedActionsLlmCustomModel || '';
+      this.hasCustomLlmKey = !!data.hasCustomLlmKey;
       this.selectedProviders = Array.isArray(data.providers) ? data.providers : [];
       this.draftPersonaPrompt = data.draftPersonaPrompt || '';
       this.draftPersonaPromptIsCustom = !!data.draftPersonaPromptIsCustom;
@@ -130,6 +138,20 @@ export const useSettingsStore = defineStore('settings', {
     async setSuggestedActionsMode(mode) {
       this.suggestedActionsMode = mode;
       await saveSettings({ suggestedActionsMode: mode });
+    },
+    async setSuggestedActionsLlmSource(source) {
+      this.suggestedActionsLlmSource = source;
+      await saveSettings({ suggestedActionsLlmSource: source });
+    },
+    async setSuggestedActionsLlmCustom({ apiBase, model, apiKey }) {
+      const { data } = await saveSettings({
+        suggestedActionsLlmCustomApiBase: apiBase,
+        suggestedActionsLlmCustomModel: model,
+        ...(apiKey ? { suggestedActionsLlmCustomApiKey: apiKey } : {}),
+      });
+      this.suggestedActionsLlmCustomApiBase = data.suggestedActionsLlmCustomApiBase || '';
+      this.suggestedActionsLlmCustomModel = data.suggestedActionsLlmCustomModel || '';
+      this.hasCustomLlmKey = !!data.hasCustomLlmKey;
     },
     async setDraftPersonaPrompt(text) {
       const { data } = await saveSettings({ draftPersonaPrompt: text });

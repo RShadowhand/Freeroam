@@ -1213,6 +1213,10 @@ input:focus, textarea:focus, select:focus{ outline:2px solid var(--accent); outl
 }
 .suggest-dismiss:hover{ opacity:1; color:var(--rose); }
 .suggest-chip.suggest-more{ font-weight:600; color:var(--accent); border-color:var(--accent); }
+/* scheduled-text has no firing mechanism yet (see .kanbn research task) —
+   informational only, not clickable. */
+.suggest-chip.suggest-chip-info{ cursor:default; }
+.suggest-chip.suggest-chip-info:hover{ border-color:var(--border); color:var(--dim); }
 
 /* ---- Suggestion overflow modal ---- */
 .suggest-group{ display:flex; flex-direction:column; gap:6px; }

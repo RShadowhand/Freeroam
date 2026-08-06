@@ -18,6 +18,7 @@
     "express": "^4.19.2",
     "jszip": "^3.10.1",
     "multer": "^2.0.0",
+    "node-llama-cpp": "^3.19.1",
     "sqlite-vec": "^0.1.9"
   }
 }
