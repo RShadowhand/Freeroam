@@ -63,10 +63,14 @@ watch(() => chat.currentPlace, () => { mobilePanel.value = 'chat'; });
       <button class="btn secondary small" type="button" @click="toggleMobilePanel('map')">🗺 Map</button>
       <button class="btn secondary small" type="button" @click="toggleMobilePanel('area')">Current area</button>
     </div>
+    <!-- v-if, not v-show: mounting only once data is ready means MessageList's
+    initial scroll-to-bottom runs against a visible container. Under v-show
+    the log finishes loading while this is still display:none, so scrollHeight
+    reads 0 and the chat silently opens scrolled to the top. -->
     <div
       class="layout" id="layout"
       :class="{ 'map-open': mobilePanel === 'map' || mobilePanel === 'area', 'phone-open': mobilePanel === 'phone' }"
-      v-show="ready"
+      v-if="ready"
     >
       <MapAreaPanel :open-tab="mobilePanel === 'map' ? 'map' : mobilePanel === 'area' ? 'area' : null" />
       <ChatPanel />
