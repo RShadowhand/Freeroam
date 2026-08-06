@@ -9,9 +9,7 @@ completedColumns:
 
 ## Todo
 
-- [research-tools-for-the-backend-toolcalling-for-character-location-state-information](tasks/research-tools-for-the-backend-toolcalling-for-character-location-state-information.md)
-- [fix-scroll-to-bottom-regression](tasks/fix-scroll-to-bottom-regression.md)
-- [research-llm-based-intent-new-character-detection-mode-replaces-unreliable-local-classifier](tasks/research-llm-based-intent-new-character-detection-mode-replaces-unreliable-local-classifier.md)
+- [research-character-intent-action-detection-llm-modes-tool-calling-and-local-model-upgrades](tasks/research-character-intent-action-detection-llm-modes-tool-calling-and-local-model-upgrades.md)
 
 ## In Progress
 
@@ -19,6 +17,8 @@ completedColumns:
 
 ## Done
 
+- [fix-move-changelog-to-its-own-dedicated-page-under-settings](tasks/fix-move-changelog-to-its-own-dedicated-page-under-settings.md)
+- [fix-scroll-to-bottom-regression](tasks/fix-scroll-to-bottom-regression.md)
 - [feature-character-nickname-system](tasks/feature-character-nickname-system.md)
 - [fix-area-grouptext-chats-character-order-should-be-dynamic-settable-manually](tasks/fix-area-grouptext-chats-character-order-should-be-dynamic-settable-manually.md)
 - [feature-trigger-proactive-text-to-group-chats](tasks/feature-trigger-proactive-text-to-group-chats.md)
