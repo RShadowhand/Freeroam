@@ -59,7 +59,11 @@ const TYPE_MEANINGS = [
   '"destination" = the speaker suggests/invites going to another named place (to = the place name).',
   '"new-character" = the speaker introduces someone not yet known by name (to = the new name).',
   '"promote" = the speaker draws an already-present-but-quiet/background character into the conversation (to = that character\'s name).',
-  '"demote" = the speaker excuses themselves or steps back from the conversation (to = the speaker\'s own name).',
+  '"demote" = the SPEAKER THEMSELVES excuses themselves or steps back from the conversation, e.g. "I should get going" '
+    + 'or "excuse me a moment" (to = the speaker\'s own name). This is NOT the same as the speaker dismissing/sending '
+    + 'someone ELSE away while staying and continuing what they were doing — e.g. "Go," "you should head out," "give me '
+    + 'some space to work" — that has no matching intent type here; don\'t force it into "demote", and don\'t let it '
+    + 'crowd out a real intent (like scheduled-text) that\'s also in the same reply.',
   '"text-someone" = sends a text message RIGHT NOW, when: "now" (to = recipient\'s name, or "persona" for the user).',
   '"scheduled-text" = PROMISES to send a text LATER, when: "later", with day/timeOfDay filled in (to = recipient\'s name, or "persona").',
   '"call-to-scene" = physically summons/beckons a character who is not currently present to come to the current location in person — not texting (to = that character\'s name).',
@@ -82,21 +86,30 @@ function timeResolutionInstructions() {
 }
 
 // Same story as timeResolutionInstructions above, caught in the same
-// production log: with only a bare schema description, "reason" came back
-// as a restatement of the fact that a text is happening ("Ezra promises to
-// text the persona later") instead of what the text is actually about — and
-// after a first fix attempt, it drifted into explaining the *timing*
-// reasoning instead ("...suggesting a timeframe of 'later' which lands in
-// the afternoon..."), a different flavor of the same underlying mistake.
-// Spelled out as an explicit template + real bad/good examples this time,
-// including both observed failure modes by name, rather than one abstract
-// rule — abstract rules didn't stick on the first attempt.
+// production log(s): with only a bare schema description, "reason" came
+// back as a restatement of the fact that a text is happening ("Ezra
+// promises to text the persona later") instead of what the text is
+// actually about. After a first fix attempt it drifted into explaining the
+// *timing* reasoning instead ("...suggesting a timeframe of 'later' which
+// lands in the afternoon..."), then — after that was also fixed — into a
+// bare pronoun reference ("what he finds") that only means anything sitting
+// right next to the original reply. "reason" has no firing/generation
+// mechanism reading it yet (still explicitly out of scope — see the .kanbn
+// research task), but whenever one exists it'll need to work the same way
+// lib's proactive-texting flow already does: a *separate* generation call,
+// with reason as the brief handed to it, not the literal text. A brief that
+// isn't self-contained is useless once it's the only thing left. Spelled
+// out as an explicit template + real bad/good examples, including all three
+// observed failure modes by name, rather than one abstract rule — abstract
+// rules haven't stuck on the first attempt yet.
 function reasonInstructions() {
-  return 'For "text-someone" and "scheduled-text", "reason" is what the text will actually be ABOUT — write it as if '
-    + 'filling in "a text about ___", using concrete topic/names/details pulled from the reply itself. NEVER describe '
-    + 'when or whether the text will be sent (that\'s already captured by when/day/timeOfDay), and never just restate '
-    + 'that a message is happening. Bad: "Ezra promises to text the persona later." Bad: "a message about the timing of '
-    + 'the update." Good: "findings on Shad Torson\'s daughters from the church registries."';
+  return 'For "text-someone" and "scheduled-text", "reason" is the BRIEF for a text that will be written later by someone '
+    + 'with no other context than this field — it must be self-contained and name the actual subject, not just reference '
+    + 'it. Write it as if filling in "a text about ___", using concrete topic/names/details pulled from the reply itself. '
+    + 'NEVER describe when or whether the text will be sent (that\'s already captured by when/day/timeOfDay), never just '
+    + 'restate that a message is happening, and never use a bare pronoun ("what he finds", "an update on it") in place of '
+    + 'the actual subject. Bad: "Ezra promises to text the persona later." Bad: "a message about the timing of the '
+    + 'update." Bad: "what he finds." Good: "findings on Shad Torson\'s daughters from the church registries."';
 }
 
 // The persona's real name is deliberately never included here (see
