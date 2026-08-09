@@ -3973,14 +3973,24 @@ async function buildTurnRequest({ w, place, speakerId, presentIds, charactersByI
 async function detectLlmSuggestedActionsRemote(cfg, text, ctx) {
   try {
     const { systemPrompt, userPrompt } = buildIntentPrompt(text, ctx);
+    // callOpenRouter already logs the outbound request (info: endpoint/
+    // model, debug: full payload) — this only adds what it doesn't: the raw
+    // response text and the final parsed suggestion count.
     const { text: raw } = await callOpenRouter(
       cfg,
       [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
       400,
       'suggested-actions (llm sidecar)',
     );
+    // Not logger.debug(msg, raw) — log.js's `extra` param only prints when
+    // FREEROAM_LOG=debug, so the actual model output would be invisible at
+    // the default 'info' level. Embedding it directly in the message
+    // string makes it show up in normal server logs, no env var needed.
+    logger.info('suggest', `llm sidecar (remote) raw output: ${raw}`);
     const parsed = extractJsonLenient(raw);
-    return parseIntents(parsed?.intents, ctx);
+    const suggestions = parseIntents(parsed?.intents, ctx);
+    logger.info('suggest', `llm sidecar (remote): ${suggestions.length} suggestion(s)`);
+    return suggestions;
   } catch (err) {
     logger.warn('suggest', `remote LLM suggestion detection failed: ${err.message}`);
     return [];

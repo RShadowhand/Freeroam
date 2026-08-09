@@ -283,11 +283,20 @@ export async function detectViaBuiltinLlm(text, ctx) {
   try {
     const { model, grammar } = await getBuiltinPieces();
     const { systemPrompt, userPrompt } = buildIntentPrompt(text, ctx);
+    logger.info('suggest', 'llm sidecar (builtin): requesting…');
+    logger.debug('suggest', 'llm sidecar (builtin) prompt', { systemPrompt, userPrompt });
     context = await model.createContext();
     const session = new LlamaChatSession({ contextSequence: context.getSequence(), systemPrompt });
     const raw = await session.prompt(userPrompt, { grammar, maxTokens: 700 });
+    // Not logger.debug(msg, raw) — log.js's `extra` param only prints when
+    // FREEROAM_LOG=debug, so the actual model output would be invisible at
+    // the default 'info' level. Embedding it directly in the message
+    // string makes it show up in normal server logs, no env var needed.
+    logger.info('suggest', `llm sidecar (builtin) raw output: ${raw}`);
     const parsed = grammar.parse(raw);
-    return parseIntents(parsed?.intents, ctx);
+    const suggestions = parseIntents(parsed?.intents, ctx);
+    logger.info('suggest', `llm sidecar (builtin): ${suggestions.length} suggestion(s)`);
+    return suggestions;
   } catch (err) {
     logger.warn('suggest', `built-in LLM suggestion detection failed: ${err.message}`);
     return [];
