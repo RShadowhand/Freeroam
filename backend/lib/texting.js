@@ -19,12 +19,13 @@ import { joinNames } from './textUtils.js';
 //   mode: 'text' | 'call',                       // 'call' phrases this as a live phone call, not a text thread — see Phase 3
 //   groupMembers: string[],                      // Phase 4 — other characters' names in a group text, excluding char and the user
 //   proactive: boolean,                          // Phase 5 — char is texting first, unprompted; appends a final directive turn since there's no real incoming message to reply to
+//   proactiveHint: string | null,                 // what the text is supposed to be about — set when the char explicitly promised a text in scene (a suggestion chip's extracted gist); anchors the directive so the follow-through actually covers the promised subject instead of an unrelated out-of-the-blue message
 //   selfContinuation: boolean,                    // group cascade picked char to reply again right after their OWN last line — appends a directive turn for the same reason proactive does
 // }
 export function buildTextingMessages(scene, history = []) {
   const {
     char, persona = null, memories = [], relationships = [], time = null, textingPromptTemplate,
-    mode = 'text', groupMembers = [], proactive = false, selfContinuation = false,
+    mode = 'text', groupMembers = [], proactive = false, proactiveHint = null, selfContinuation = false,
   } = scene;
 
   const weekday = time ? weekdayFor(time.day) : null;
@@ -57,7 +58,13 @@ export function buildTextingMessages(scene, history = []) {
   if (proactive) {
     messages.push({
       role: 'user',
-      content: `[${char.name} hasn't reached out to ${personaName} in a while and decides to text them out of the blue — either asking for something, or sharing something that happened. Write only ${char.name}'s text, dialogue only, nothing from ${personaName}.]`,
+      // With a hint, this is a promised text being followed through on —
+      // the directive anchors the content to the promise, so "I'll text
+      // you about the spreadsheet" doesn't arrive as an unrelated message.
+      // Without one, it's the original random out-of-the-blue nudge.
+      content: proactiveHint
+        ? `[${char.name} earlier told ${personaName}: "${proactiveHint}" — they now follow through and send that text, about that specific subject. Write only ${char.name}'s text, dialogue only, nothing from ${personaName}.]`
+        : `[${char.name} hasn't reached out to ${personaName} in a while and decides to text them out of the blue — either asking for something, or sharing something that happened. Write only ${char.name}'s text, dialogue only, nothing from ${personaName}.]`,
     });
   } else if (selfContinuation) {
     // The group cascade picked char to go again right after their own

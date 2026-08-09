@@ -6,7 +6,8 @@ export const sendTextApi = (characterId, body, signal) => apiJson(`/api/texts/${
 export const retryTextApi = (characterId, signal) => apiJson(`/api/texts/${encodeURIComponent(characterId)}/retry`, 'POST', {}, { signal });
 export const deleteTextMessageApi = (characterId, entryId) =>
   apiDelete(`/api/texts/${encodeURIComponent(characterId)}/messages/${encodeURIComponent(entryId)}`);
-export const triggerTextApi = (characterId) => apiJson(`/api/texts/${encodeURIComponent(characterId)}/trigger`, 'POST', {});
+export const triggerTextApi = (characterId, hint = null) =>
+  apiJson(`/api/texts/${encodeURIComponent(characterId)}/trigger`, 'POST', hint ? { hint } : {});
 export const getUnreadTextCount = () => apiGet('/api/texts/unread');
 
 // Streaming variant returns the raw fetch Response so the caller can read

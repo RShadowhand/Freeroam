@@ -241,7 +241,10 @@ async function textingSuggestion(text, ctx, scores, classifyIntentsFn) {
   const trigger = await locateTextingTrigger(text, classifyIntentsFn);
   const target = resolveTextingTarget(trigger, ctx);
   const when = resolveWhen(trigger, ctx.worldDay ?? 1, ctx.worldTimeOfDay ?? 'morning');
-  const gist = trigger.slice(0, 300);
+  // Sentence splitting keeps whatever quote mark the prose opened/closed
+  // dialogue with, which reads as noise once the sentence stands alone as
+  // a summary ('"I'll text what I find.' in a real production log).
+  const gist = trigger.replace(/^["'“”‘’\s]+/, '').replace(/["'“”‘’\s]+$/, '').slice(0, 300);
   if (when.when === 'later') {
     return { type: 'scheduled-text', ...target, day: when.day, timeOfDay: when.timeOfDay, reason: gist };
   }

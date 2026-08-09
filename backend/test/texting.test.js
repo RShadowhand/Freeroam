@@ -96,6 +96,19 @@ describe('buildTextingMessages', () => {
     assert.match(last.content, /out of the blue/i);
   });
 
+  test('a proactiveHint anchors the directive to the promised subject instead of "out of the blue"', () => {
+    const scene = {
+      ...baseScene, persona: { name: 'Shad', description: null },
+      proactive: true, proactiveHint: "I'll text you about that spreadsheet of our earnings",
+    };
+    const messages = buildTextingMessages(scene, [{ role: 'assistant', content: 'an earlier text' }]);
+    const last = messages[messages.length - 1];
+    assert.equal(last.role, 'user');
+    assert.match(last.content, /spreadsheet of our earnings/);
+    assert.match(last.content, /follow through/i);
+    assert.ok(!/out of the blue/i.test(last.content));
+  });
+
   test('selfContinuation appends a follow-up directive instead, distinct from proactive', () => {
     const scene = { ...baseScene, persona: { name: 'Shad', description: null }, selfContinuation: true };
     const messages = buildTextingMessages(scene, [{ role: 'assistant', content: 'hi daddy!!' }]);

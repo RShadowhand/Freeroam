@@ -24,11 +24,15 @@ function demote() { chat.setCharacterActive(props.suggestion.charId, false); emi
 // call-to-scene reuses the same "send this character here" primitive
 // destination suggestions use, just aimed at the *current* place instead of
 // a chip-supplied one — moving the beckoned character to wherever this chip
-// was clicked. text-someone (character-target only, for now — persona/group
-// targets have no obvious existing UI action yet) opens their phone thread
-// rather than auto-generating/sending message content on the user's behalf.
+// was clicked. text-someone splits by target: a character-target opens
+// their phone thread (never auto-writes on the user's behalf); a
+// persona-target means the SPEAKER promised to text the user, so the chip
+// makes good on the promise via the existing proactive-text trigger
+// (phone.triggerText → POST /api/texts/:id/trigger) — fire-and-forget, the
+// unread badge signals arrival like any other proactive text.
 function callToScene() { chat.moveCharacter(props.suggestion.charId, chat.currentPlace); emit('acted'); }
 function openThread() { phone.openConversation(props.suggestion.charId); emit('acted'); }
+function textMe() { phone.triggerText(props.message.charId, props.suggestion.summary || null); emit('acted'); }
 </script>
 
 <template>
@@ -53,6 +57,9 @@ function openThread() { phone.openConversation(props.suggestion.charId); emit('a
   </button>
   <button v-else-if="suggestion.type === 'text-someone' && suggestion.targetKind === 'character' && suggestion.charId" class="suggest-chip" @click="openThread">
     💬 Open chat with {{ suggestion.targetName }}
+  </button>
+  <button v-else-if="suggestion.type === 'text-someone' && suggestion.targetKind === 'persona' && message.charId" class="suggest-chip" @click="textMe">
+    💬 Have {{ message.name || 'them' }} send that text
   </button>
   <span v-else-if="suggestion.type === 'scheduled-text'" class="suggest-chip suggest-chip-info">
     🕐 {{ suggestion.targetName }} — {{ suggestion.timeOfDay }} (day {{ suggestion.day }})

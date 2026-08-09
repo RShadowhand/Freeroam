@@ -97,8 +97,11 @@ export const usePhoneStore = defineStore('phone', {
     // unread server-side until the conversation is actually opened, and
     // openConversation's own GET is what marks it read; skipping that here
     // would let loadedIds' guard block that GET from ever firing.
-    async triggerText(characterId) {
-      const { ok, data } = await triggerTextApi(characterId);
+    // `hint` (optional) is what the text should be about — suggestion chips
+    // pass the promise they detected so the character follows through on
+    // that subject instead of sending an unrelated out-of-the-blue message.
+    async triggerText(characterId, hint = null) {
+      const { ok, data } = await triggerTextApi(characterId, hint);
       if (ok) {
         this.logs[characterId] = data.log;
         this.refreshUnreadCount();

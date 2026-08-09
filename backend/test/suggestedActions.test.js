@@ -421,7 +421,7 @@ describe('detectSuggestedActions — texting (ml)', () => {
     assert.equal(hits[0].type, 'scheduled-text'); // "tonight" from the trigger — NOT "immediately" from narration
     assert.equal(hits[0].day, 2);
     assert.equal(hits[0].timeOfDay, 'evening');
-    assert.equal(hits[0].reason, '"I\'ll text you tonight."');
+    assert.equal(hits[0].reason, 'I\'ll text you tonight.'); // surrounding dialogue quotes stripped
     assert.equal(hits[0].targetKind, 'persona');
   });
 

@@ -1784,14 +1784,20 @@ async function runTextingReply({ w, cfg, characterId, character, onEvent = null,
 // just one spontaneous message — per the plan's own call-out. Not
 // streamed: this always runs as a background side effect of some other
 // request, never behind a live SSE connection of its own.
-async function generateProactiveText({ w, cfg, characterId, character }) {
+async function generateProactiveText({ w, cfg, characterId, character, hint = null }) {
   const { personas, activePersonaId } = loadPersonas(w);
   const activePersona = personas.find((p) => p.id === activePersonaId) || null;
   const personaLabel = activePersona ? activePersona.name : 'Visitor';
   const world = loadWorld(w);
   const log = loadChatLog(w.textsDir, characterId);
 
-  const memoryQuery = `${character.name} decides to text ${personaLabel} out of the blue.`;
+  // A hinted trigger is a promised text being followed through on ("I'll
+  // text you about the spreadsheet") — the hint drives both memory
+  // retrieval (pull what the character knows about that subject, not
+  // generic out-of-the-blue material) and the prompt directive below.
+  const memoryQuery = hint
+    ? `${character.name} texts ${personaLabel} about: ${hint}`
+    : `${character.name} decides to text ${personaLabel} out of the blue.`;
   let memories = [];
   try {
     memories = await retrieveMemories({
@@ -1810,7 +1816,7 @@ async function generateProactiveText({ w, cfg, characterId, character }) {
   const messages = buildTextingMessages({
     char: character,
     persona: activePersona ? { name: activePersona.name, description: activePersona.description } : null,
-    memories, relationships, time: world.time, proactive: true,
+    memories, relationships, time: world.time, proactive: true, proactiveHint: hint,
     textingPromptTemplate: publicConfig(cfg).textingPromptTemplate,
   }, historyFromLog(log));
 
@@ -1956,8 +1962,14 @@ app.post('/api/texts/:characterId/trigger', async (req, res) => {
   const cfg = loadConfig();
   if (!cfg.apiKey) return res.status(400).json({ error: 'No API key configured. Add one in Settings.' });
 
+  // Optional: what the text should be about — a suggestion chip passes the
+  // promise it detected ("I'll text you about the spreadsheet") so the
+  // follow-through actually covers that subject. Same length cap as the
+  // suggestion gist it comes from.
+  const hint = typeof req.body?.hint === 'string' && req.body.hint.trim() ? req.body.hint.trim().slice(0, 300) : null;
+
   try {
-    const entry = await generateProactiveText({ w, cfg, characterId, character });
+    const entry = await generateProactiveText({ w, cfg, characterId, character, hint });
     res.json({ log: loadChatLog(w.textsDir, characterId), entry });
   } catch (err) {
     res.status(502).json({ error: err.message });

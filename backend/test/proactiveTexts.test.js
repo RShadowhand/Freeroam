@@ -138,6 +138,33 @@ describe('Proactive texts: routes', () => {
     assert.match(lastMessage.content, /out of the blue/i);
   });
 
+  test('a hint in the trigger body anchors the final prompt turn to the promised subject', async (t) => {
+    const character = await makeCharacter('Hinted Prompt Check', t);
+    let capturedBody = null;
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async (url, opts) => {
+      capturedBody = JSON.parse(opts.body);
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'About that spreadsheet…' } }] }), { status: 200 });
+    }));
+    const res = await postJson(`/api/texts/${character.id}/trigger`, { hint: "I'll text you about that spreadsheet of our earnings" });
+    assert.equal(res.status, 200);
+    const lastMessage = capturedBody.messages[capturedBody.messages.length - 1];
+    assert.equal(lastMessage.role, 'user');
+    assert.match(lastMessage.content, /spreadsheet of our earnings/);
+    assert.ok(!/out of the blue/i.test(lastMessage.content));
+  });
+
+  test('a non-string or blank hint is ignored, falling back to the out-of-the-blue directive', async (t) => {
+    const character = await makeCharacter('Bad Hint Check', t);
+    let capturedBody = null;
+    t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async (url, opts) => {
+      capturedBody = JSON.parse(opts.body);
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'Reply.' } }] }), { status: 200 });
+    }));
+    await postJson(`/api/texts/${character.id}/trigger`, { hint: '   ' });
+    const lastMessage = capturedBody.messages[capturedBody.messages.length - 1];
+    assert.match(lastMessage.content, /out of the blue/i);
+  });
+
   test('unread count reflects proactive texts and clears once the conversation is opened', async (t) => {
     const character = await makeCharacter('Unread Test', t);
     const before = await getJson('/api/texts/unread');
