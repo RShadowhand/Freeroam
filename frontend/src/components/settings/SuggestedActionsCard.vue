@@ -19,10 +19,10 @@ function saveCustom() {
     <h2>Suggested actions</h2>
     <p class="hint">
       How replies are scanned for quick-action suggestions ("send to", "add place", "add character", "text someone") —
-      <strong>Regex only</strong> is instant but only fires on specific phrasing. <strong>ML only</strong> uses a local NER +
-      intent-classification model, more robust to varied phrasing but slower per message. <strong>Regex + ML</strong> runs both and
-      merges the results. <strong>LLM</strong> asks an actual language model to classify intents (including texting/scheduling
-      actions the other modes can't detect) — more accurate, but costs a call per message.
+      <strong>Regex only</strong> is instant but only fires on specific phrasing. <strong>ML only</strong> uses local NER +
+      intent-classification models (including texting/scheduling detection), more robust to varied phrasing but slower per
+      message; first use downloads a ~240MB model. <strong>Regex + ML</strong> runs both and merges the results.
+      <strong>LLM</strong> asks an actual language model to classify intents — no local models, but costs a call per message.
     </p>
     <div class="endpoint-row">
       <label style="flex-shrink:0;">Detection mode</label>

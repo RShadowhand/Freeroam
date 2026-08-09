@@ -11,7 +11,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 env.cacheDir = path.join(__dirname, '..', '.cache', 'transformers');
 
 const NER_MODEL_ID = 'Xenova/bert-base-NER';
-const ZERO_SHOT_MODEL_ID = 'Xenova/mobilebert-uncased-mnli'; // mobile-optimized — favors CPU latency over top-end zero-shot accuracy
+// DeBERTa-v3 replaced MobileBERT-MNLI after a measured head-to-head (see
+// the intent-detection research task in .kanbn): under the multi-label
+// framing suggestedActions.js now uses, every MobileBERT label overlapped
+// its negatives (no usable threshold existed at all), while DeBERTa
+// separated the two families that matter most cleanly. q8 keeps the load
+// ~242MB / load time ~13s — the fp32 variant costs 5x the load for no
+// measured accuracy gain over the q8 numbers the thresholds were tuned on.
+const ZERO_SHOT_MODEL_ID = 'Xenova/nli-deberta-v3-base';
+const ZERO_SHOT_DTYPE = 'q8';
 
 let nerPromise = null;
 function getNer() {
@@ -21,7 +29,7 @@ function getNer() {
 
 let zeroShotPromise = null;
 function getZeroShot() {
-  if (!zeroShotPromise) zeroShotPromise = pipeline('zero-shot-classification', ZERO_SHOT_MODEL_ID);
+  if (!zeroShotPromise) zeroShotPromise = pipeline('zero-shot-classification', ZERO_SHOT_MODEL_ID, { dtype: ZERO_SHOT_DTYPE });
   return zeroShotPromise;
 }
 
@@ -119,11 +127,15 @@ export async function extractEntities(text) {
 }
 
 // Scores `text` against `labels` via NLI entailment (zero-shot — no
-// training data needed, just the label strings themselves) and returns
-// them sorted by descending score.
-export async function classifyIntent(text, labels) {
+// training data needed, just the label strings themselves). multi_label
+// mode on purpose: every label is scored independently (entailment vs.
+// contradiction per label, sigmoid not softmax), so labels never compete —
+// a strong reading of one intent can't suppress another that's also
+// present, and there's no need for a "none of the above" competitor label.
+// Returns [{ label, score }] covering every requested label, unsorted.
+export async function classifyIntents(text, labels) {
   const classifier = await getZeroShot();
-  const result = await classifier(text, labels);
+  const result = await classifier(text, labels, { multi_label: true });
   const scored = result.labels.map((label, i) => ({ label, score: result.scores[i] }));
   logger.debug('suggest', 'intent scores', scored.map((s) => ({ label: s.label, score: Number(s.score?.toFixed?.(3) ?? s.score) })));
   return scored;
