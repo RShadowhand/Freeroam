@@ -166,21 +166,43 @@ function splitSentences(text) {
 // "tomorrow morning") against the current in-world time. Deterministic on
 // purpose — the LLM-mode attempt at having a model do this took three
 // prompt iterations and still only approximated it; a keyword table over a
-// 7-value enum is exact and testable. Must be run on the localized trigger
-// sentence, not the whole reply: production testing caught narration
-// ("He doesn't answer immediately...") hijacking the now/later split when
-// rules ran over full text. Exported for tests.
-export function resolveWhen(text, day = 1, timeOfDay = 'morning') {
-  const t = text.toLowerCase();
-  const idx = Math.max(0, TIMES_OF_DAY.indexOf(timeOfDay));
-  const step = (n) => ({ day: day + Math.floor((idx + n) / TIMES_OF_DAY.length), timeOfDay: TIMES_OF_DAY[(idx + n) % TIMES_OF_DAY.length] });
-  if (/right now|immediately|this (?:very )?(?:second|minute|moment)/.test(t)) return { when: 'now' };
+// 7-value enum is exact and testable.
+//
+// Two tiers, two scopes — shaped by two real production replies:
+//   - Now-cues only ever come from the trigger sentence itself. Running
+//     them wider let narration hijack the split ("He doesn't answer
+//     immediately..." flipping a later-promise to now) — and since 'now'
+//     and 'unspecified' render the same suggestion anyway, wide now-cues
+//     buy nothing and only carry that risk.
+//   - Explicit later-cues from the trigger's surrounding PARAGRAPH
+//     (`widerText`) outrank generic later-phrasing in the trigger: "I'll
+//     text what I find. If reception cooperates, you'll hear from me by
+//     this afternoon." puts the real time in the sentence AFTER the
+//     promise — trigger-only rules turned that into a generic "later"
+//     (or worse, nothing), discarding a cue the reply spelled out.
+// Exported for tests.
+function explicitLaterCue(t, day, idx, step) {
   if (/tomorrow/.test(t)) return { when: 'later', day: day + 1, timeOfDay: /tomorrow (morning|afternoon|evening|night)/.exec(t)?.[1] ?? 'morning' };
   if (/tonight|this evening/.test(t)) return { when: 'later', day, timeOfDay: idx < TIMES_OF_DAY.indexOf('evening') ? 'evening' : 'night' };
   if (/this afternoon/.test(t)) return { when: 'later', day, timeOfDay: 'afternoon' };
   if (/in an hour|an hour|a (?:few|couple(?: of)?) hours|later today/.test(t)) return { when: 'later', ...step(2) };
-  if (/\blater\b|when i (?:have|find|get|know)|once i|as soon as i/.test(t)) return { when: 'later', ...step(2) };
-  return { when: 'unspecified' };
+  return null;
+}
+function genericLaterCue(t, step) {
+  if (/\blater\b|when i (?:have|find|get|know)|once i|as soon as i|what i find/.test(t)) return { when: 'later', ...step(2) };
+  return null;
+}
+export function resolveWhen(text, day = 1, timeOfDay = 'morning', widerText = null) {
+  const t = text.toLowerCase();
+  const idx = Math.max(0, TIMES_OF_DAY.indexOf(timeOfDay));
+  const step = (n) => ({ day: day + Math.floor((idx + n) / TIMES_OF_DAY.length), timeOfDay: TIMES_OF_DAY[(idx + n) % TIMES_OF_DAY.length] });
+  if (/right now|immediately|this (?:very )?(?:second|minute|moment)/.test(t)) return { when: 'now' };
+  const wider = widerText && widerText !== text ? widerText.toLowerCase() : null;
+  return explicitLaterCue(t, day, idx, step)
+    ?? (wider ? explicitLaterCue(wider, day, idx, step) : null)
+    ?? genericLaterCue(t, step)
+    ?? (wider ? genericLaterCue(wider, step) : null)
+    ?? { when: 'unspecified' };
 }
 
 // Locates the sentence that carries the texting promise: re-scores each
@@ -240,7 +262,11 @@ async function textingSuggestion(text, ctx, scores, classifyIntentsFn) {
   if (!familyFires(scores, 'texting')) return null;
   const trigger = await locateTextingTrigger(text, classifyIntentsFn);
   const target = resolveTextingTarget(trigger, ctx);
-  const when = resolveWhen(trigger, ctx.worldDay ?? 1, ctx.worldTimeOfDay ?? 'morning');
+  // The paragraph around the trigger gives the time rules their second-
+  // tier scope (see resolveWhen) — a promise and its "by this afternoon"
+  // are usually said in the same breath but not the same sentence.
+  const paragraph = trigger === text ? null : (text.split(/\n+/).find((p) => p.includes(trigger)) ?? null);
+  const when = resolveWhen(trigger, ctx.worldDay ?? 1, ctx.worldTimeOfDay ?? 'morning', paragraph);
   // Sentence splitting keeps whatever quote mark the prose opened/closed
   // dialogue with, which reads as noise once the sentence stands alone as
   // a summary ('"I'll text what I find.' in a real production log).

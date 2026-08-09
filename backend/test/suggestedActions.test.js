@@ -453,6 +453,30 @@ describe('detectSuggestedActions — texting (ml)', () => {
     assert.equal(hits[0].type, 'text-someone');
   });
 
+  test('a time cue in the sentence after the promise still schedules — paragraph scope (production case)', async () => {
+    // Mirrors a real production reply: the promise sentence carries no time
+    // cue; "by this afternoon" arrives one sentence later in the same
+    // quoted paragraph. Trigger-scoped-only rules shipped this as a bare
+    // text-someone with no day/timeOfDay.
+    const classifyIntentsFn = async (text, labels) => labels.map((label) => ({
+      label,
+      score: label === LABELS.texting && /text what I find/.test(text) ? 0.95 : 0.05,
+    }));
+    const text = 'He examines the card in silence, then files it precisely.\n\n"Go. I\'ll text what I find. If reception cooperates, you\'ll hear from me by this afternoon."';
+    const hits = await detectSuggestedActions(text, {
+      places, characters, mode: 'ml', personaName: 'Shad', speakerId: 'c1', speakerName: 'Ezra',
+      worldDay: 1, worldTimeOfDay: 'morning',
+      extractEntitiesFn: fakeExtractEntities([]),
+      classifyIntentsFn,
+    });
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].type, 'scheduled-text');
+    assert.equal(hits[0].day, 1);
+    assert.equal(hits[0].timeOfDay, 'afternoon');
+    assert.equal(hits[0].reason, "I'll text what I find.");
+    assert.equal(hits[0].targetKind, 'persona');
+  });
+
   test('a below-threshold texting score suggests nothing', async () => {
     const hits = await detectSuggestedActions('He mentions texting in passing.', {
       places, characters, mode: 'ml', personaName: 'Kael',
@@ -484,5 +508,26 @@ describe('resolveWhen — deterministic now/later rules', () => {
 
   test('no temporal cue at all is unspecified', () => {
     assert.deepEqual(resolveWhen('She smiled and said nothing.', 1, 'morning'), { when: 'unspecified' });
+  });
+
+  test('"what I find" reads as a generic later promise', () => {
+    assert.deepEqual(resolveWhen("I'll text what I find.", 1, 'morning'), { when: 'later', day: 1, timeOfDay: 'afternoon' });
+  });
+
+  test('an explicit cue in the surrounding paragraph outranks generic later-phrasing in the trigger', () => {
+    // Generic "what I find" from evening would step to night; the
+    // paragraph's "by this afternoon" is what the reply actually promised.
+    const paragraph = "I'll text what I find. If reception cooperates, you'll hear from me by this afternoon.";
+    assert.deepEqual(
+      resolveWhen("I'll text what I find.", 2, 'evening', paragraph),
+      { when: 'later', day: 2, timeOfDay: 'afternoon' },
+    );
+  });
+
+  test('now-cues are never taken from the wider paragraph — that was the narration-hijack bug', () => {
+    assert.deepEqual(
+      resolveWhen("I'll text you about it.", 1, 'morning', 'He answers immediately, without hesitation.'),
+      { when: 'unspecified' },
+    );
   });
 });
