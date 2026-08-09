@@ -33,6 +33,18 @@ function demote() { chat.setCharacterActive(props.suggestion.charId, false); emi
 function callToScene() { chat.moveCharacter(props.suggestion.charId, chat.currentPlace); emit('acted'); }
 function openThread() { phone.openConversation(props.suggestion.charId); emit('acted'); }
 function textMe() { phone.triggerText(props.message.charId, props.suggestion.summary || null); emit('acted'); }
+// Stores the promise server-side; it fires as a real proactive text (with
+// the suggestion's reason steering content) once world time reaches the
+// scheduled day/timeOfDay. The SPEAKER sends it, hence message.charId.
+function scheduleIt() {
+  phone.scheduleText({
+    characterId: props.message.charId,
+    day: props.suggestion.day,
+    timeOfDay: props.suggestion.timeOfDay,
+    reason: props.suggestion.reason || '',
+  });
+  emit('acted');
+}
 </script>
 
 <template>
@@ -60,6 +72,12 @@ function textMe() { phone.triggerText(props.message.charId, props.suggestion.sum
   </button>
   <button v-else-if="suggestion.type === 'text-someone' && suggestion.targetKind === 'persona' && message.charId" class="suggest-chip" @click="textMe">
     💬 Have {{ message.name || 'them' }} send that text
+  </button>
+  <button
+    v-else-if="suggestion.type === 'scheduled-text' && suggestion.targetKind === 'persona' && message.charId"
+    class="suggest-chip" @click="scheduleIt"
+  >
+    🕐 Text arrives {{ suggestion.timeOfDay }}, day {{ suggestion.day }} — schedule it
   </button>
   <span v-else-if="suggestion.type === 'scheduled-text'" class="suggest-chip suggest-chip-info">
     🕐 {{ suggestion.targetName }} — {{ suggestion.timeOfDay }} (day {{ suggestion.day }})

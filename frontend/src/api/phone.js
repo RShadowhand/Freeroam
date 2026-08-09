@@ -8,6 +8,8 @@ export const deleteTextMessageApi = (characterId, entryId) =>
   apiDelete(`/api/texts/${encodeURIComponent(characterId)}/messages/${encodeURIComponent(entryId)}`);
 export const triggerTextApi = (characterId, hint = null) =>
   apiJson(`/api/texts/${encodeURIComponent(characterId)}/trigger`, 'POST', hint ? { hint } : {});
+export const scheduleTextApi = ({ characterId, day, timeOfDay, reason }) =>
+  apiJson('/api/scheduled-texts', 'POST', { characterId, day, timeOfDay, reason });
 export const getUnreadTextCount = () => apiGet('/api/texts/unread');
 
 // Streaming variant returns the raw fetch Response so the caller can read

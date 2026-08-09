@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { rollsProactiveText } from '../lib/proactiveTexts.js';
+import { splitDueScheduledTexts } from '../lib/scheduledTexts.js';
 
 describe('rollsProactiveText', () => {
   test('hits when the roll is below chance', () => {
@@ -25,6 +26,42 @@ describe('rollsProactiveText', () => {
 
   test('defaults to Math.random when no rng is given', () => {
     assert.equal(typeof rollsProactiveText(0.5), 'boolean');
+  });
+});
+
+describe('splitDueScheduledTexts', () => {
+  const at = (day, timeOfDay) => ({ day, timeOfDay });
+
+  test('due at exactly the scheduled slot, and anything earlier that day', () => {
+    const list = [{ id: 'a', day: 2, timeOfDay: 'afternoon' }];
+    assert.equal(splitDueScheduledTexts(list, at(2, 'afternoon')).due.length, 1);
+    assert.equal(splitDueScheduledTexts(list, at(2, 'night')).due.length, 1);
+  });
+
+  test('not due earlier the same day or on an earlier day', () => {
+    const list = [{ id: 'a', day: 2, timeOfDay: 'afternoon' }];
+    assert.equal(splitDueScheduledTexts(list, at(2, 'morning')).due.length, 0);
+    assert.equal(splitDueScheduledTexts(list, at(1, 'night')).due.length, 0);
+  });
+
+  test('a time jump straight past the slot still counts as due', () => {
+    const list = [{ id: 'a', day: 2, timeOfDay: 'afternoon' }];
+    assert.equal(splitDueScheduledTexts(list, at(4, 'sunrise')).due.length, 1);
+  });
+
+  test('an unknown stored timeOfDay fires rather than stranding forever', () => {
+    const list = [{ id: 'a', day: 2, timeOfDay: 'the witching hour' }];
+    assert.equal(splitDueScheduledTexts(list, at(2, 'sunrise')).due.length, 1);
+  });
+
+  test('splits a mixed list without losing entries', () => {
+    const list = [
+      { id: 'due', day: 1, timeOfDay: 'morning' },
+      { id: 'later', day: 3, timeOfDay: 'evening' },
+    ];
+    const { due, remaining } = splitDueScheduledTexts(list, at(2, 'noon'));
+    assert.deepEqual(due.map((e) => e.id), ['due']);
+    assert.deepEqual(remaining.map((e) => e.id), ['later']);
   });
 });
 
@@ -282,5 +319,108 @@ describe('Proactive texts: routes', () => {
     const bystanderLog = (await getJson(`/api/texts/${bystander.id}`)).log;
     assert.equal(bystanderLog.length, 0);
     await postJson('/api/settings', { textingChancePerChar: 0.002 });
+  });
+
+  // Scheduled texts share this file's harness on purpose: firing IS a
+  // proactive text (generateProactiveText with a hint), just triggered by
+  // world time reaching a stored slot instead of a dice roll.
+  describe('Scheduled texts', () => {
+    function deleteJson(urlPath) {
+      return fetch(`${baseUrl}${urlPath}`, { method: 'DELETE' });
+    }
+    // Every test pins world time explicitly first — time is shared state in
+    // this world, and firing happens as a side effect of setting it.
+    function setTime(day, timeOfDay) {
+      return postJson('/api/world/time', { day, timeOfDay });
+    }
+    // Registers cleanup so a test's pending schedule never leaks into a
+    // later test's time changes (same hygiene as makeCharacter).
+    async function scheduleText(t, body) {
+      const res = await postJson('/api/scheduled-texts', body);
+      const data = await res.json().catch(() => ({}));
+      if (t && data.entry) t.after(async () => { await deleteJson(`/api/scheduled-texts/${data.entry.id}`); });
+      return { res, data };
+    }
+
+    test('POST validates character, day, and timeOfDay', async (t) => {
+      const character = await makeCharacter('Validation Target', t);
+      assert.equal((await postJson('/api/scheduled-texts', { characterId: 'nope', day: 2, timeOfDay: 'evening' })).status, 404);
+      assert.equal((await postJson('/api/scheduled-texts', { characterId: character.id, day: 2, timeOfDay: 'high noon' })).status, 400);
+      assert.equal((await postJson('/api/scheduled-texts', { characterId: character.id, day: 0, timeOfDay: 'evening' })).status, 400);
+    });
+
+    test('a future schedule stays pending and fires nothing', async (t) => {
+      await setTime(1, 'morning');
+      const character = await makeCharacter('Patient Promiser', t);
+      let llmCalls = 0;
+      t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () => {
+        llmCalls++;
+        return new Response(JSON.stringify({ choices: [{ message: { content: 'Too early.' } }] }), { status: 200 });
+      }));
+
+      const { res } = await scheduleText(t, { characterId: character.id, day: 5, timeOfDay: 'evening', reason: 'the ledger findings' });
+      assert.equal(res.status, 200);
+      await settle();
+
+      const { pending } = await getJson('/api/scheduled-texts');
+      assert.equal(pending.filter((e) => e.characterId === character.id).length, 1);
+      assert.equal((await getJson(`/api/texts/${character.id}`)).log.length, 0);
+      assert.equal(llmCalls, 0);
+    });
+
+    test('advancing world time to the slot fires the text, with the reason steering the prompt', async (t) => {
+      await setTime(1, 'morning');
+      const character = await makeCharacter('Punctual Promiser', t);
+      let capturedBody = null;
+      t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async (url, opts) => {
+        capturedBody = JSON.parse(opts.body);
+        return new Response(JSON.stringify({ choices: [{ message: { content: 'About those findings…' } }] }), { status: 200 });
+      }));
+
+      await scheduleText(t, { characterId: character.id, day: 1, timeOfDay: 'afternoon', reason: "findings on Shad Torson's daughters" });
+      await settle();
+      assert.equal(capturedBody, null, 'must not fire before its slot');
+
+      await setTime(1, 'afternoon');
+      await settle();
+
+      const lastMessage = capturedBody.messages[capturedBody.messages.length - 1];
+      assert.match(lastMessage.content, /findings on Shad Torson's daughters/);
+      assert.match(lastMessage.content, /follow through/i);
+
+      const log = (await getJson(`/api/texts/${character.id}`)).log;
+      const entry = log.find((e) => e.text === 'About those findings…');
+      assert.ok(entry);
+      assert.equal(entry.proactive, true);
+
+      const { pending } = await getJson('/api/scheduled-texts');
+      assert.equal(pending.filter((e) => e.characterId === character.id).length, 0);
+    });
+
+    test('a schedule whose slot is already past fires immediately on creation', async (t) => {
+      await setTime(3, 'evening');
+      const character = await makeCharacter('Late Promiser', t);
+      t.mock.method(globalThis, 'fetch', mockOpenRouterFetch(async () =>
+        new Response(JSON.stringify({ choices: [{ message: { content: 'Sorry this took a while.' } }] }), { status: 200 })));
+
+      await scheduleText(t, { characterId: character.id, day: 3, timeOfDay: 'morning', reason: 'an overdue update' });
+      await settle();
+
+      const log = (await getJson(`/api/texts/${character.id}`)).log;
+      assert.ok(log.some((e) => e.text === 'Sorry this took a while.' && e.proactive));
+      const { pending } = await getJson('/api/scheduled-texts');
+      assert.equal(pending.filter((e) => e.characterId === character.id).length, 0);
+      await setTime(1, 'morning');
+    });
+
+    test('DELETE cancels a pending schedule; a second DELETE 404s', async (t) => {
+      await setTime(1, 'morning');
+      const character = await makeCharacter('Cancelled Promiser', t);
+      const { data } = await scheduleText(null, { characterId: character.id, day: 9, timeOfDay: 'night' });
+      assert.equal((await deleteJson(`/api/scheduled-texts/${data.entry.id}`)).status, 200);
+      assert.equal((await deleteJson(`/api/scheduled-texts/${data.entry.id}`)).status, 404);
+      const { pending } = await getJson('/api/scheduled-texts');
+      assert.equal(pending.filter((e) => e.characterId === character.id).length, 0);
+    });
   });
 });

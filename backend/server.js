@@ -84,6 +84,7 @@ import { CONDITIONS as WEATHER_CONDITIONS, loadWeather, saveWeather, rollAutoWea
 import { buildTextingMessages, historyFromLog, groupHistoryFromLog } from './lib/texting.js';
 import { colorForId, orderByMentionIn, firstMentionedCharacter } from './lib/textUtils.js';
 import { loadCalls, saveCalls } from './lib/calls.js';
+import { loadScheduledTexts, saveScheduledTexts, splitDueScheduledTexts } from './lib/scheduledTexts.js';
 import { loadGroups, saveGroups, createGroup } from './lib/groups.js';
 import {
   DEFAULT_CASCADE_BASE_CHANCE, DEFAULT_CASCADE_DECAY_RATE, DEFAULT_CASCADE_PER_CHARACTER_CAP, nextCascadeStep,
@@ -1976,6 +1977,94 @@ app.post('/api/texts/:characterId/trigger', async (req, res) => {
   }
 });
 
+// --- Scheduled texts --------------------------------------------------------
+// A promise a character made in scene, held to: the scheduled-text
+// suggestion chip stores one of these, and fireDueScheduledTexts (called
+// from POST /api/world/time, the one place world time ever changes) turns
+// each due entry into a real proactive text with its `reason` as the
+// generation hint. See lib/scheduledTexts.js for the entry shape.
+
+// Fire-and-forget from the time route's perspective. Due entries are
+// removed from the pending list BEFORE generation starts — a failed
+// generation loses that one promised text (logged), which beats the
+// alternative (remove-on-success) where overlapping time changes would
+// double-send. Capped per tick with the same constant as random proactive
+// texts; anything past the cap stays pending and fires on the next time
+// change, still counting as due.
+async function fireDueScheduledTexts(w) {
+  const pending = loadScheduledTexts(w);
+  if (!pending.length) return;
+  const world = loadWorld(w);
+  const { due, remaining } = splitDueScheduledTexts(pending, world.time);
+  if (!due.length) return;
+
+  const cfg = loadConfig();
+  if (!cfg.apiKey) {
+    // Can't generate without a key — leave everything pending (still due,
+    // so it fires once a key exists and time next changes) rather than
+    // silently dropping promises.
+    logger.warn('chat', `${due.length} scheduled text(s) due but no API key configured — leaving pending`);
+    return;
+  }
+
+  const firing = due.slice(0, MAX_PROACTIVE_TEXTS_PER_ROUND);
+  const deferred = due.slice(MAX_PROACTIVE_TEXTS_PER_ROUND);
+  saveScheduledTexts(w, [...deferred, ...remaining]);
+
+  const charactersById = {};
+  loadCharacters(w).forEach((c) => { charactersById[c.id] = c; });
+  for (const entry of firing) {
+    const character = charactersById[entry.characterId];
+    if (!character) {
+      logger.warn('chat', `scheduled text ${entry.id} dropped: character ${entry.characterId} no longer exists`);
+      continue;
+    }
+    logger.info('chat', `scheduled text due: ${character.name} (day ${entry.day}, ${entry.timeOfDay})`);
+    generateProactiveText({ w, cfg, characterId: character.id, character, hint: entry.reason || null })
+      .catch((err) => logger.warn('chat', `scheduled text failed for ${character.name}: ${err.message}`));
+  }
+}
+
+app.get('/api/scheduled-texts', (req, res) => {
+  res.json({ pending: loadScheduledTexts(req.world) });
+});
+
+app.post('/api/scheduled-texts', async (req, res) => {
+  const w = req.world;
+  const { characterId, day, timeOfDay, reason } = req.body || {};
+  const character = loadCharacters(w).find((c) => c.id === characterId);
+  if (!character) return res.status(404).json({ error: 'Character not found.' });
+  if (!TIMES_OF_DAY.includes(timeOfDay)) {
+    return res.status(400).json({ error: `timeOfDay must be one of: ${TIMES_OF_DAY.join(', ')}` });
+  }
+  if (!Number.isInteger(day) || day < 1) return res.status(400).json({ error: 'day must be a positive integer.' });
+
+  const entry = {
+    id: crypto.randomUUID(),
+    characterId: character.id,
+    characterName: character.name,
+    day,
+    timeOfDay,
+    reason: typeof reason === 'string' ? reason.trim().slice(0, 300) : '',
+    createdAt: new Date().toISOString(),
+  };
+  saveScheduledTexts(w, [...loadScheduledTexts(w), entry]);
+  // A schedule that's already due (the promise said "this afternoon" and
+  // it already IS afternoon, or the user only clicked the chip after
+  // advancing time) shouldn't wait for the next time change to fire.
+  await fireDueScheduledTexts(w);
+  res.json({ entry, pending: loadScheduledTexts(w) });
+});
+
+app.delete('/api/scheduled-texts/:id', (req, res) => {
+  const w = req.world;
+  const pending = loadScheduledTexts(w);
+  const next = pending.filter((e) => e.id !== req.params.id);
+  if (next.length === pending.length) return res.status(404).json({ error: 'Scheduled text not found.' });
+  saveScheduledTexts(w, next);
+  res.json({ pending: next });
+});
+
 // Sending a text: appends the user's line, then generates the character's
 // reply — as SSE when streaming is enabled in Settings, as one JSON
 // response otherwise. Mirrors /api/places/:placeId/say's shape exactly so
@@ -3239,6 +3328,12 @@ app.post('/api/world/time', (req, res) => {
 
   applyScheduledPlacements(world, loadCharacters(w));
   saveWorld(w, world);
+  // Same "time changed, things happen" moment as schedule placements above
+  // — any scheduled text whose day/timeOfDay has now arrived fires as a
+  // proactive text. Fire-and-forget: the time change shouldn't block on
+  // LLM generation, and arrival is signaled by the unread badge like any
+  // other proactive text.
+  fireDueScheduledTexts(w).catch((err) => logger.warn('chat', `scheduled-text firing failed: ${err.message}`));
   res.json({ time: world.time, placements: world.placements });
 });
 

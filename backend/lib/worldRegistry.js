@@ -19,7 +19,7 @@ export const WORLD_JSON_FILES = ['characters.json', 'places.json', 'world.json',
 // (they're runtime state, not curated world data — see calls.js/groups.js),
 // but a backup should still capture them rather than silently drop them.
 // Kept as a separate constant so changing this never changes what clone copies.
-export const WORLD_EXPORT_FILES = [...WORLD_JSON_FILES, 'weather.json', 'calls.json'];
+export const WORLD_EXPORT_FILES = [...WORLD_JSON_FILES, 'weather.json', 'calls.json', 'scheduledTexts.json'];
 
 function httpError(message, status) {
   return Object.assign(new Error(message), { status });
@@ -174,6 +174,7 @@ export function createWorldRegistry({ dataRoot }) {
         weather: path.join(dataDir, 'weather.json'),
         calls: path.join(dataDir, 'calls.json'),
         groups: path.join(dataDir, 'groups.json'),
+        scheduledTexts: path.join(dataDir, 'scheduledTexts.json'),
       },
       _db: null,
       get db() {

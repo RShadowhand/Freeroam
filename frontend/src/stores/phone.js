@@ -5,7 +5,7 @@ import { handleUnknownWorld } from '../api/http';
 import { parseSseEvents } from '../utils/sse';
 import {
   getTextLog, sendTextApi, sendTextStreamRequest, retryTextApi, retryTextStreamRequest, deleteTextMessageApi,
-  triggerTextApi, getUnreadTextCount,
+  triggerTextApi, scheduleTextApi, getUnreadTextCount,
 } from '../api/phone';
 
 // One conversation per character (Phase 2 scope — group texting is a
@@ -97,6 +97,16 @@ export const usePhoneStore = defineStore('phone', {
     // unread server-side until the conversation is actually opened, and
     // openConversation's own GET is what marks it read; skipping that here
     // would let loadedIds' guard block that GET from ever firing.
+    // Stores a pending scheduled text server-side — the character sends it
+    // (as a proactive text, with `reason` steering the content) once world
+    // time reaches day/timeOfDay. If the slot is already due, the backend
+    // fires it immediately; either way arrival shows via the unread badge.
+    async scheduleText({ characterId, day, timeOfDay, reason }) {
+      const { ok, data } = await scheduleTextApi({ characterId, day, timeOfDay, reason });
+      if (!ok) useUiStore().showError(data.error || 'Could not schedule the text.');
+      return { ok, data };
+    },
+
     // `hint` (optional) is what the text should be about — suggestion chips
     // pass the promise they detected so the character follows through on
     // that subject instead of sending an unrelated out-of-the-blue message.

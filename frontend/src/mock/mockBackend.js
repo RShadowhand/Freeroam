@@ -557,6 +557,18 @@ on('POST', '/api/texts/:characterId/trigger', (p) => {
   appendEntry(log, { type: 'char', name: charName(p.characterId), text: cannedReply() });
   return json({ log });
 });
+// Mock keeps scheduled texts pending but never fires them (no world-time
+// loop here) — enough for the chip flow to succeed in dev mode.
+on('GET', '/api/scheduled-texts', () => json({ pending: state.scheduledTexts || [] }));
+on('POST', '/api/scheduled-texts', (p, req) => {
+  const entry = { id: `sched-${Date.now()}`, ...req.body, createdAt: new Date().toISOString() };
+  (state.scheduledTexts = state.scheduledTexts || []).push(entry);
+  return json({ entry, pending: state.scheduledTexts });
+});
+on('DELETE', '/api/scheduled-texts/:id', (p) => {
+  state.scheduledTexts = (state.scheduledTexts || []).filter((e) => e.id !== p.id);
+  return json({ pending: state.scheduledTexts });
+});
 
 // ---- Calls (Wavelength) ----
 // A call's back-and-forth actually lives in the calling PLACE's chat log
