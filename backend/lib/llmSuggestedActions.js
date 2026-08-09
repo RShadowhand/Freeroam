@@ -65,6 +65,40 @@ const TYPE_MEANINGS = [
   '"call-to-scene" = physically summons/beckons a character who is not currently present to come to the current location in person — not texting (to = that character\'s name).',
 ].join(' ');
 
+// The research this app's LLM-mode grew out of never covered *this* —
+// resolving a relative promise ("in an hour", "tonight", "tomorrow") into
+// an absolute day/timeOfDay — and a production log surfaced the gap: with
+// no guidance, the model just echoed the current world time back verbatim
+// for "later" promises (day 1/morning in, day 1/morning out), which isn't
+// "later" at all. Spelled out explicitly now, with an explicit guardrail
+// against the exact failure observed.
+function timeResolutionInstructions() {
+  return 'For "scheduled-text", resolve day/timeOfDay by advancing from the CURRENT world time (given below) using this '
+    + `time-of-day order: ${TIMES_OF_DAY.join(' -> ')} (after "night" comes "sunrise" of the next day, i.e. day + 1). `
+    + 'A same-day promise ("in an hour", "in a few hours", "later today") should land 1-3 steps later in this order, same '
+    + 'day. "Tonight" should land on "evening" or "night", same day. "Tomorrow"/"tomorrow morning" should land on day + 1 '
+    + 'with the matching timeOfDay. NEVER return the exact same day AND timeOfDay as the current world time — "later" '
+    + 'always means strictly after the current moment, even if the reply is vague about exactly when.';
+}
+
+// Same story as timeResolutionInstructions above, caught in the same
+// production log: with only a bare schema description, "reason" came back
+// as a restatement of the fact that a text is happening ("Ezra promises to
+// text the persona later") instead of what the text is actually about — and
+// after a first fix attempt, it drifted into explaining the *timing*
+// reasoning instead ("...suggesting a timeframe of 'later' which lands in
+// the afternoon..."), a different flavor of the same underlying mistake.
+// Spelled out as an explicit template + real bad/good examples this time,
+// including both observed failure modes by name, rather than one abstract
+// rule — abstract rules didn't stick on the first attempt.
+function reasonInstructions() {
+  return 'For "text-someone" and "scheduled-text", "reason" is what the text will actually be ABOUT — write it as if '
+    + 'filling in "a text about ___", using concrete topic/names/details pulled from the reply itself. NEVER describe '
+    + 'when or whether the text will be sent (that\'s already captured by when/day/timeOfDay), and never just restate '
+    + 'that a message is happening. Bad: "Ezra promises to text the persona later." Bad: "a message about the timing of '
+    + 'the update." Good: "findings on Shad Torson\'s daughters from the church registries."';
+}
+
 // The persona's real name is deliberately never included here (see
 // buildIntentPrompt) — the research found that showing it invites the model
 // to write it back as "to" instead of the literal word "persona", even with
@@ -80,6 +114,8 @@ export function buildIntentPrompt(text, ctx) {
     + 'in-character REPLY that follows it. List every distinct actionable intent the REPLY implies as JSON — a reply can imply '
     + 'more than one intent (e.g. one immediate action and one later action, or actions toward two different people). '
     + `Intent types, exact meanings: ${TYPE_MEANINGS} `
+    + `${timeResolutionInstructions()} `
+    + `${reasonInstructions()} `
     + 'When an intent is directed at the persona, always write the literal word "persona" as "to" — never a real name. '
     + `Known places: ${knownPlaces}. Known characters: ${knownChars}. Present but quiet (only these can be "promote" targets): ${bgChars}. `
     + 'If the reply implies nothing actionable, return an empty intents array. '
