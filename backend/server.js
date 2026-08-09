@@ -3970,6 +3970,16 @@ async function buildTurnRequest({ w, place, speakerId, presentIds, charactersByI
 // node-llama-cpp does locally, so this asks nicely (prompt-based JSON) and
 // parses leniently — same "worst case, zero suggestions" contract as every
 // other suggestion-detection path.
+// The final JSON answer itself is short, but max_tokens caps the whole
+// completion — if the configured model is a reasoning model (DeepSeek-R1,
+// o-series, Qwen thinking mode, etc. — a real possibility for 'same'/
+// 'custom', since either can point at anything), its chain-of-thought has
+// to fit in this budget too, same issue the built-in local model's own
+// thinking mode already ran into (see buildIntentPrompt's callers). 400 was
+// nowhere near enough for that; generous on purpose since this call isn't
+// blocking the visible reply.
+const LLM_SIDECAR_MAX_TOKENS = 4000;
+
 async function detectLlmSuggestedActionsRemote(cfg, text, ctx) {
   try {
     const { systemPrompt, userPrompt } = buildIntentPrompt(text, ctx);
@@ -3979,7 +3989,7 @@ async function detectLlmSuggestedActionsRemote(cfg, text, ctx) {
     const { text: raw } = await callOpenRouter(
       cfg,
       [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
-      400,
+      LLM_SIDECAR_MAX_TOKENS,
       'suggested-actions (llm sidecar)',
     );
     // Not logger.debug(msg, raw) — log.js's `extra` param only prints when
