@@ -9,9 +9,9 @@ completedColumns:
 
 ## Todo
 
-- [research-character-intent-action-detection-llm-modes-tool-calling-and-local-model-upgrades](tasks/research-character-intent-action-detection-llm-modes-tool-calling-and-local-model-upgrades.md)
-
 ## In Progress
+
+- [research-character-intent-action-detection-llm-modes-tool-calling-and-local-model-upgrades](tasks/research-character-intent-action-detection-llm-modes-tool-calling-and-local-model-upgrades.md)
 
 ## Needs Human Testing
 
